@@ -1,5 +1,9 @@
 # Linux desktop builds
 
+This is community-maintained Linux support in [mvalancy/starnet](https://github.com/mvalancy/starnet/tree/linux).
+Upstream supports Windows and macOS; this fork is not an official Linux release.
+For a dedicated browser server, see [Linux server setup](LINUX_SERVER.md).
+
 StarNet can be built natively for Linux **x86_64** and **ARM64** (including DGX Spark).
 The Linux configuration produces `.deb` and AppImage packages with a bundled Node runtime;
 users of a packaged build do not need Node or Rust installed. Other architectures and musl
@@ -100,3 +104,15 @@ window, sidecar health, the bundled Node/native dependency closure, shell timeou
 cleanup, and relaunch with preserved data. It deliberately skips legacy station migration.
 It uses a tiny ONNX test graph; no model downloads or provider credentials are required. Run `npm run test:fast`,
 `npm run test:http`, and `cargo test --manifest-path src-tauri/Cargo.toml --locked` for regressions.
+
+## Tracking upstream
+
+The fork's `linux` branch carries the desktop and server changes together. Its initial upstream
+base is `7ee93ceac` (v0.12.4); upstream v0.12.5 has not yet been integrated or validated here.
+
+Prepare upstream updates on a temporary branch from `linux`, merge the selected upstream
+commit, and review conflicts and overlapping fixes. Remove Linux patches that upstream has
+made unnecessary. Before advancing `linux`, run the contribution gates, build and smoke-test
+both Linux architectures, and repeat the service-boundary checks when deployment changes.
+Record the upstream revision and actual test results with each update; keep known failures
+explicit. Preserve published history and keep Linux changes separate from unrelated features.
