@@ -107,8 +107,8 @@ It uses a tiny ONNX test graph; no model downloads or provider credentials are r
 
 ## Tracking upstream
 
-The fork's `linux` branch carries the desktop and server changes together. Its initial upstream
-base is `7ee93ceac` (v0.12.4); upstream v0.12.5 has not yet been integrated or validated here.
+The fork's `linux` branch carries the desktop and server changes together. The upstream
+base is the v0.12.5 tag, `e70324eb7`. Validation results are recorded separately for each update.
 
 Prepare upstream updates on a temporary branch from `linux`, merge the selected upstream
 commit, and review conflicts and overlapping fixes. Remove Linux patches that upstream has
