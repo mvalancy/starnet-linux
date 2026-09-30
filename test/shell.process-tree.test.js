@@ -9,7 +9,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
-const { runCommand } = require('../sidecar/tools/builtin/shell.js');
+const { runCommand, makeShellTool } = require('../sidecar/tools/builtin/shell.js');
+const failopen = require('../sidecar/failopen.js');
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -51,6 +52,24 @@ function reap(pid) {
 
 (async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-shell-tree-'));
+  const killTree = makeShellTool({ spawn, fs, pathMod: path, root })._internals.killTree;
+  const realKill = process.kill;
+  try {
+    for (const code of ['ESRCH', 'EPERM']) {
+      const calls = [];
+      const before = failopen.counts()['shell.killGroup'] || 0;
+      process.kill = (pid) => {
+        calls.push(pid);
+        if (pid < 0) throw Object.assign(new Error('synthetic group kill ' + code), { code });
+        return true;
+      };
+      killTree(spawn, { pid: 12345, kill() { calls.push('child'); } }, false);
+      A.eq(JSON.stringify(calls), JSON.stringify([-12345, 'child', 12345]),
+        code + ': unavailable group falls back to the command process only');
+      A.eq(failopen.counts()['shell.killGroup'] || 0, before + (code === 'EPERM' ? 1 : 0),
+        code + ': unexpected group failure is recorded, an already-gone group is benign');
+    }
+  } finally { process.kill = realKill; }
   const grandFile = path.join(root, 'grand.js');
   const parentFile = path.join(root, 'parent.js');
   const pidFile = path.join(root, 'pids.json');

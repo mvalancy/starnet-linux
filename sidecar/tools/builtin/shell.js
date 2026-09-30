@@ -24,6 +24,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
+  const failNote = (typeof require === 'function') ? require('../../failopen.js').note : function () {};
   const AID_RE = /^[A-Za-z0-9_-]{1,40}$/;
   // foreground receipts for the boot orphan sweep (procledger.js trackChild); inert when no ledger is injected
   const trackChild = (typeof require === 'function') ? require('../../procledger.js').trackChild : function () { return { exited: function () {}, done: function () {} }; };
@@ -696,7 +697,11 @@
     // Killing only /bin/sh leaves descendants holding stdout open and running
     // after cancellation. Signal only this command's group, never our own.
     if (!isWin && Number.isInteger(child.pid) && child.pid > 1) {
-      try { process.kill(-child.pid, 'SIGKILL'); return; } catch (_) {}
+      try { process.kill(-child.pid, 'SIGKILL'); return; }
+      catch (error) {
+        // A group may already be gone; unexpected failures must remain observable.
+        if (!error || error.code !== 'ESRCH') failNote('shell.killGroup', error);
+      }
     }
     try { child.kill(); } catch (_) {}
     try {
