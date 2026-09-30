@@ -125,6 +125,17 @@ const onLine = (plan, aid, extra) => Object.assign({ lineId: P.lineOf(plan, aid)
   const plan = P.compileRoutingPlan(geo([], [belt(0, 0, 'E'), belt(1, 0, 'S'), belt(1, 1, 'W'), belt(0, 1, 'N')]));
   A.ok(plan.errors.some(e => e.code === 'CYCLE'), 'a belt loop -> CYCLE');
   A.ok(!P.ok(plan), 'a cyclic plan is never deployable');
+  // reach is never computed under a CYCLE, so "not fed" would be a guess: a FED bay on a working lane elsewhere on the
+  // floor must not be shamed BAY_NOT_FED while the loop stands (station.layout audit 2026-09-28)
+  const belts = [belt(0, 0, 'E'), belt(1, 0, 'S'), belt(1, 1, 'W'), belt(0, 1, 'N')];
+  for (let x = 11; x <= 16; x++) belts.push(belt(x, 0, 'E'));
+  const fed = P.compileRoutingPlan(geo([
+    { id: 'in', t: 'intake', x: 10, y: 0, w: 1, h: 1 },
+    { id: 'b1', t: 'bay', x: 13, y: 1, w: 1, h: 1, agentId: 'ada' },
+    { id: 'out', t: 'outbox', x: 17, y: 0, w: 1, h: 1 }
+  ], belts));
+  A.ok(fed.errors.some(e => e.code === 'CYCLE'), 'the stray loop is still the (blocking) finding');
+  A.ok(!fed.errors.some(e => e.code === 'BAY_NOT_FED'), 'and no bay is called "not fed" on a guess: ' + JSON.stringify(fed.errors.map(e => e.code)));
 }
 
 /* ---- ONE AGENT, TWO BAYS is legal (DUP_AGENT retired — Andrew's ruling 2026-09-22): each bay is its own dock ---- */

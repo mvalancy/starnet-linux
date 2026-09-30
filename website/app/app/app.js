@@ -5318,6 +5318,8 @@ const App = (() => {
     applyConfig: applyAgentConfig,
     // Model-facing edits wait for the same roster write used by the Dossier UI.
     configSynced: () => lastRosterPush,
+    // The live WorldModel station, for model-facing READS of the floor (station.layout). Readers never mutate it.
+    station: () => station,
     setApproval: setAgentApproval,
     setExecutionProfile: setAgentExecutionProfile,
     setStationProvider: setStationProvider };

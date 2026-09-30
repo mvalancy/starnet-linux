@@ -209,12 +209,16 @@ const Build = (() => {
   /* bayObjects, per (agentId, geometry). Also DEFENSIVE: world.js has always wrapped this call in a
      try/catch and REFIT called it bare, so one throw took out the whole validation layer (and with
      it every routing callout on the floor) instead of one bay's NO-COMPUTE check. */
-  function bayObjectsMemoed(agentId) {
+  /* PER BAY (station.layout audit 2026-09-28): the router isolates a run's tools by the DOCK it runs at
+     (router.stationFor(agentId, dockId) — a desk-less agent's second bay in another room gets THAT room), so a
+     compute check keyed only by agent said "has a workstation" for a bay whose run had none. dockId optional. */
+  function bayObjectsMemoed(agentId, dockId) {
     if (bayObjVer !== geoVer || !bayObjMemo) { bayObjVer = geoVer; bayObjMemo = new Map(); }
-    if (bayObjMemo.has(agentId)) return bayObjMemo.get(agentId);
+    const k = agentId + '|' + (dockId || '');
+    if (bayObjMemo.has(k)) return bayObjMemo.get(k);
     let objs = [];
-    try { objs = station.bayObjects(agentId) || []; } catch (_) { objs = []; }
-    bayObjMemo.set(agentId, objs);
+    try { objs = station.bayObjects(agentId, dockId) || []; } catch (_) { objs = []; }
+    bayObjMemo.set(k, objs);
     return objs;
   }
   let convey = null, lastFrameTs = 0;   // editor conveyor sim (boxes flow live as you build)
@@ -2297,7 +2301,7 @@ const Build = (() => {
       agentLabel: agentLabelFor, esc, sfx, flashTip: (msg, ok) => flashTip(null, msg, ok), valLabel: valWhy,
       roleInfo: r => (typeof WorldModel !== 'undefined' && WorldModel.bayRoleInfo) ? WorldModel.bayRoleInfo(r) : null,
       canSummon: () => typeof App !== 'undefined' && !!App.summonAgent, summonForRole,
-      hasCompute: aid => !!aid && bayObjectsMemoed(aid).indexOf('computer') >= 0,
+      hasCompute: (aid, dockId) => !!aid && bayObjectsMemoed(aid, dockId).indexOf('computer') >= 0,   // per BAY when the caller names one
       requisitionPcFor: id => { const r = requisitionPcFor(id); if (r.ok) bumpGeo(); return r; },
       stepPositionOf,
       api: finApi, planGate: c => finPlanGate(c),
@@ -5174,7 +5178,7 @@ const Build = (() => {
         if (p.t !== 'bay' || !p.agentId) continue;
         // memoized per (agentId, geoVer) and guarded — see bayObjectsMemoed. This ran BARE, per bay,
         // per frame, and each call is O(props × rooms) inside the model.
-        if (bayObjectsMemoed(p.agentId).indexOf('computer') >= 0) continue;
+        if (bayObjectsMemoed(p.agentId, p.id).indexOf('computer') >= 0) continue;   // THIS bay's run, not the agent's first
         mark({ x1: p.x, y1: p.y, x2: p.x + (p.w || 1) - 1, y2: p.y + (p.h || 1) - 1 }, '#ffbe3c', 'NO COMPUTE — ADD A PC IN THIS ROOM');
       }
     }
@@ -5986,7 +5990,8 @@ const Build = (() => {
     });
   }
 
-  const api = { init, open, close, toggle, isOpen, requisition, refitNames: guideNames, openAssign, noteLineDelivered, lineOfAgentInfo, nagLabel: code => VAL_LABEL[code] || code };   // nagLabel: the floor's own nag copy for a compiler code (ROUTINES RUN NOW refusal reads it)
+  const api = { init, open, close, toggle, isOpen, requisition, refitNames: guideNames, openAssign, noteLineDelivered, lineOfAgentInfo, nagLabel: code => VAL_LABEL[code] || code,
+    nagWhy: valWhy };   // nagLabel: the floor's own nag copy for a compiler code (ROUTINES RUN NOW refusal reads it); nagWhy: the full fix sentence the hover card + Workflow panel say (station.layout reads it)
   if (typeof window !== 'undefined' && window.__STARNET_DEV__) api.__test__ = __test__;
   return api;
 })();

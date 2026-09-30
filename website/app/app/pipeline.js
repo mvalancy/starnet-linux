@@ -455,7 +455,11 @@
     // valid outbound lanes; the chainFed clause is the same correction for valid stage-two docks, which are fed
     // by an agent rather than by a door and were being shamed for it. Per DOCK: a writer's second bay is judged
     // on its own belts, never excused by its first.
-    for (const b of bays) if (!reachDock[b.propId] && !chainFed[b.propId] && !flowsToOutbox(b.tile)) errors.push({ code: 'BAY_NOT_FED', propId: b.propId, agentId: b.agentId, warn: true });
+    // UNDER A BELT CYCLE reach is deliberately never computed (all false — a glowing lane must mean "a route runs
+    // here", and nothing routes while the loop stands), so "not fed" would be a GUESS: it sent the Commander to
+    // belt bays that were already fed while the real fault — the CYCLE, a blocking error — went unread (station.layout
+    // audit 2026-09-28). Only the CYCLE speaks until it is broken.
+    if (!cyc) for (const b of bays) if (!reachDock[b.propId] && !chainFed[b.propId] && !flowsToOutbox(b.tile)) errors.push({ code: 'BAY_NOT_FED', propId: b.propId, agentId: b.agentId, warn: true });
     // A CHAIN LOOP IS A BLOCKING ERROR — and it is INVISIBLE to detectCycle. A's ship tile feeding B's dock and
     // B's ship tile feeding A's dock are two separate physical lanes with no belt cycle anywhere; the loop only
     // exists across the docks (consume here, respawn there). Left unguarded that is an infinite chain of PAID

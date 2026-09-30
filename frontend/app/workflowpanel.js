@@ -67,6 +67,11 @@ const WorkflowPanel = (() => {
      + size + device scale, a neutral silhouette while a skin loads). An id the roster does not know gets the
      silhouette, never a guessed skin. */
   const agentOf = aid => (aid && (H.agents() || []).find(a => a && a.id === aid)) || null;
+  // crew membership for readiness: an id not on the roster still RUNS, on the station's default identity. An unread
+  // (empty) roster says nothing, so the whole crew is never flagged just because the list has not loaded yet.
+  const isCrew = aid => { const list = H.agents() || []; return !list.length || list.some(a => a && a.id === aid); };
+  // the belt INTO an escalation column says when that lane is taken — never "on DONE" (station.layout audit 2026-09-28)
+  const escCarry = e => !e.live ? 'never: no pass condition' : 'if still ' + (e.when === 'approved' ? 'not approved' : 'unmet') + ' after ' + (e.max || 5);
   const thumb = (aid, w, h, cls) => (typeof AgentPortraits !== 'undefined' && AgentPortraits.thumbHTML) ? AgentPortraits.thumbHTML(agentOf(aid), w, h, cls) : '';
   const lineName = () => { const c = comp(); return c ? H.lineNameOf(c) : null; };
   function dockLabel(f, pid) {
@@ -74,26 +79,14 @@ const WorkflowPanel = (() => {
     const i = f.order.indexOf(pid);
     return (d.role || 'BAY ' + (i + 1)) + (d.agentId ? ' · ' + nameOf(d.agentId) : '');
   }
-  const entryAgents = f => f ? f.order.map(p => f.docks[p]).filter(d => d.agentId && d.col === 0 && d.routed).map(d => d.agentId) : [];
   // (multi-bay) the ENTRY DOCKS themselves — a routine that fires at one bay of a multi-dock agent is judged by its bay
-  const entryDocks = f => f ? f.order.filter(p => { const d = f.docks[p]; return d.agentId && d.col === 0 && d.routed; }) : [];
-  const dockAgents = f => f ? f.order.map(p => f.docks[p].agentId).filter(Boolean) : [];
+  const entryDocks = f => { const W = WL(); return W ? W.entryDocksOf(f) : []; };
 
+  // what starts this line — composed by WorkflowLine.lineStarts, the ONE reader the lead's station.layout shares
   function triggers(f) {
-    const W = WL(); const out = { schedules: [], channels: [], routines: [], chanRows: [], events: [] };
-    if (!W || !f) return out;
-    // LINE TRIGGERS: only the ones the server reports enabled with nothing blocking them start the line
-    if (S.lt && W.lineEventTriggers) out.events = W.lineEventTriggers(S.lt.triggers, S.lineKey).sentences;
-    if (S.cron && Array.isArray(S.cron.jobs)) {
-      out.routines = W.lineRoutines(S.cron.jobs, dockAgents(f), entryAgents(f), entryDocks(f));
-      const armed = !!(S.cron.enabled && !S.cron.halted);
-      for (const r of out.routines) if (r.startsLine && armed) out.schedules.push(H.human(r.display));
-    }
-    if (S.chans) {
-      out.chanRows = W.channelFeeds(S.chans, entryAgents(f), H.agents());
-      for (const c of out.chanRows) if (c.feeds === true && c.connected && out.channels.indexOf(c.label.split(' ')[0]) < 0) out.channels.push(c.label.split(' ')[0]);
-    }
-    return out;
+    const W = WL();
+    if (!W || !f) return { schedules: [], channels: [], routines: [], chanRows: [], events: [] };
+    return W.lineStarts(f, { lt: S.lt, lineKey: S.lineKey, cron: S.cron, chans: S.chans, agents: H.agents(), human: H.human });
   }
   function refreshServerFacts() {
     api('/api/cron').then(r => { if (r.j && Array.isArray(r.j.jobs)) S.cron = r.j; paint(); }).catch(() => {});
@@ -228,7 +221,7 @@ const WorkflowPanel = (() => {
     const head = $('#wf-head'); if (!head) return;
     const W = WL(), c = comp(), intake = f && f.trigger.propId ? prop(f.trigger.propId) : null;
     const tr = triggers(f);
-    const r = f && c ? W.readiness(f, c, { hasCompute: H.hasCompute, errors: (H.plan() || {}).errors || [], labelOf: H.valLabel,
+    const r = f && c ? W.readiness(f, c, { hasCompute: H.hasCompute, errors: (H.plan() || {}).errors || [], labelOf: H.valLabel, isCrew,
       briefOf: pid => { const p = prop(pid); return p && (p.brief || p.hands); }, triggers: tr }) : null;
     const est = f ? W.costEstimate(f, testsMap()) : null;
     const nSteps = f ? f.order.length : 1;
@@ -286,7 +279,7 @@ const WorkflowPanel = (() => {
         html: '<span class="k">INBOX</span><span class="t">' + (ip ? (kinds > 1 ? 'AUTO' : sch ? 'SCHEDULE' : ch ? 'CHANNEL' : ev ? 'TRIGGER' : 'MANUAL') : 'NO INBOX') + '</span>'
           + '<span class="a">' + esc(ip ? (tr.channels.concat(tr.schedules.slice(0, 1), tr.events.length ? [tr.events.length === 1 ? tr.events[0].replace(/^when /, '') : tr.events.length + ' events'] : []).join(' · ') || 'no trigger yet') : 'add one on the floor') + '</span>' });
       f.cols.forEach(col => {
-        nodes.push({ kind: 'col', col, ok: col.docks.every(d => d.agentId && H.hasCompute(d.agentId)) });
+        nodes.push({ kind: 'col', col, ok: col.docks.every(d => d.agentId && H.hasCompute(d.agentId, d.propId)) });
         if (col.gate) nodes.push({ kind: 'gate', gate: col.gate, propId: col.gate.propId });
       });
       nodes.push({ kind: 'outbox', propId: f.outbox.propId, cls: 'wf-term', ok: f.outbox.reached,
@@ -300,7 +293,7 @@ const WorkflowPanel = (() => {
       if (i > 0 && n.kind === 'col' && n.col.detached) html += '<div class="wf-belt gap"><span class="carry">not connected</span></div>';
       else if (i > 0) {
         const prev = nodes[i - 1], a = machineOf(prev), b = machineOf(n);
-        const carry = prev.kind === 'trigger' ? 'the job' : prev.kind === 'col' && prev.col.docks.length === 1 ? ((prop(prev.col.docks[0].propId) || {}).hands || '…') : prev.kind === 'gate' ? (prev.gate.kind === 'loop' ? 'on DONE' : 'as one') : '…';
+        const carry = n.kind === 'col' && n.col.escalation ? escCarry(n.col.escalation) : prev.kind === 'trigger' ? 'the job' : prev.kind === 'col' && prev.col.docks.length === 1 ? ((prop(prev.col.docks[0].propId) || {}).hands || '…') : prev.kind === 'gate' ? (prev.gate.kind === 'loop' ? 'on DONE' : 'as one') : '…';
         const canPlus = !!(a && b && S.lineKey);
         html += '<div class="wf-belt"><span class="carry">' + esc(carry) + '</span><span class="rail"></span>'
           + (canPlus ? '<button type="button" class="wf-plus" data-plus="' + i + '" data-from="' + esc(a) + '" data-to="' + esc(b) + '" aria-label="Add a step here">+</button>' : '')
@@ -344,7 +337,7 @@ const WorkflowPanel = (() => {
     const col = n.col;
     const inner = col.docks.map(d => {
       const p = prop(d.propId) || {}, t = testOf(d.propId), i = f ? f.order.indexOf(d.propId) + 1 : 1;
-      const ok = !!(d.agentId && H.hasCompute(d.agentId));
+      const ok = !!(d.agentId && H.hasCompute(d.agentId, d.propId));
       return '<button type="button" class="wf-node dock' + sel(d.propId) + '" data-node="' + esc(d.propId) + '">'
         + '<span class="k">BAY ' + i + dot(ok) + '</span><span class="t">' + esc(d.role || 'STEP') + '</span>'
         + '<span class="a' + (d.agentId ? '' : ' none') + '">' + (d.agentId ? thumb(d.agentId, 22, 28, 'wf-nthumb') : '') + '<span class="an">' + esc(d.agentId ? nameOf(d.agentId) : 'no agent yet') + '</span></span>'
@@ -459,7 +452,8 @@ const WorkflowPanel = (() => {
       const g = nb.gate;
       if (g && g.kind === 'loop') {
         const nx = g.next ? dockLabel(f, g.next) : (f.outbox.reached ? 'the OUTBOX' : 'nowhere yet');
-        to = 'the LOOP gate: ' + (g.when === 'approved' ? 'on VERDICT: revise' : 'each pass') + ' back to ' + (g.backTo ? dockLabel(f, g.backTo) : '?') + ', else on to ' + nx;
+        to = 'the LOOP gate: ' + (g.when === 'approved' ? 'on VERDICT: revise' : 'each pass') + ' back to ' + (g.backTo ? dockLabel(f, g.backTo) : '?') + ', else on to ' + nx
+          + (g.escTo ? (g.when ? '; after ' + (g.max || 5) + ' tries unmet, ' + dockLabel(f, g.escTo) : '; its escalation lane to ' + dockLabel(f, g.escTo) + ' never runs (no pass condition)') : '');
       } else if (g && g.kind === 'join') to = 'the JOINER, then ' + (g.next ? dockLabel(f, g.next) : 'onward');
       else if (nb.next.length) to = nb.next.map(pid => dockLabel(f, pid)).join(' or ');
       else if (!d.agentId) to = 'decided once it has an agent';
@@ -475,7 +469,7 @@ const WorkflowPanel = (() => {
   LIVE.compute = () => computeHTML(prop(S.sel));
   function computeHTML(p) {
     if (!p || !p.agentId) return '';
-    if (H.hasCompute(p.agentId)) return '<span class="wf-ok">✓ ' + esc(nameOf(p.agentId)) + ' has a workstation for this step.</span>';
+    if (H.hasCompute(p.agentId, p.id)) return '<span class="wf-ok">✓ ' + esc(nameOf(p.agentId)) + ' has a workstation for this step.</span>';
     return '<span class="wf-warnline">' + esc(nameOf(p.agentId)) + ' needs an assigned workstation in this room before this step can run.</span>'
       + '<button type="button" class="bb sm refit-primary" id="wf-pc">⊕ ADD A WORKSTATION HERE</button>';
   }

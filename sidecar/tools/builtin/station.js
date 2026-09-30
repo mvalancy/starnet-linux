@@ -185,10 +185,141 @@
       }
     };
 
+    /* station.layout (2026-09-28; builds on PR #48 by @mvanhorn) — the lead's EYES on the floor. Asked "what does my
+       line do?" or "why isn't step 2 running?", a lead with no view of the floor guessed. The page answers from the
+       Workflow panel's own readers (frontend/app/stationcommands.js describeLayout), so the lead can quote the same
+       status pill and sentence the Commander sees. Read-only, so it is a consent-free orchestrator read.
+       AUDIT 2026-09-28: the page's answer is completed HERE with what only the harness knows, and shaped to the
+       model's window — a 10-line floor used to cost ~10k tokens a call, and a 32k-token model got it clamped into
+       invalid JSON with a line missing:
+         • ROUTING is confirmed against the router's own plan (deps.layoutFacts.routed): the page's poster is a
+           belief — a second, stale page or a lost routing file could make it say "live" over a router holding
+           nothing, or a different floor.
+         • each line's EFFECTIVE budget (the runner's own effectiveLimits: line budget, defaults, global pool), its
+           numbers TODAY and each BAY's last run come from the run store (the Workflow panel's line plate + lamps).
+         • the overview is compact (the panel sentence carries the flow; no briefs); `line` returns one line in full.
+           Whatever the mode, the answer fits ctx.outputMax as VALID JSON, dropping detail before it drops a line
+           and naming anything it left out. */
+    const lf = deps.layoutFacts || {};
+    const call = (fn, ...a) => { if (typeof fn !== 'function') return undefined; try { return fn(...a); } catch (_) { return undefined; } };
+    const agoText = ms => { const m = Math.round(ms / 60000); return m < 1 ? 'just now' : m < 60 ? m + 'm ago' : m < 2880 ? Math.round(m / 60) + 'h ago' : Math.round(m / 1440) + 'd ago'; };
+    // the clock is INJECTED (sidecar determinism law); without one, "how long ago" is not claimed at all
+    const clock = typeof deps.now === 'function' ? deps.now : null;
+    const lastRun = (d, now) => ({ result: d.reason || 'unknown', failed: !!d.failed, at: d.ts ? new Date(d.ts).toISOString() : null,
+      ago: (d.ts && now != null) ? agoText(Math.max(0, now - d.ts)) : null, runId: d.runId || null });
+    function completeLayout(r, now) {
+      const ro = r.routing || (r.routing = { state: 'unknown', note: 'The page could not say whether the router holds this floor.' });
+      const held = call(lf.routed);
+      if (held !== undefined && (ro.state === 'live' || ro.state === 'unconfirmed') && (r.lines || []).length) {
+        if (held === null) Object.assign(ro, { state: 'off', confirmed: false, note: 'Routing is OFF: the router holds no routing plan right now, so no line routes work (the page believed otherwise). Opening or editing the floor sends it again.' });
+        else if (held.hash && ro.planHash && held.hash !== ro.planHash) Object.assign(ro, { state: 'unconfirmed', confirmed: false, note: 'The router is running a different version of the floor than the page shows (another open page, or a floor that was not saved), so what runs may differ from this answer.' });
+        else if (held.hash && held.hash === ro.planHash) ro.confirmed = true;
+      }
+      delete ro.planHash;
+      const today = call(lf.today);
+      const byLine = {}; for (const l of ((today && today.lines) || [])) if (l && l.lineId) byLine[l.lineId] = l;
+      const docks = (today && today.docks) || {};
+      for (const L of (r.lines || [])) {
+        const b = call(lf.budget, L.lineId);
+        if (b) { L.budget = { maxHops: b.maxHops, maxUsdPerMessage: b.maxUsdPerMessage, maxUsdPerDay: b.maxUsdPerDay == null ? null : b.maxUsdPerDay }; if (b.clamped && b.clamped.length) L.budget.clamped = b.clamped; }
+        const t = byLine[L.lineId];
+        if (t) L.today = { runs: t.runs, shipped: t.shipped, failed: t.failed, tests: t.tests, usd: t.usdToday, capUsdPerDay: t.capUsdPerDay, medianMs: t.medianMs, day: t.spendDay === 'utc' ? 'UTC day' : 'local day' };
+        else if (today) L.today = null;   // the router runs no such line (routing off, or edits not sent): no numbers to claim
+        for (const s of (L.steps || [])) { const d = docks[s.propId]; if (d) s.lastRun = lastRun(d, now); }
+      }
+      for (const b of (r.loneBays || [])) { const d = docks[b.propId]; if (d) b.lastRun = lastRun(d, now); }
+      if (today === undefined && (r.lines || []).length) r.todayUnread = true;
+      return r;
+    }
+    const nameOf = a => a ? a.name + (a.onCrew === false ? ' (not on the crew)' : '') : null;
+    // the OVERVIEW: every line, compact — the sentence carries the flow, the steps say who and where
+    function overviewOf(r) {
+      const o = { routing: r.routing, automation: r.automation || null };
+      o.lines = (r.lines || []).map(L => {
+        const x = { lineId: L.lineId, name: L.name, status: L.status, ready: L.ready, howItRuns: L.howItRuns, blocking: L.blocking, hints: L.hints,
+          starts: { schedules: L.starts.schedules, channels: L.starts.channels, events: L.starts.events, paused: L.starts.paused } };
+        if (L.startsUnread) x.startsUnread = L.startsUnread;
+        if (L.budget) x.budget = L.budget;
+        if (L.today !== undefined) x.today = L.today;
+        x.steps = (L.steps || []).map(s => {
+          const y = { step: s.step, propId: s.propId, role: s.role, agent: nameOf(s.agent), room: s.room };
+          if (s.runsWith) y.runsWith = s.runsWith;
+          if (s.note) y.note = s.note;
+          if (s.lastRun) y.lastRun = s.lastRun.result + (s.lastRun.ago ? ', ' + s.lastRun.ago : '');
+          return y;
+        });
+        if ((L.issues || []).length) x.issues = L.issues;
+        return x;
+      });
+      // a lone BAY is no line, so the overview is the only place its brief is read: kept, cut short
+      if ((r.loneBays || []).length) o.loneBays = r.loneBays.map(b => Object.assign({ propId: b.propId, role: b.role, agent: nameOf(b.agent), room: b.room, note: b.note },
+        b.brief ? { brief: b.brief.length > 300 ? b.brief.slice(0, 300) + '…' : b.brief } : {},
+        b.lastRun ? { lastRun: b.lastRun.result + (b.lastRun.ago ? ', ' + b.lastRun.ago : '') } : {}));
+      if ((r.otherIssues || []).length) o.otherIssues = r.otherIssues;
+      o.rooms = (r.rooms || []).map(x => x.name || x.kind || x.id);
+      o.workstations = (r.workstations || []).map(w => ({ agent: nameOf(w.agent), type: w.type, room: w.room }));
+      if (r.todayUnread) o.todayUnread = true;
+      o.more = 'For one line in full (each Bay\'s exact brief, tools, hand-offs, loop, escalation and filter rules), call station.layout with line = its name or lineId.';
+      return o;
+    }
+    // FIT: shrink detail in order until the JSON is under the budget; the result is always valid JSON and says what it left out
+    function fitLayout(o, max, detail) {
+      const size = x => JSON.stringify(x).length;
+      if (size(o) <= max) return o;
+      const x = JSON.parse(JSON.stringify(o));
+      const linesOf = () => detail ? (x.line ? [x.line] : []) : (x.lines || []);
+      const steps = () => linesOf().reduce((a, L) => a.concat(L.steps || []), []);
+      const cutBriefs = n => () => { for (const s of steps()) if (s.brief && s.brief.length > n) { s.brief = s.brief.slice(0, n) + '…'; s.briefTruncated = true; } };
+      const cuts = detail ? [
+        cutBriefs(600), cutBriefs(160),
+        () => { for (const L of linesOf()) if (L.starts) { delete L.starts.routines; delete L.starts.channelBots; } },
+        () => { for (const s of steps()) { delete s.tools; delete s.getsWorkFrom; } },
+        () => { for (const s of steps()) { delete s.brief; s.briefOmitted = true; } }
+      ] : [
+        () => { for (const L of (x.lines || [])) delete L.hints; delete x.workstations; delete x.rooms; },
+        () => { for (const s of steps()) { delete s.room; delete s.propId; } },
+        () => { for (const L of (x.lines || [])) L.steps = (L.steps || []).map(s => s.step + '. ' + (s.agent || 'no agent') + (s.note ? ' — ' + s.note : '')); },
+        () => { for (const L of (x.lines || [])) { delete L.steps; delete L.budget; delete L.starts; delete L.issues; } delete x.loneBays; }
+      ];
+      for (const cut of cuts) { cut(); if (size(x) <= max) { x.shortened = true; return x; } }
+      if (detail) {
+        const L = x.line || {};
+        return { routing: { state: (x.routing || {}).state || 'unknown' }, shortened: true,
+          line: x.line ? { lineId: L.lineId, name: L.name, status: L.status, howItRuns: String(L.howItRuns || '').slice(0, Math.max(200, max - 600)) } : null };
+      }
+      // still too big: keep whole lines from the front, and NAME the rest (never a silent drop)
+      const all = x.lines || [], kept = [];
+      x.lines = kept;
+      for (const L of all) { kept.push(L); if (size(x) > max - 200) { kept.pop(); break; } }
+      x.shortened = true;
+      if (kept.length < all.length) x.omittedLines = all.slice(kept.length).map(L => (L.name || 'unnamed') + ' (' + L.lineId + ')');
+      if (size(x) > max) return { routing: { state: (x.routing || {}).state || 'unknown' }, shortened: true, lines: [], omittedLines: all.map(L => (L.name || 'unnamed') + ' (' + L.lineId + ')'), more: 'This answer was too large for your context: call station.layout with line = one of these.' };
+      return x;
+    }
+    const layoutTool = {
+      name: 'station.layout', capability: 'orchestrator', scope: 'read', requiresConsent: false,
+      description: 'Read the station floor the way the Workflow panel shows it: whether routing is live (confirmed against the router) and whether automation is stopped (E-STOP); every assembly line with its status pill, its plain-English "how it runs" sentence, what starts it (schedules, channels, folder and webhook triggers — and any that are paused, with the reason), what is blocking it, its budget, and its numbers today; each step in run order with its Bay, room, agent and last run; Bays on no belt line; routing issues; rooms; and who holds which workstation. With `line` (a line name or lineId) it returns that one line in full: each Bay\'s exact brief (added to the agent\'s Dossier), its tools there, its hand-offs, loops and escalation lanes, and filter rules. ⛔ Call this before explaining, troubleshooting, or suggesting changes to Bays and assembly lines, and never answer those from memory. Quote its status and sentence as given, and when routing is not live or starts are paused, say so. Read-only: it cannot assign agents, edit briefs, or change the layout; the Commander does that in Build mode. Requires an open station page.',
+      schema: { type: 'object', properties: { line: { type: 'string' } } },
+      run: async (args, ctx) => {
+        const line = String((args && args.line) || '').trim().slice(0, 80);
+        const out = await ask('station.layout', line ? { line } : {});
+        if (!out.ok) return refuse(out.error);
+        const r = completeLayout(out.result || {}, clock ? clock() : null);
+        const max = (ctx && Number(ctx.outputMax) > 0) ? Math.floor(Number(ctx.outputMax)) : 80000;
+        const shaped = line ? { routing: r.routing, automation: r.automation || null, line: (r.lines || [])[0] || null } : overviewOf(r);
+        if (line && r.todayUnread) shaped.todayUnread = true;
+        const fitted = fitLayout(shaped, Math.max(2000, max - 64), !!line);
+        const lines = r.lines || [];
+        const routing = r.routing && r.routing.state ? 'routing ' + r.routing.state : 'routing unknown';
+        const head = lines.length === 1 ? '"' + (lines[0].name || 'unnamed line') + '": ' + (lines[0].status || '?') : lines.length + ' line(s)';
+        return { content: JSON.stringify(fitted), summary: head + ' · ' + routing };
+      }
+    };
+
     return {
-      agentConfigTool, agentConfigureTool,
+      agentConfigTool, agentConfigureTool, layoutTool,
       listTool, createTool, peekTool, focusTool, taskListTool, taskCreateTool, taskManageTool,
-      register(reg) { [listTool, createTool, peekTool, focusTool, taskListTool, taskCreateTool, taskManageTool, agentConfigTool, agentConfigureTool].forEach(t => reg.register(t)); return reg; }
+      register(reg) { [listTool, createTool, peekTool, focusTool, taskListTool, taskCreateTool, taskManageTool, agentConfigTool, agentConfigureTool, layoutTool].forEach(t => reg.register(t)); return reg; }
     };
   }
 

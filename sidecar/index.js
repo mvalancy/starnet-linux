@@ -11064,6 +11064,22 @@ async function stepTestBody(req, res) {
   try { body = JSON.parse(raw); } catch (_) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'bad json' })); return null; }
   return (body && typeof body === 'object' && !Array.isArray(body)) ? body : {};
 }
+/* the global budget pool (a sidecar fact) every line budget is clamped to — null when none is set */
+const linePoolCap = () => (typeof effectiveCaps.global === 'number' && effectiveCaps.global > 0) ? effectiveCaps.global : null;
+/* LINE STATS since `since` (epoch ms): the per-line numbers + each dock's last outcome, folded from the durable run rows
+   over the lines the ROUTER holds. ONE composition for GET /api/routing/lines/stats and the lead's station.layout. */
+function lineStatsSnapshot(since) {
+  const plan = router.getPlan();
+  const lines = (plan && Array.isArray(plan.lines)) ? plan.lines : [];
+  const pool = linePoolCap();
+  return foldLineStats({
+    rows: runStore.list(null, { limit: 1000 }) || [], lines, since,
+    spentToday: id => lineSpend.spentToday(id),
+    capOf: id => chainEffectiveLimits(router.lineLimits(id), {}, pool).maxUsdPerDay,
+    // SHIPPED = a job that left through the OUTBOX: only a run at a dock whose lane reaches it (never a mid-line stage)
+    shipsToOutbox: (agentId, dockId) => router.chainShipsToOutbox(agentId, dockId)
+  });
+}
 /* GET /api/routing/lines/stats?since=<ms> — LINE WATCH. `since` is the caller's local midnight (the same window the
    SHIPPED counter reads /api/runs with); absent/invalid -> the start of the current UTC day. Every number is a fold of
    durable state (routing/line-stats.js): run rows stamped with the line, the line-spend ledger, the line's clamped
@@ -11076,17 +11092,7 @@ function handleLineStats(req, res) {
     const q = Number(u.searchParams.get('since'));
     const utcDay = nowMs - (nowMs % (24 * 60 * 60 * 1000));
     const since = (isFinite(q) && q > 0 && q <= nowMs) ? q : utcDay;
-    const plan = router.getPlan();
-    const lines = (plan && Array.isArray(plan.lines)) ? plan.lines : [];
-    const pool = (typeof effectiveCaps.global === 'number' && effectiveCaps.global > 0) ? effectiveCaps.global : null;
-    const out = foldLineStats({
-      rows: runStore.list(null, { limit: 1000 }) || [], lines, since,
-      spentToday: id => lineSpend.spentToday(id),
-      capOf: id => chainEffectiveLimits(router.lineLimits(id), {}, pool).maxUsdPerDay,
-      // SHIPPED = a job that left through the OUTBOX: only a run at a dock whose lane reaches it (never a mid-line stage)
-      shipsToOutbox: (agentId, dockId) => router.chainShipsToOutbox(agentId, dockId)
-    });
-    return json(200, Object.assign({ ok: true }, out));
+    return json(200, Object.assign({ ok: true }, lineStatsSnapshot(since)));
   } catch (e) {
     return json(500, { ok: false, error: 'line stats unreadable: ' + String((e && e.message) || e).slice(0, 200) });
   }
@@ -16838,7 +16844,15 @@ async function runOnceCore(o) {
   // uses. Same 'orchestrator' capability gate as team.* — conferred on the lead run only, so a delegated
   // worker can never open or steal the Commander's sessions. Only visual actions require a live page.
   makeStationTools({ station: require('./overseer.js').isCoordinatorRun({ ...o, agentId, surface })
-    ? overseerStation(o.streamId, runId) : stationBridge, scanText: t => cronGuard.scanRoutinePrompt(t) }).register(registry);
+    ? overseerStation(o.streamId, runId) : stationBridge, scanText: t => cronGuard.scanRoutinePrompt(t), now: () => Date.now(),
+    // station.layout's HARNESS facts (audit 2026-09-28): the plan the router actually holds, each line's effective
+    // budget (the runner's own effectiveLimits), and today's numbers since local midnight (the line plate's window)
+    layoutFacts: {
+      routed: () => { const p = router.getPlan(); return p ? { hash: p.hash || null } : null; },
+      budget: lineId => { const lim = chainEffectiveLimits(router.lineLimits(lineId), {}, linePoolCap());
+        return { maxHops: lim.maxHops, maxUsdPerMessage: lim.maxUsd, maxUsdPerDay: lim.maxUsdPerDay, clamped: lim.clamped }; },
+      today: () => { const d = new Date(); d.setHours(0, 0, 0, 0); return lineStatsSnapshot(d.getTime()); }
+    } }).register(registry);
   // routine.create/list: the lead can schedule real StarNet ROUTINES through the same cron store the panel uses.
   makeRoutineTools({
     roster: () => agentRoster,
@@ -18282,7 +18296,8 @@ async function runOnceCore(o) {
     teamNote += '\n• CREW CONFIGURATION: use team.config to read Dossier documents, then team.configure to edit the requested agent by exact ID. '
       + 'A notebook entry does not update another agent\'s Purpose or standing orders. Report a change only after the tool confirms it was saved. '
       + 'Dossier Purpose and standing orders describe the ongoing role; Bay briefs add the workflow-stage job. '
-      + 'Bay assignment, briefs, and assembly-line layout are configured in the station UI; do not claim to change them with a Dossier or notebook edit.';
+      + 'Bay assignment, briefs, and assembly-line layout are configured in the station UI; do not claim to change them with a Dossier or notebook edit. '
+      + 'To explain or troubleshoot Bays and assembly lines (what runs, in what order, what starts a line, why a step is not running), read station.layout first and quote its status; never answer from memory.';
     /* SESSIONS (2026-07-30): the lead can also RUN the station's sessions — and the peek rule exists because
        of a live failure: asked "what did the researcher do?", a lead with no way to read the other session
        GUESSED, and told the Commander their agent had done nothing when the work was sitting right there.

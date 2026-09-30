@@ -42,6 +42,7 @@ test/e2e.workspace-lease.test.js
 test/e2e.attachments.test.js
 test/e2e.summon.test.js
 test/e2e.dispatch-session.test.js
+test/station-layout.e2e.test.mjs
 test/e2e.worker-access.test.js
 test/taint-lineage.e2e.test.js
 test/e2e.trigger-fullaccess-taint.test.js

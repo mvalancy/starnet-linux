@@ -79,6 +79,9 @@
      columns with the writer in two of them. A plan without the dock layer derives it (Pipeline.dockLayer). */
   function lineFlow(plan, comp, P, props) {
     const out = { cols: [], docks: {}, gates: [], order: [], edges: {}, probeIn: {}, probeNext: {}, outbox: { propId: null, reached: false, reachedOnceCrewed: false }, trigger: { propId: null } };
+    // UNDER A BELT CYCLE the compiler never computes reach (every dock reads unreached), so no connectivity claim can
+    // be made from it: readers say the one true thing — the loop stops all routing (station.layout audit 2026-09-28)
+    out.cyclic = !!(plan && (plan.errors || []).some(e => e && e.code === 'CYCLE'));
     if (!comp) return out;
     out.trigger.propId = (comp.intakes && comp.intakes[0]) || null;
     out.outbox.propId = (comp.outboxes && comp.outboxes[0]) || null;
@@ -115,6 +118,8 @@
     const L = walkCompiled(probe || plan, comp, P, props, bays.filter(b => (probe || b.agentId) && pl.reachDock[b.propId]).map(b => b.propId));
     for (const pid in L.col) if (out.docks[pid]) { out.docks[pid].col = L.col[pid]; out.docks[pid].reachedBy = L.reachedBy[pid] || null; }
     out.gates = L.gates;
+    // a dock reached only on a LOOP's escalation lane is flagged: it runs only when the loop gives up (see walkCompiled)
+    for (const pid in L.reachedBy) if (L.reachedBy[pid] === 'esc' && out.docks[pid]) out.docks[pid].escalation = true;
     // an uncrewed dock's upstream (its GETS) is the probe compile's — the only compiled answer for a dock with no agent
     if (probe) for (const b of bays) {
       if (b.agentId) continue;
@@ -134,6 +139,10 @@
       if (nx.length) out.probeNext[b.propId] = nx;
     }
 
+    // UNDER A BELT CYCLE nothing was reached, so nothing is "not connected" on the evidence: the docks sit where the
+    // belts meet them (the physical walk terminates on a loop), still routed:false — nothing routes while it stands.
+    if (out.cyclic) { let k = 0; for (const pid of physicalOrder(plan, comp, (P && P._internals) || {})) { const d = out.docks[pid]; if (d && d.col == null) d.col = k++; } }
+
     // 3. NOT CONNECTED: a dock no INBOX reaches even once crewed has no place in the run order. It is never
     //    chained in bay order: every such dock is listed together in ONE trailing 'apart' group.
     const placed = Object.values(out.docks).filter(d => d.col != null);
@@ -141,13 +150,26 @@
     const colKeys = [...new Set(placed.map(d => d.col))].sort((a, b) => a - b);
     const bayOrder = {}; bays.forEach((b, i) => { bayOrder[b.propId] = i; });
     for (const ck of colKeys) {
-      const docks = placed.filter(d => d.col === ck).sort((a, b) => bayOrder[a.propId] - bayOrder[b.propId]);
-      const mode = docks.length < 2 ? 'single' : docks.some(d => d.reachedBy === 'all') ? 'all' : docks.some(d => d.reachedBy === 'turns') ? 'turns' : 'oneof';
-      const c = { docks, mode, gate: null };
-      const g = out.gates.find(gg => gg.col === ck && gg.after.some(pid => docks.some(d => d.propId === pid)));
-      if (g) c.gate = g;
-      out.cols.push(c);
-      for (const d of docks) out.order.push(d.propId);
+      const inCol = placed.filter(d => d.col === ck).sort((a, b) => bayOrder[a.propId] - bayOrder[b.propId]);
+      // an ESCALATION dock never shares a column with the done lane's next step (that read "A or FIX", one-by-content):
+      // it gets its own column right after, carrying the gate it escalates from and whether that lane can ever fire
+      for (const esc of [false, true]) {
+        const docks = inCol.filter(d => !!d.escalation === esc);
+        if (!docks.length) continue;
+        const mode = docks.length < 2 ? 'single' : docks.some(d => d.reachedBy === 'all') ? 'all' : docks.some(d => d.reachedBy === 'turns') ? 'turns' : 'oneof';
+        const c = { docks, mode, gate: null };
+        if (esc) {
+          const g = out.gates.find(gg => gg.kind === 'loop' && gg.escTo && docks.some(d => d.propId === gg.escTo));
+          c.escalation = g ? { gate: g.key, propId: g.propId || null, when: g.when || null, max: g.max || null, live: !!g.when } : { gate: null, propId: null, when: null, max: null, live: false };
+          // a loop with no pass condition never exhausts (loopDecision: exhausted needs `when`): its escalation dock is never routed
+          if (!c.escalation.live) for (const d of docks) d.routed = false;
+        } else {
+          const g = out.gates.find(gg => gg.col === ck && gg.after.some(pid => docks.some(d => d.propId === pid)));
+          if (g) c.gate = g;
+        }
+        out.cols.push(c);
+        for (const d of docks) out.order.push(d.propId);
+      }
     }
     if (loose.length) {
       const top = colKeys.length ? Math.floor(colKeys[colKeys.length - 1]) + 1 : 0;
@@ -209,18 +231,22 @@
         const k = s.loop || s.join;
         let g = gateByKey[k];
         if (!g) {
-          g = gateByKey[k] = { kind: s.loop ? 'loop' : 'join', key: k, propId: jprop(k), after: [], backTo: null, backAgent: null,
+          g = gateByKey[k] = { kind: s.loop ? 'loop' : 'join', key: k, propId: jprop(k), after: [], backTo: null, backAgent: null, escTo: null,
             max: s.max || null, when: s.when || null, next: null, nextAgent: (s.next && s.next.agentId) || null, nextDock: pidOf(s.next), timeoutMin: s.timeoutMin || null, col: c };
           res.gates.push(g);
         }
         if (g.after.indexOf(pid) < 0) g.after.push(pid);
         if (c > g.col) g.col = c;
-        if (s.loop) { g.backAgent = (s.backTo && s.backTo.agentId) || null; g.backTo = pidOf(s.backTo); }
-        const nd = pidOf(s.next), bd = pidOf(s.backTo);
+        if (s.loop) { g.backAgent = (s.backTo && s.backTo.agentId) || null; g.backTo = pidOf(s.backTo); g.escTo = pidOf(s.esc) || null; }
+        const nd = pidOf(s.next), bd = pidOf(s.backTo), ed = s.loop ? pidOf(s.esc) : null;
         if (nd) q.push({ a: nd, c: c + 1, by: 'single' });
         else if (ch && ch.outbox) res.outboxReached = true;
+        /* the ESCALATION lane is not a next step (station.layout audit 2026-09-28): its dock runs ONLY when the loop
+           spends its passes with its condition still unmet (sidecar/routing/chain.js loopDecision) — so it is walked
+           as 'esc', never as a forward 'oneof' fork the sentence would chain with "then". */
+        if (ed) q.push({ a: ed, c: c + 1, by: 'esc' });
         // a loop's back lane re-enters UPSTREAM: never a forward edge (it is drawn as the back-arc)
-        for (const n of statics) if (n !== nd && n !== bd) q.push({ a: n, c: c + 1, by: 'oneof' });
+        for (const n of statics) if (n !== nd && n !== bd && n !== ed) q.push({ a: n, c: c + 1, by: 'oneof' });
       }
       if (ch && ch.outbox && !s.dockId && !s.branches) res.outboxReached = true;
     }
@@ -332,15 +358,38 @@
   function howItRuns(flow, opt) {
     const o = opt || {}, nameOf = o.nameOf || (a => String(a || '').toUpperCase()), segs = [];
     const T = s => segs.push({ t: 'text', s });
+    const dockName = d => d.agentId ? nameOf(d.agentId) : (d.role || 'an empty BAY');
+    /* UNDER A BELT CYCLE (station.layout audit 2026-09-28) reach is never computed and the router refuses the whole
+       floor, so any "who hands to whom" or "not connected" line would be invented: say the one true thing. */
+    if (flow && flow.cyclic) {
+      segs.push({ t: 'miss', s: '[a belt LOOP on the floor stops all routing: break the circle, then this line can run]', propId: null });
+      if (flow.order.length) T('. Its steps, where the belts meet them: ' + flow.order.map(pid => dockName(flow.docks[pid])).join(', ') + '.');
+      return segs;
+    }
     const trig = o.triggers || { schedules: [], channels: [] };
     const starts = [].concat((trig.schedules || []), (trig.channels || []).map(c => 'when a ' + c + ' message arrives'), (trig.events || []));
+    // PAUSED starts (E-STOP, the scheduler off, a trigger waiting, a channel disconnected) never start the line: they
+    // are named, so "nothing starts it" is never said about a line whose start is merely stopped
+    const paused = trig.paused || [];
     if (!flow || !flow.trigger.propId) T('This line has no INBOX yet, so nothing can start it. ');
+    else if (!starts.length && paused.length) T('Nothing starts it right now (' + paused.join('; ') + '); it runs when you test it. ');
     else if (!starts.length) T('Nothing starts it on its own yet (no schedule, channel, folder or webhook runs this line); it runs when you test it. ');
     else T(cap(joinOr(starts)) + ', ');
     if (!flow || !flow.cols.length) { T('there is no BAY on it yet.'); return segs; }
     const run = flow.cols.filter(c => !c.detached), apart = flow.cols.filter(c => c.detached);
     run.forEach((c, i) => {
-      if (i > 0) T(i === run.length - 1 && !c.gate ? ' then ' : '; ');
+      if (c.escalation) {
+        // the ESCALATION lane is conditional, never "then": it runs only when the loop spends its passes unmet
+        const e = c.escalation;
+        if (!e.live) {
+          T('; ');
+          segs.push({ t: 'miss', s: '[' + c.docks.map(dockName).join(', ') + ' on the escalation lane never runs: the LOOP has no pass condition]', propId: e.propId });
+          return;
+        }
+        const tries = ' after ' + (e.max || 5) + ' tries';
+        T('; ' + (e.when === 'approved' ? 'if it is still not approved' + tries : e.when === 'revise' ? 'if the verdict still does not say revise' + tries
+          : 'if it still reads as ' + e.when + ' work' + tries) + ', ');
+      } else if (i > 0) T(i === run.length - 1 && !c.gate ? ' then ' : '; ');
       c.docks.forEach((d, j) => {
         if (j > 0) T(c.mode === 'all' ? ' and ' : ' or ');
         if (d.agentId) segs.push({ t: 'agent', s: nameOf(d.agentId), propId: d.propId });
@@ -382,35 +431,58 @@
   }
 
   /* ---------- readiness: what is missing, blocking first ----------
-     facts = { hasCompute(agentId)->bool, errors:[{code, propId, warn}], labelOf(code)->string, briefOf(propId), triggers }
+     facts = { hasCompute(agentId, dockId)->bool, errors:[{code, propId, tile, warn}], labelOf(code)->string, briefOf(propId),
+               triggers (lineStarts), isCrew(agentId)->bool (optional: is this id on the crew roster?) }
      A BLOCKING item is one the harness would fail on: no INBOX, an uncrewed dock, a dock with no workstation
-     (the compute gate stays shut), no route to an OUTBOX, a compiler error on this line. A HINT is advice. */
+     (the compute gate stays shut), no route to an OUTBOX, a compiler error on this line — or a BLOCKING error
+     ANYWHERE on the floor, because the router refuses the whole plan while one stands. A HINT is advice.
+     (station.layout audit 2026-09-28: the station-wide refusal, the per-BAY compute gate, crew membership, a loop's
+     dead escalation lane, paused starts and the belt CYCLE were all read wrong or not at all.) */
   function readiness(flow, comp, facts) {
     const f = facts || {}, blocking = [], hints = [];
     if (!comp) return { ready: false, blocking: [{ what: 'Connect this BAY to a line with the BELT tool', propId: null }], hints };
+    const mine = {}; for (const id of (comp.props || [])) mine[id] = true;
+    const onLine = e => (e.propId != null && mine[e.propId]) || !!(e.tile && comp.tiles && comp.tiles[key(e.tile.x, e.tile.y)]);
+    const label = code => (f.labelOf ? f.labelOf(code) : code);
+    // THE WHOLE FLOOR FIRST: one blocking finding anywhere and the router refuses every line (router.setPlan), so a
+    // line elsewhere is not ready either — the pill names the real fix instead of READY TO RUN
+    const away = {};
+    for (const e of (f.errors || [])) {
+      if (!e || e.warn || onLine(e) || away[e.code]) continue;
+      away[e.code] = true;
+      blocking.push({ what: 'routing is off for the whole station until this is fixed: ' + label(e.code), propId: e.propId || null });
+    }
+    const cyclic = !!flow.cyclic;
     if (!flow.trigger.propId) blocking.push({ what: 'add an INBOX', propId: null });
     let n = 0;
     for (const pid of flow.order) {
       n++;
-      const d = flow.docks[pid], label = 'BAY ' + n + (d.role ? ' (' + d.role + ')' : '');
-      if (!d.agentId) { blocking.push({ what: label + ' needs an agent', propId: pid }); continue; }
-      if (f.hasCompute && !f.hasCompute(d.agentId)) blocking.push({ what: label + ' needs a workstation', propId: pid });
-      if (f.briefOf && !f.briefOf(pid)) hints.push({ what: label + ' has no instructions', propId: pid });
+      const d = flow.docks[pid], lbl = 'BAY ' + n + (d.role ? ' (' + d.role + ')' : '');
+      if (!d.agentId) { blocking.push({ what: lbl + ' needs an agent', propId: pid }); continue; }
+      // an id that is not on the crew still RUNS — on the station's default identity (runOnce identityFallback)
+      if (f.isCrew && !f.isCrew(d.agentId)) hints.push({ what: lbl + '\'s agent "' + d.agentId + '" is not on the crew: its runs use the station\'s default identity. Assign a crew agent', propId: pid });
+      // PER BAY: a run gets the tools of the dock it runs at (router.stationFor(agentId, dockId))
+      if (f.hasCompute && !f.hasCompute(d.agentId, pid)) blocking.push({ what: lbl + ' needs a workstation', propId: pid });
+      if (f.briefOf && !f.briefOf(pid)) hints.push({ what: lbl + ' has no instructions', propId: pid });
     }
-    if (flow.trigger.propId) { let k = 0; for (const pid of flow.order) { k++; const d = flow.docks[pid]; if (d.detached && d.agentId) blocking.push({ what: 'BAY ' + k + ' is not connected to the INBOX', propId: pid }); } }
+    // under a belt CYCLE reach is unknown: "not connected" and "no route to the OUTBOX" would be guesses
+    if (flow.trigger.propId && !cyclic) { let k = 0; for (const pid of flow.order) { k++; const d = flow.docks[pid]; if (d.detached && d.agentId) blocking.push({ what: 'BAY ' + k + ' is not connected to the INBOX', propId: pid }); } }
     if (!flow.order.length) blocking.push({ what: 'add a BAY', propId: null });
     // belts that already reach the OUTBOX once every bay is crewed are not a belt problem: the uncrewed bays' own
     // "needs an agent" items above are what is missing (sweep 2026-09-25)
-    else if (!flow.outbox.reached && !(flow.outbox.reachedOnceCrewed && flow.order.some(pid => !flow.docks[pid].agentId))) blocking.push({ what: flow.outbox.propId ? 'connect the last step to the OUTBOX' : 'add an OUTBOX', propId: flow.outbox.propId });
-    const mine = {}; for (const id of (comp.props || [])) mine[id] = true;
+    else if (!cyclic && !flow.outbox.reached && !(flow.outbox.reachedOnceCrewed && flow.order.some(pid => !flow.docks[pid].agentId))) blocking.push({ what: flow.outbox.propId ? 'connect the last step to the OUTBOX' : 'add an OUTBOX', propId: flow.outbox.propId });
     const seenCodes = {};
     for (const e of (f.errors || [])) {
-      if (e.warn || !e.propId || !mine[e.propId] || seenCodes[e.code]) continue;
+      if (!e || e.warn || !onLine(e) || seenCodes[e.code]) continue;
       seenCodes[e.code] = true;
-      blocking.push({ what: 'fix: ' + (f.labelOf ? f.labelOf(e.code) : e.code), propId: e.propId });
+      blocking.push({ what: 'fix: ' + label(e.code), propId: e.propId || null });
     }
-    const t = f.triggers || {};
-    if (flow.trigger.propId && !((t.schedules || []).length || (t.channels || []).length || (t.events || []).length)) hints.push({ what: 'nothing starts it yet (no schedule, channel, folder or webhook)', propId: flow.trigger.propId });
+    // a LOOP with an escalation lane but no pass condition never exhausts, so its escalation BAY never runs
+    for (const g of (flow.gates || [])) if (g.kind === 'loop' && g.escTo && !g.when) hints.push({ what: 'the LOOP\'s escalation lane never runs: give the LOOP a pass condition (for example, until approved)', propId: g.propId || null });
+    const t = f.triggers || {}, paused = t.paused || [];
+    const live = (t.schedules || []).length || (t.channels || []).length || (t.events || []).length;
+    if (flow.trigger.propId && !live) hints.push({ what: paused.length ? 'nothing starts it right now: ' + paused.join('; ') : 'nothing starts it yet (no schedule, channel, folder or webhook)', propId: flow.trigger.propId });
+    else if (paused.length) hints.push({ what: 'paused: ' + paused.join('; '), propId: flow.trigger.propId });
     return { ready: !blocking.length, blocking, hints };
   }
   function pillText(r) {
@@ -496,6 +568,48 @@
     return { mine, live, sentences };
   }
 
+  /* ---------- what STARTS a line: every trigger fact, composed ONCE (2026-09-28) ----------
+     The Workflow panel and the lead's station.layout tool both read a line's starts through THIS, so the two can
+     never disagree about what runs a line. facts = { lt: GET /api/routing/triggers, lineKey, cron: GET /api/cron,
+     chans: GET /api/channels/status, agents: the roster, human: a routine's display -> words }; a fact that was
+     not read is simply absent (its list stays empty). Entry docks = the routed column-0 docks of the compiled flow. */
+  const entryDocksOf = flow => flow ? flow.order.filter(p => { const d = flow.docks[p]; return d.agentId && d.col === 0 && d.routed; }) : [];
+  const entryAgentsOf = flow => entryDocksOf(flow).map(p => flow.docks[p].agentId);
+  const dockAgentsOf = flow => flow ? flow.order.map(p => flow.docks[p].agentId).filter(Boolean) : [];
+  function lineStarts(flow, facts) {
+    const x = facts || {}, out = { schedules: [], channels: [], routines: [], chanRows: [], events: [], paused: [] };
+    if (!flow) return out;
+    const said = d => (x.human ? x.human(d) : String(d == null ? '' : d));
+    // LINE TRIGGERS: only the ones the server reports enabled with nothing blocking them start the line; an enabled one
+    // the server holds back is PAUSED, with the server's own reason (E-STOP, the day cap, …) — never silently dropped
+    if (x.lt) {
+      const ev = lineEventTriggers(x.lt.triggers, x.lineKey);
+      out.events = ev.sentences;
+      for (const t of ev.mine) if (t && t.enabled && t.blockedBy) out.paused.push((t.kind === 'folder' ? 'its folder trigger (' + ((t.config && t.config.path) || 'a folder') + ')'
+        : 'its webhook' + (t.name ? ' "' + t.name + '"' : '')) + ' is waiting: ' + t.blockedBy);
+    }
+    if (x.cron && Array.isArray(x.cron.jobs)) {
+      out.routines = lineRoutines(x.cron.jobs, dockAgentsOf(flow), entryAgentsOf(flow), entryDocksOf(flow));
+      const armed = !!(x.cron.enabled && !x.cron.halted);
+      for (const r of out.routines) {
+        if (!r.startsLine) continue;
+        if (armed) out.schedules.push(said(r.display));
+        else out.paused.push('its routine "' + r.name + '" (' + said(r.display) + ') is saved but ' + (x.cron.halted ? 'the scheduler is stopped (E-STOP)' : 'the scheduler is off'));
+      }
+    }
+    if (x.chans) {
+      out.chanRows = channelFeeds(x.chans, entryAgentsOf(flow), x.agents);
+      for (const c of out.chanRows) {
+        if (c.feeds !== true) continue;
+        if (c.connected) { if (out.channels.indexOf(c.label.split(' ')[0]) < 0) out.channels.push(c.label.split(' ')[0]); }
+        else out.paused.push('its ' + c.label + ' channel answers as its first step but is not connected');
+      }
+    }
+    return out;
+  }
+  // howItRuns' segments as the plain sentence the panel paints (for a reader with no DOM — the lead's tool)
+  const sentenceText = segs => (Array.isArray(segs) ? segs : []).map(s => (s && s.s) || '').join('');
+
   /* ---------- LINE TRIGGERS: repaint only what changed (2026-09-24) ----------
      The panel re-reads the trigger list every 5 s while an INBOX is open. Rebuilding the whole card on each read
      remounted the WHEN picker (the picked schedule snapped back to daily 9:00), replaced an ARMED two-click
@@ -542,5 +656,6 @@
   const isLive = s => !!s && !TERMINAL[s.state];
 
   return { ROLE, GENERIC, roleInfo, starters, lineFlow, physicalOrder, neighbours, howItRuns, readiness, pillText,
-    costEstimate, channelFeeds, lineRoutines, lineEventTriggers, triggerSig, rowPatch, testInputFor, pausedNext, hopLabel, isLive, CHAN_LABEL };
+    costEstimate, channelFeeds, lineRoutines, lineEventTriggers, lineStarts, entryDocksOf, entryAgentsOf, dockAgentsOf, sentenceText,
+    triggerSig, rowPatch, testInputFor, pausedNext, hopLabel, isLive, CHAN_LABEL };
 });

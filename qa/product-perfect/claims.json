@@ -18,7 +18,7 @@
   "expectedClaimCount": 37,
   "releaseSurface": {
     "algorithm": "sha256",
-    "sourceCommit": "1a1308d7f5246273488bc86e8a14b7c22f6977f8",
+    "sourceCommit": "6fb2505ded64590b243912b36a4f456178fc0100",
     "pathSetSha256": "d399b7dc9c6d8ef4e165d0c6560b5770636dbaf73b81f662e7c4b31d7cc55045",
     "files": [
       {
@@ -33,13 +33,13 @@
       },
       {
         "path": "README.md",
-        "bytes": 9509,
-        "sha256": "51cce2de9323ad6a0fb5ba177a5dd9d112516c3f9593f36131e3c65b695105cc"
+        "bytes": 8928,
+        "sha256": "4b8dd90437e07ea1324203f6c4e0b62204413cb827d90f7fd195308a5fe7dd92"
       },
       {
         "path": "RELEASE_NOTES.md",
-        "bytes": 8708,
-        "sha256": "710e7b88bef7a6d0b560918908a267fdbea5de167211de08b4152b8611eb3a67"
+        "bytes": 49089,
+        "sha256": "f2b6bd4d4ca527fb6d329469d21ac13b9957033f544c885b9f949b4143fcc831"
       },
       {
         "path": "TERMS.md",
@@ -173,8 +173,8 @@
       },
       {
         "path": "frontend/app/app.js",
-        "bytes": 392449,
-        "sha256": "cab61f78c0085219ae8c791fd7e97a730cfe2791f15be17654c9326e14bfedfd"
+        "bytes": 392592,
+        "sha256": "8268f7969bdf94f29937fa91bac300ac9fddb559ed7ca878feee734ae0850399"
       },
       {
         "path": "frontend/app/approved-sheet-effects.js",
@@ -318,8 +318,8 @@
       },
       {
         "path": "frontend/app/build.js",
-        "bytes": 408888,
-        "sha256": "d967658c0561d978c7e117b9877dc463ae73af54c58bece3f1c6e6842f52b105"
+        "bytes": 409484,
+        "sha256": "7f182be581fc40153d0d9f35fb0fe99c0004e93e12eb4ccb153916e5fb0304a4"
       },
       {
         "path": "frontend/app/channels.js",
@@ -703,8 +703,8 @@
       },
       {
         "path": "frontend/app/pipeline.js",
-        "bytes": 98530,
-        "sha256": "3346c983d34197a0024e51338f4947ccee218abc9067f77cc00c3042636ec387"
+        "bytes": 98962,
+        "sha256": "8c88440283c32eb101fbc8fa81af6d69d9b0b4d299640dd502eaa9fdee83f1e4"
       },
       {
         "path": "frontend/app/pitch.js",
@@ -1053,8 +1053,8 @@
       },
       {
         "path": "frontend/app/stationcommands.js",
-        "bytes": 27790,
-        "sha256": "bcb946d787ee90e6946c76259aea345b4b08f542f0772c7484b62c309d899129"
+        "bytes": 48435,
+        "sha256": "92e82ee1b8978af58b477afaa2f1804bf6b99f2e95ca258bdd6173b8e211499d"
       },
       {
         "path": "frontend/app/stationquests.js",
@@ -1263,13 +1263,13 @@
       },
       {
         "path": "frontend/app/workflowline.js",
-        "bytes": 37959,
-        "sha256": "34d4dce206139e1f2dba4dc5188a6e3031095eb87a255acf81c6a5ccaa75e7e6"
+        "bytes": 47436,
+        "sha256": "5bd12e1e347a874d070f516441ab3d69c81afb5c57b75167edd6afd2bf466476"
       },
       {
         "path": "frontend/app/workflowpanel.js",
-        "bytes": 113551,
-        "sha256": "dc1cf58dcb022bb3b3ebe802fc01003f1a230261cd818ec1e33c948ce3feaa80"
+        "bytes": 113629,
+        "sha256": "48e32371ab09bf4ecd5b1d1d3e1874e46899629caf3e23a60da7995e3e7ed574"
       },
       {
         "path": "frontend/app/workflowtakeoverstore.js",
@@ -1318,8 +1318,8 @@
       },
       {
         "path": "frontend/app/world.js",
-        "bytes": 804043,
-        "sha256": "e2921b8898ea1b6e57056746822d80776fdb30145975c2200e721046c5a19df6"
+        "bytes": 804746,
+        "sha256": "18682e3582a8050add72292b284e97d69faffda38ab8bcd6699de5c5bed0e891"
       },
       {
         "path": "frontend/app/worldlab.js",

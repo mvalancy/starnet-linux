@@ -146,9 +146,22 @@ the onboarding MEDIUM reasoning (0.12.4 never sent it) — a product default to 
 
 The tagged head adds only the final notes, this record and the claims re-lock to `cde296a42` (no product source).
 
+## Published (2026-09-28)
+
+- Published 2026-09-28 02:21Z on the owner's go. `release:verify-host --expect-version 0.12.5`: ALL PASS on all three
+  platforms. The source-release mirror (sync run 36369564919) shows v0.12.5 as Latest. Public update canary (G1 run
+  36369563069, `public_canary=true`, baseline v0.12.4): GREEN, an installed v0.12.4 updated itself to 0.12.5 through the
+  Update Center.
+- Both release pages now carry the full organized changelog (this release's `RELEASE_NOTES.md` on trunk), fact-checked
+  against the tagged code. The published update feed (`latest.json`) keeps the notes it shipped with, so the Update
+  Center text is unchanged.
+- Found after publish, fix owed next release: a routine whose agent is set to Follow station default is refused ("no
+  model is configured"), because `cronIdentityFor`/`cronModelFor` never fall back to the station default the way
+  `channelRunConfigFor` does. Listed under Known issues with the workaround.
+
 ## Still owed
 
-- **After the tag push** (fires the release train; it stages a DRAFT only): watch the train, review the draft, run
+- ~~**After the tag push**~~ (done, see Published above) (fires the release train; it stages a DRAFT only): watch the train, review the draft, run
   `t0-clean-install-proof` and `g1-packaged-lifecycle` against the draft, then the owner publishes; then
   `release:verify-host --expect-version 0.12.5` and an update canary.
 - Not performed for this release: real-account sign-in, the attended 48-hour soak (waived), an Apple Silicon installed UI
