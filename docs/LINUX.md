@@ -1,6 +1,6 @@
 # Linux desktop builds
 
-This is community-maintained Linux support in [mvalancy/starnet](https://github.com/mvalancy/starnet/tree/linux).
+This is community-maintained Linux support in [mvalancy/starnet-linux](https://github.com/mvalancy/starnet-linux/tree/linux).
 Upstream supports Windows and macOS; this fork is not an official Linux release.
 For a dedicated browser server, see [Linux server setup](LINUX_SERVER.md).
 
