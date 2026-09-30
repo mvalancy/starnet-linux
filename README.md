@@ -103,8 +103,8 @@ Requirements: Node.js 18+ (Node.js 22 matches CI), Git. Rust and the
 The sidecar uses Node core modules only, so it runs without installing anything:
 
 ```bash
-git clone https://github.com/androoAGI/starnet.git
-cd starnet
+git clone --branch linux https://github.com/mvalancy/starnet-linux.git
+cd starnet-linux
 node sidecar/index.js
 ```
 

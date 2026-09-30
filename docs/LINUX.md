@@ -16,6 +16,13 @@ be run manually. Its package artifacts are uploaded only after the smoke checks 
 
 ## Build on Ubuntu
 
+Start with this fork's maintained branch:
+
+```bash
+git clone --branch linux https://github.com/mvalancy/starnet-linux.git
+cd starnet-linux
+```
+
 Use Node.js 22, Rust stable (installed with [rustup](https://rustup.rs)), and a native machine
 matching the desired package architecture. On Ubuntu 22.04/24.04:
 
