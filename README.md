@@ -1,3 +1,16 @@
+# StarNet Linux — community-maintained fork
+
+Linux **x86_64 and ARM64** desktop builds, plus an optional private server running as its own
+`starnet` account. This fork follows [androoAGI/starnet](https://github.com/androoAGI/starnet);
+Linux support is maintained here and is not endorsed or supported by upstream.
+
+**[Linux desktop setup](docs/LINUX.md) · [Private Linux server](docs/LINUX_SERVER.md)**
+
+Use the `linux` branch for the maintained version. Linux packages are currently source/CI
+builds; the upstream download links below provide Windows and macOS releases.
+
+---
+
 <div align="center">
 
 <img src=".github/media/starnet-logo-glow.png" alt="StarNet" width="560">
