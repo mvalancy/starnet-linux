@@ -181,7 +181,12 @@ function classifyPolicy(rel, st) {
   if (EPHEMERAL_TOP.has(top)) return { action: 'skip', reason: 'ephemeral browser/runtime profile; sign-in must be re-established' };
   if (SYSTEM_SECRET_TOP.has(top)) return { action: 'skip', reason: 'system-managed credential material is intentionally excluded', reauth: { kind: top === '.secrets' ? 'credential-store' : 'provider', id: top, reason: 'Reauthentication required on the restored profile.' } };
   if (EPHEMERAL_FILES.has(p.toLowerCase()) || /(?:^|\/)\.owner\.lock$/.test(p.toLowerCase()) || /\.tmp(?:$|\.)/.test(p.toLowerCase())) return { action: 'skip', reason: 'ephemeral lock/process/temp state' };
-  if (/\.bak$/.test(p.toLowerCase()) || /\.corrupt-\d+$/.test(p.toLowerCase())) return { action: 'skip', reason: 'superseded recovery/forensic generation; bundle versioning is authoritative' };
+  // quarantineCorrupt (index.js) names a torn store <file>.corrupt-<pid>-<seq>: the old \d+$ never matched that, so a
+  // quarantined channels/secrets.json or connectors/servicekeys.json was copied RAW into every pre-update backup.
+  if (/\.bak$/.test(p.toLowerCase()) || /\.corrupt-[\d-]+$/.test(p.toLowerCase())) return { action: 'skip', reason: 'superseded recovery/forensic generation; bundle versioning is authoritative' };
+  // Any OTHER derivative of a credential store (a stray copy, a future suffix) can only be sanitized under its exact
+  // name below; never include one raw.
+  if (/^(?:channels\/secrets|connectors\/(?:state|connectors|oauth|servicekeys))\.json./i.test(p)) return { action: 'skip', reason: 'derivative copy of a credential store; only the live store is captured (sanitized)' };
   if (/^connectors\/(?:state|connectors|oauth|servicekeys)\.json$/i.test(p) || /^channels\/secrets\.json$/i.test(p) || /^permissions\.allow\.json$/i.test(p)) return { action: 'sanitize' };
   return { action: 'include' };
 }

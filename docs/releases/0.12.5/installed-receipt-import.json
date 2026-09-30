@@ -1,0 +1,13 @@
+{
+  "sourceRun": 36364223578,
+  "sourceReceipt": "candidate-shell-lifecycle/installed-smoke/last-smoke.json",
+  "candidate": "cde296a42e1d11cccc0b244afb8943cfe921901c",
+  "originalArtifactPath": "C:\\Users\\runneradmin\\AppData\\Local\\StarNet\\skynet-desktop.exe",
+  "localArtifactPath": "C:\\Users\\andro\\AppData\\Local\\Temp\\claude\\C--Users-andro-Desktop-gen\\7fbd04a5-6bf9-448c-88de-89d0eadb1dce\\scratchpad\\extracted-cde296a42\\skynet-desktop.exe",
+  "sha256": "78f3e8ad5a6d55b51a53b44cd239ff0d187bb646be799ce4f035347884d6778f",
+  "size": 10194696,
+  "extractedFrom": "StarNet_0.12.5_x64-setup.exe sha256 a13fca01e81680d25701c69f9f65540161fdea2a784e683a0d5f6d0439b2a94b (desktop-build run 36361499855) with 7-Zip 26.03, whose installer and 7zr.exe match the official ip7z/7zip release digests",
+  "executableBytesIdentical": true,
+  "evidenceBytesIdentical": true,
+  "change": "Artifact path relocation only; verdict, observed runtime identity, checks and timestamps unchanged"
+}

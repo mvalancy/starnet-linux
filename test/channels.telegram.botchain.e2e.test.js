@@ -224,8 +224,13 @@ const STATION = 'STATIONTOKEN', TOK_A = 'TOKCHAIN';
       catch (_) { return []; }
     };
     A.ok(chanHist('research-agent').some(t => t.role === 'user' && String(t.content || '').indexOf('research the market') >= 0), 'stage one (the bound agent) owns the DM turn');
-    A.ok(chanHist('writer-agent').some(t => t.role === 'user' && String(t.content || '').indexOf('PIPELINE HANDOFF') >= 0), 'the downstream stage owns its handoff turn');
-    A.ok(chanHist('writer-agent').some(t => t.role === 'assistant' && String(t.content || '').indexOf('Final line answer') >= 0), 'the downstream stage owns its answer');
+    // sec-taint 09-25: a hop's history is keyed by THIS chat's line lineage (hop_<digest>), never the downstream
+    // agent's shared file — so another chat of writer-agent can never replay this chat's handoff
+    const hopFiles = fs.readdirSync(path.join(ws, 'channels')).filter(f => /^hop_[0-9a-f]{32}\.history\.json$/.test(f)).map(f => f.replace(/\.history\.json$/, ''));
+    const hopHist = [].concat(...hopFiles.map(chanHist));
+    A.ok(hopHist.some(t => t.role === 'user' && String(t.content || '').indexOf('PIPELINE HANDOFF') >= 0), 'the downstream stage owns its handoff turn (per-chat hop history)');
+    A.ok(hopHist.some(t => t.role === 'assistant' && String(t.content || '').indexOf('Final line answer') >= 0), 'the downstream stage owns its answer (per-chat hop history)');
+    A.ok(!chanHist('writer-agent').some(t => String(t.content || '').indexOf('PIPELINE HANDOFF') >= 0), 'the handoff never lands in the downstream agent\'s SHARED history');
   } finally {
     try { child.kill(); } catch (_) {}
     await new Promise(resolve => tg.close(resolve));

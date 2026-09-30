@@ -15,10 +15,11 @@
    whether a missing checkpoint should block a dangerous tool.
 
    makeCheckpointStore({ fs, pathMod, root, runGit, clock, keep?, scopeIdOf?, allowWorkTree? })
-     -> { snapshot, restore, list, isValidId }
+     -> { snapshot, restore, restoreDetailed, list, isValidId }
      runGit(args:string[], { cwd }) -> Promise<{ code:int|string, stdout, stderr }>   // resolves, never rejects
      snapshot(agentId, { runId, turn, label, workTree? }) -> Promise<{ id, created:bool, files, bytes } | null>
      restore(agentId, snapshotId)              -> Promise<bool>   // only restores an id IN this agent's index
+     restoreDetailed(agentId, snapshotId)      -> Promise<{ ok, reason?, preRestoreId? }>   // + the pre-restore undo id
      list(agentId)                             -> { version, snapshots } */
 'use strict';
 (function (root, factory) {
@@ -354,6 +355,14 @@
       const aid = String(agentId);
       const scope = externalScope(aid, meta.workTree, meta.authorizedWorkTree === true);
       if (!scope || !saveScope(aid, scope)) return null;
+      return commitSnapshot(aid, scope, meta, null);
+    }
+    /* commitSnapshot — the one snapshot code path, on an already-resolved scope. opts.always: commit even when
+       nothing changed (--allow-empty) so the index gets its OWN labelled row (restore's pre-restore undo point);
+       opts.skipCeiling: don't run the size-ceiling sweep, whose re-init could drop the very history a caller is
+       about to restore from. Fail-open: null on any git error. */
+    async function commitSnapshot(aid, scope, meta, opts) {
+      meta = meta || {}; opts = opts || {};
       try {
         fs.mkdirSync(workTreeFor(aid, scope), { recursive: true });
         fs.mkdirSync(gitDirFor(aid, scope), { recursive: true });
@@ -365,7 +374,7 @@
         const add = await git(aid, scope, ['add', '-A']);
         if (add.code !== 0) return null;
         const hasHead = (await git(aid, scope, ['rev-parse', '--verify', '-q', 'HEAD'])).code === 0;
-        if (hasHead) {
+        if (hasHead && !opts.always) {
           const diff = await git(aid, scope, ['diff', '--cached', '--quiet', 'HEAD']);   // code 0 => nothing staged changed
           if (diff.code === 0) {
             const head = (await git(aid, scope, ['rev-parse', 'HEAD'])).stdout.trim();
@@ -377,7 +386,7 @@
         }
         const label = meta.label != null ? String(meta.label) : 'snapshot';
         const commitArgs = ['commit', '-q', '-m', label];
-        if (!hasHead) commitArgs.push('--allow-empty');                          // baseline even for an empty workspace
+        if (!hasHead || opts.always) commitArgs.push('--allow-empty');           // baseline even for an empty workspace
         const com = await git(aid, scope, commitArgs);
         if (com.code !== 0) return null;
         const sha = (await git(aid, scope, ['rev-parse', 'HEAD'])).stdout.trim();
@@ -410,34 +419,54 @@
           saveIndex(aid, index);
         } catch (e) { failNote('checkpoint.index.persist', e); }
         // bound the shadow repo's on-disk footprint after each real commit (no-op unless past the ceiling).
-        try { await enforceSizeCeiling(aid, scope); } catch (e) { failNote('checkpoint.sizeCeiling', e); }
+        if (!opts.skipCeiling) { try { await enforceSizeCeiling(aid, scope); } catch (e) { failNote('checkpoint.sizeCeiling', e); } }
         return { id: fullId, created: true, files: size.files, bytes: size.bytes, workTree: scope.id ? scope.workTree : '' };
       } catch (e) { return null; }                                               // fail-open
     }
 
     /* restore — hard-reset the agent's work-tree to a snapshot (and remove files created since). Only restores a
-       snapshotId that is RECORDED in this agent's index — never an arbitrary ref. Returns false on any failure. */
-    async function restore(agentId, snapshotId) {
-      if (!AID_RE.test(String(agentId || '')) || !cp.isValidId(String(snapshotId || ''))) return false;
+       snapshotId that is RECORDED in this agent's index — never an arbitrary ref. Returns false on any failure.
+
+       UNDO THE UNDO. `reset --hard` + `clean -fd` used to run with no snapshot of the CURRENT state: the
+       Commander's own hand edits since the last agent snapshot, and any new untracked file, were destroyed and
+       existed nowhere in the shadow history (audit probe 09-22: an edited v3 and a new draft-by-commander.txt,
+       both gone). Before touching the tree, restore now commits the current work tree — tracked changes AND
+       untracked non-ignored files, through the SAME `add -A` path every snapshot uses, so the same ignore rules
+       apply — as its own labelled 'pre-restore' row in this agent's index (always a new row, even when nothing
+       changed, so the undo point is explicit). Restoring THAT id brings the edits and the untracked files back.
+       If the pre-restore snapshot cannot be taken AND proven in the index, the restore REFUSES and the tree is
+       untouched: a rewind must never destroy state it cannot give back. Files the ignore rules exclude are
+       neither snapshotted nor removed (`clean -fd` without -x), exactly as before.
+         restoreDetailed(agentId, id) -> { ok, reason?, preRestoreId? }   restore(agentId, id) -> bool */
+    async function restoreDetailed(agentId, snapshotId) {
+      if (!AID_RE.test(String(agentId || '')) || !cp.isValidId(String(snapshotId || ''))) return { ok: false, reason: 'invalid' };
       const aid = String(agentId), fullId = String(snapshotId);
       // resilient load: if index.json was wiped but the commit still exists, a git-log rebuild re-admits it so
       // a rollback target survives an index loss (the commits are the truth).
       const record = cp.findById(await loadIndexResilient(aid), fullId);
-      if (!record) return false;                                                  // refuse an id we didn't record
+      if (!record) return { ok: false, reason: 'unknown' };                       // refuse an id we didn't record
       const scope = record.scopeId ? readScope(aid, String(record.scopeId))
         : { id: '', workTree: defaultWorkTreeFor(aid), prefix: '' };
-      if (!scope) return false;                                                   // revoked/missing/mismatched project root
+      if (!scope) return { ok: false, reason: 'unavailable' };                    // revoked/missing/mismatched project root
       const sha = record.gitCommit || fullId;
-      if (!cp.isValidId(String(sha || ''))) return false;
-      if (scope.id && fullId !== scope.prefix + sha) return false;               // root identity is part of the id
+      if (!cp.isValidId(String(sha || ''))) return { ok: false, reason: 'invalid' };
+      if (scope.id && fullId !== scope.prefix + sha) return { ok: false, reason: 'invalid' };   // root identity is part of the id
+      const pre = await commitSnapshot(aid, scope,
+        { runId: '', turn: 0, label: 'pre-restore (before rewinding to ' + String(sha).slice(0, 12) + ')' },
+        { always: true, skipCeiling: true });
+      let preRecorded = false;
+      try { preRecorded = !!(pre && pre.created && cp.findById(await loadIndexResilient(aid), pre.id)); }
+      catch (e) { failNote('checkpoint.restore.preRestoreIndex', e); }
+      if (!preRecorded) return { ok: false, reason: 'pre_restore_failed' };       // nothing touched: no undo point, no rewind
       try {
         const reset = await git(aid, scope, ['reset', '--hard', '-q', sha]);
-        if (reset.code !== 0) return false;
+        if (reset.code !== 0) return { ok: false, reason: 'git_failed', preRestoreId: pre.id };
         const clean = await git(aid, scope, ['clean', '-fd', '-q']);             // drop files added after the snapshot
-        if (clean.code !== 0) return false;
-        return true;
-      } catch (e) { return false; }
+        if (clean.code !== 0) return { ok: false, reason: 'git_failed', preRestoreId: pre.id };
+        return { ok: true, preRestoreId: pre.id };
+      } catch (e) { failNote('checkpoint.restore.git', e); return { ok: false, reason: 'git_failed', preRestoreId: pre.id }; }
     }
+    async function restore(agentId, snapshotId) { return (await restoreDetailed(agentId, snapshotId)).ok === true; }
 
     function withAvailability(aid, index) {
       return cp.toIndex((index && index.snapshots || []).map(function (s) {
@@ -457,7 +486,7 @@
       return withAvailability(aid, await loadIndexResilient(aid));
     }
 
-    return { snapshot: snapshot, restore: restore, list: list, listResilient: listResilient, rebuild: rebuildIndexFromGit, enforceSizeCeiling: enforceSizeCeiling, isValidId: cp.isValidId };
+    return { snapshot: snapshot, restore: restore, restoreDetailed: restoreDetailed, list: list, listResilient: listResilient, rebuild: rebuildIndexFromGit, enforceSizeCeiling: enforceSizeCeiling, isValidId: cp.isValidId };
   }
 
   return { makeCheckpointStore: makeCheckpointStore };

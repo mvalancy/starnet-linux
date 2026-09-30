@@ -94,6 +94,13 @@ async function driveShell(fixture, decision) {
     }
   });
   try {
+    // A connected (synthetic) Spotify account: this test is about Full Power projecting every capability FAMILY, and
+    // a jukebox tool is only "available" when Spotify is connected — without a token the run defers spotify_* as
+    // certainly unavailable (named in the prompt, revealable via tool_search). No Spotify call is made here.
+    fs.mkdirSync(path.join(fixture.workspace, '.secrets'), { recursive: true });
+    fs.writeFileSync(path.join(fixture.workspace, '.secrets', 'spotify.json'), JSON.stringify({
+      clientId: 'full-access-test', accessToken: 'synthetic-access', refreshToken: 'synthetic-refresh', expiresAt: Date.now() + 3600e3, scope: ''
+    }));
     await fixture.start();
     const seeded = await fixture.json('POST', '/api/roster', {
       updatedAt: 100,

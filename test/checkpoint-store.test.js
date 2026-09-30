@@ -63,10 +63,17 @@ function runGit(args, opts) {
         ? Promise.resolve({ code: 1, stdout: '', stderr: 'simulated clean failure' })
         : runGit(args, opts)
     });
-    A.eq(await cleanFailStore.restore(aid, s1.id), false,
+    const cleanFail = await cleanFailStore.restoreDetailed(aid, s1.id);
+    A.eq(cleanFail.ok, false,
       'restore reports failure when git clean cannot remove post-snapshot files');
+    // The pre-restore undo point (checkpoint-restore-undoable.test.js) now commits the post-snapshot file BEFORE
+    // the reset, so the reset itself removes it; what a failed clean must still guarantee is that nothing is lost:
+    // the file is recoverable from the undo point the failed restore reports.
+    A.ok(cleanFail.preRestoreId && store.list(aid).snapshots.some(s => s.id === cleanFail.preRestoreId),
+      'a failed clean still leaves a recorded pre-restore undo point holding the post-snapshot file');
+    A.ok(await store.restore(aid, cleanFail.preRestoreId), 'the undo point restores');
     A.ok(fs.existsSync(path.join(wt, 'untracked-after-snapshot.txt')),
-      'a failed clean leaves the post-snapshot file present (the restore is incomplete)');
+      'the post-snapshot file is back from the undo point (the incomplete restore lost nothing)');
     const ok = await store.restore(aid, s1.id);
     A.ok(ok, 'restore to baseline succeeded');
     A.eq(read('report.md'), 'line one\nline two\n', 'edited file reverted byte-exact');

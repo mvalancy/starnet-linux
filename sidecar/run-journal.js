@@ -3,15 +3,36 @@
  * A finished transcript is not enough when the process dies between a tool dispatch and runOnce's
  * final transcript drain.  This journal records provider-valid message checkpoints plus tool intent/result
  * boundaries.  Recovery is deliberately conservative: an intent without a durable result is never replayed.
+ *
+ * Checkpoints are DELTAS (2026-09-22, journal-linear-growth).  A run checkpoint used to re-serialize every message
+ * the run had created so far, so an 80-turn run wrote ~82x its own content (131 MB at 20 KB/turn).  Now:
+ *   checkpoint        a full snapshot of the run-created messages (phase 'initial' stays the separate base prompt)
+ *   checkpoint_delta  { from, messages } — only the messages appended since the last journaled state
+ * checkpointMessages() tracks the exact message OBJECTS it already journaled plus a leaf signature of each, and
+ * writes a fresh snapshot whenever the loop REWROTE its working array (a compaction fold, micro elision, a
+ * continuation collapse, an in-place content edit) — i.e. whenever the journaled objects are no longer an unchanged
+ * prefix of the current list.  Reconstruction (last snapshot + later deltas) therefore equals what the old
+ * every-checkpoint-is-a-snapshot scheme recorded, and a journal made only of legacy snapshots analyzes unchanged.
+ *
+ * Damage classes (2026-09-22): a final record torn by power loss (it does not parse, and nothing follows it) is the
+ * ordinary crash signature — under the fsync contract that record never became durable, so the valid hash-chained
+ * prefix is exactly as trustworthy as an intact journal.  It is cut off with a `.torn-*` forensic copy and stays
+ * resolvable/continuable.  Anything else (a bad record with records after it, a complete-but-invalid record, a
+ * record glued after torn bytes) remains forensic-only with its `.corrupt-*` copy, exactly as before.
  */
 'use strict';
 
 const fsDefault = require('fs');
 const pathDefault = require('path');
 const crypto = require('crypto');
+// failopen.note — the tagged SYNC swallow: a fail-open catch must never be invisible.
+const { note: failNote } = require('./failopen.js');
 
 const VERSION = 1;
 const MAX_STRING = 200000;
+// cloneSafe keeps at most this many array elements; a checkpoint list longer than this is split across records so
+// no run-created message is ever silently truncated out of the recovery copy.
+const MAX_ARRAY = 1000;
 // New callers stamp prepared intents with this marker. Its presence proves the caller also owns the separate
 // durable `tool_dispatch` boundary. Legacy intents have no such proof and must remain fail-closed: before this
 // protocol existed, an intent was written immediately before registry.dispatch and could already represent an
@@ -54,13 +75,39 @@ function cloneSafe(value, redact, depth, key) {
     return out.slice(0, MAX_STRING);
   }
   if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
-  if (Array.isArray(value)) return value.slice(0, 1000).map(v => cloneSafe(v, redact, depth + 1, key));
+  if (Array.isArray(value)) return value.slice(0, MAX_ARRAY).map(v => cloneSafe(v, redact, depth + 1, key));
   if (typeof value === 'object') {
     const out = {};
     for (const k of Object.keys(value).slice(0, 200)) out[k] = cloneSafe(value[k], redact, depth + 1, k);
     return out;
   }
   return String(value);
+}
+
+// Leaf signature of one message: every primitive leaf in key order plus private structure sentinels (objects no
+// primitive can equal). An untouched message keeps the very same string references, so comparing two signatures
+// is O(nodes), not O(bytes). Equal signatures => identical cloneSafe output; any in-place edit changes a leaf.
+const SIG_OBJ = {}, SIG_ARR = {}, SIG_END = {}, SIG_DEEP = {};
+function leafSignature(value, out, depth) {
+  if (value === null || typeof value !== 'object') { out.push(value); return out; }
+  // cloneSafe stops serializing at its depth limit (a message sits two levels below the payload root), so nothing
+  // deeper can change the journaled bytes; the reference still pins identity conservatively.
+  if (depth > 20) { out.push(SIG_DEEP, value); return out; }
+  if (Array.isArray(value)) {
+    out.push(SIG_ARR, value.length);
+    for (let i = 0; i < value.length; i++) leafSignature(value[i], out, depth + 1);
+  } else {
+    const keys = Object.keys(value);
+    out.push(SIG_OBJ, keys.length);
+    for (const k of keys) { out.push(k); leafSignature(value[k], out, depth + 1); }
+  }
+  out.push(SIG_END);
+  return out;
+}
+function sameSignature(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (!Object.is(a[i], b[i])) return false;
+  return true;
 }
 
 function runFileName(runId) {
@@ -100,17 +147,50 @@ function makeFsIo(opts) {
     create(runId, line) { append(runId, line, true); },
     append(runId, line) { append(runId, line, false); },
     read(runId) { return fs.readFileSync(file(runId), 'utf8'); },
+    fileOf(runId) { return file(runId); },
+    // Durable damage evidence left by an earlier repair of this journal: a `.corrupt*` sibling (forensic) or a
+    // `.torn-*` sibling (a torn tail was cut off; still actionable). Temp `.repair-*` leftovers are not evidence.
+    evidence(filePath) {
+      const prefix = path.basename(filePath) + '.';
+      const out = { corrupt: false, torn: false };
+      for (const n of fs.readdirSync(path.dirname(filePath))) {
+        if (n.indexOf(prefix) !== 0) continue;
+        const rest = n.slice(prefix.length);
+        if (rest.indexOf('corrupt') === 0) out.corrupt = true;
+        else if (rest.indexOf('torn-') === 0) out.torn = true;
+      }
+      return out;
+    },
     list() { return fs.readdirSync(dir).filter(n => /^[a-f0-9]{64}\.jsonl$/.test(n)).map(n => path.join(dir, n)); },
     readFile(filePath) { return fs.readFileSync(filePath, 'utf8'); },
-    remove(runId) { try { fs.unlinkSync(file(runId)); } catch (e) { if (!e || e.code !== 'ENOENT') throw e; } },
+    // A valid final record whose '\n' never landed: terminate it in place (fsync'd) so the next append starts a
+    // new line instead of gluing two records into one unparseable line. Nothing is rewritten or discarded.
+    terminate(filePath) {
+      let fd = null;
+      try { fd = fs.openSync(filePath, 'a'); writeAll(fs, fd, '\n'); fs.fsyncSync(fd); }
+      finally { if (fd != null) { try { fs.closeSync(fd); } catch (e) { failNote('run-journal.terminate.close', e); } } }
+    },
+    remove(runId) {
+      const target = file(runId);
+      try { fs.unlinkSync(target); } catch (e) { if (!e || e.code !== 'ENOENT') throw e; }
+      // A torn-tail copy held only the never-durable bytes of a record cut off by a crash; once the run it belongs
+      // to is settled and retired, it is retired with it. `.corrupt*` forensic copies are never touched here.
+      try {
+        const prefix = path.basename(target) + '.torn-';
+        for (const n of fs.readdirSync(dir)) if (n.indexOf(prefix) === 0) fs.unlinkSync(path.join(dir, n));
+      } catch (e) { failNote('run-journal.remove.torn-copy', e); }
+    },
     quarantine(filePath) {
       const to = filePath + '.corrupt';
       try { fs.renameSync(filePath, to); } catch (_) {}
       return to;
     },
-    repair(filePath, records) {
+    repair(filePath, records, kind) {
       const nonce = crypto.randomBytes(5).toString('hex');
-      const backup = filePath + '.corrupt-' + nonce;
+      // The sibling's NAME is the durable damage class: `.torn-*` (only the final record was cut off; the journal
+      // stays actionable) vs `.corrupt-*` (forensic-only). It is written before the active file is replaced, so a
+      // crash mid-repair can never leave an actionable journal whose damage evidence says otherwise.
+      const backup = filePath + (kind === 'torn' ? '.torn-' : '.corrupt-') + nonce;
       const tmp = filePath + '.repair-' + nonce;
       const body = records.map(r => JSON.stringify(r)).join('\n') + '\n';
       let fd = null;
@@ -144,23 +224,46 @@ function makeFsIo(opts) {
   };
 }
 
+// True when some suffix of an unparseable line is itself a complete journal record: bytes were appended after a
+// torn record without repairing it first, so a record its writer believed durable would be lost by a tail cut.
+function hasGluedRecord(line) {
+  for (let at = line.indexOf('{"v":', 1); at > 0; at = line.indexOf('{"v":', at + 1)) {
+    let r;
+    try { r = JSON.parse(line.slice(at)); } catch (_) { continue; }   // not a record boundary: keep scanning
+    if (r && r.v === VERSION && typeof r.hash === 'string' && typeof r.seq === 'number') return true;
+  }
+  return false;
+}
+
+/* damage: 'none' | 'torn_tail' (the LAST non-empty line does not parse and carries no glued record — the only
+   damage a crash mid-append produces) | 'corrupt' (anything else: an unparseable line with records after it, a
+   parseable record that fails version/sequence/chain/hash, glued records). `unterminated`: the file is intact but
+   its final record's newline never landed. */
 function parseRecords(raw) {
   const records = [];
-  let prev = '', corrupt = false;
-  const lines = String(raw || '').split(/\r?\n/);
-  for (const line of lines) {
+  let prev = '', corrupt = false, damage = 'none';
+  const text = String(raw || '');
+  const lines = text.split(/\r?\n/);
+  let lastLine = -1;
+  for (let i = lines.length - 1; i >= 0; i--) if (lines[i].trim()) { lastLine = i; break; }
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     if (!line.trim()) continue;
     let r;
-    try { r = JSON.parse(line); } catch (_) { corrupt = true; break; }
+    try { r = JSON.parse(line); } catch (_) {
+      corrupt = true;
+      damage = (i === lastLine && !hasGluedRecord(line)) ? 'torn_tail' : 'corrupt';
+      break;
+    }
     if (!r || r.v !== VERSION || r.seq !== records.length + 1 || r.prev !== prev || r.hash !== hashRecord(r)) {
-      corrupt = true; break;
+      corrupt = true; damage = 'corrupt'; break;
     }
     records.push(r); prev = r.hash;
   }
-  return { records, corrupt };
+  return { records, corrupt, damage, unterminated: !corrupt && records.length > 0 && !/\n$/.test(text) };
 }
 
-function analyze(records, corrupt) {
+function analyze(records, corrupt, damage) {
   const first = records[0] || null;
   const last = records[records.length - 1] || null;
   const intents = new Map();
@@ -169,13 +272,29 @@ function analyze(records, corrupt) {
   const recoveryAttempts = [];
   let baseCheckpoint = null;
   let latestCheckpoint = null;
+  let runCreated = null;        // reconstructed run-created messages: last snapshot + every later delta
+  let deltaMismatch = false;    // a delta that does not extend exactly the reconstructed list (never written by us)
   let resolution = null;
   let finishPayload = null;
   let continuation = null;
+  let taintedBy = '';           // first durable taint latch (a 'taint' record) — see makeRunJournal.taint
   for (const r of records) {
+    if (r.type === 'taint' && !taintedBy && r.payload && r.payload.source) taintedBy = String(r.payload.source).slice(0, 200);
     if (r.type === 'checkpoint') {
       if (r.payload && r.payload.phase === 'initial' && !baseCheckpoint) baseCheckpoint = r.payload;
-      else latestCheckpoint = r.payload;
+      else {
+        latestCheckpoint = r.payload;
+        runCreated = Array.isArray(r.payload && r.payload.messages) ? r.payload.messages.slice() : [];
+      }
+    }
+    if (r.type === 'checkpoint_delta' && r.payload) {
+      const current = runCreated || [];
+      if (Number(r.payload.from) !== current.length) deltaMismatch = true;
+      else {
+        for (const m of (Array.isArray(r.payload.messages) ? r.payload.messages : [])) current.push(m);
+        runCreated = current;
+        latestCheckpoint = r.payload;
+      }
     }
     if (r.type === 'tool_intent' && r.payload && r.payload.callId) intents.set(String(r.payload.callId), r.payload);
     if (r.type === 'tool_dispatch' && r.payload && r.payload.callId) dispatched.set(String(r.payload.callId), r.payload);
@@ -220,6 +339,12 @@ function analyze(records, corrupt) {
   }
   const terminal = finishPayload !== null;
   const transcriptAck = !!(terminal && finishPayload.transcriptAck === true);
+  if (latestCheckpoint) {
+    // The latest phase/turn with the reconstructed message list (a delta's `from` is bookkeeping, not state).
+    const rest = Object.assign({}, latestCheckpoint);
+    delete rest.from;
+    latestCheckpoint = Object.assign(rest, { messages: runCreated || [] });
+  }
   let checkpoint = latestCheckpoint || baseCheckpoint || (first && first.type === 'begin' ? first.payload : {});
   if (baseCheckpoint && latestCheckpoint) {
     checkpoint = Object.assign({}, latestCheckpoint, {
@@ -232,19 +357,38 @@ function analyze(records, corrupt) {
     ? resolution.outcomes.map(x => String((x && x.callId) || '')).sort() : [];
   const resolutionValid = !!(resolution && uncertainIds.length && stable(uncertainIds) === stable(resolutionIds)
     && resolution.outcomes.every(x => x && /^(?:happened|did_not_happen|unknown)$/.test(String(x.outcome || ''))));
+  // Explicit damage verdict. `corrupt` keeps its historical meaning (the parse stopped early); `forensic` is what
+  // blocks in-app action: any damage except a lone torn final record, or a delta chain we did not write.
+  const damageClass = deltaMismatch ? 'corrupt' : (corrupt ? (damage === 'torn_tail' ? 'torn_tail' : 'corrupt') : 'none');
+  const forensic = damageClass === 'corrupt';
+  const status = resolutionValid ? 'resolved' : (uncertain.length ? 'needs_review' : (terminal ? (transcriptAck ? 'finished' : 'awaiting_commit') : 'resumable'));
+  const exposedContinuation = (resolutionValid || !uncertain.length) ? continuation : null;
+  // A source journal is settled once its continuation finished AND that continuation's own transcript
+  // acknowledgement was durably recorded first (the same order finishAndRetire uses for an ordinary run).
+  const continuationSettled = !!(exposedContinuation && exposedContinuation.state === 'finished'
+    && exposedContinuation.transcriptAck === true);
   return {
-    runId: first ? first.runId : '', records: records.length, corrupt: !!corrupt, terminal,
+    runId: first ? first.runId : '', records: records.length, corrupt: !!corrupt || deltaMismatch, terminal,
+    damage: damageClass, forensic,
     // A terminal run event cannot prove what happened inside a tool that returned no durable result. The intent
     // remains review-required even if the loop caught an exception and cleanly emitted run.end afterward.
-    status: resolutionValid ? 'resolved' : (uncertain.length ? 'needs_review' : (terminal ? (transcriptAck ? 'finished' : 'awaiting_commit') : 'resumable')),
+    status,
+    // Retirement: an ordinary finished run, or a settled continuation source. Never forensic, never unresolved.
+    retirable: !forensic && (status === 'finished'
+      || (continuationSettled && (status === 'resolved' || status === 'resumable'))),
     meta: first && first.type === 'begin' ? first.payload : {},
+    // UNTRUSTED-CONTENT TAINT the run carried (begin meta's initialTaint, else its first mid-run latch). A recovery
+    // continuation replays this run's context, so it must start with the same taint (index.js replayedTaint).
+    taintedBy: (first && first.type === 'begin' && first.payload && first.payload.initialTaint
+      ? String(first.payload.initialTaint).slice(0, 200) : '') || taintedBy || null,
+    firstTs: first ? Number(first.ts) || 0 : 0, lastTs: last ? Number(last.ts) || 0 : 0,
     uncertain, replayableReads, replayablePrepared, completed, recoveryAttempts,
     baseCheckpoint: baseCheckpoint || {}, deltaCheckpoint: latestCheckpoint || {},
     checkpoint: checkpoint || {}, finish: finishPayload,
     resolution: resolutionValid ? resolution : null,
     // Automatic continuation exists only on uncertainty-free journals. Reviewed continuation remains bound to
     // a valid operator resolution. Never expose a continuation record alongside unresolved uncertainty.
-    continuation: (resolutionValid || !uncertain.length) ? continuation : null
+    continuation: exposedContinuation
   };
 }
 
@@ -259,42 +403,117 @@ function makeRunJournal(opts) {
   const now = opts.clock && typeof opts.clock.now === 'function' ? () => opts.clock.now() : () => 0;
   const redact = typeof opts.redact === 'function' ? opts.redact : s => s;
   const live = new Map();
+  // Runs THIS instance began and has not yet recorded a finish for. One sidecar owns a journal directory, so an
+  // unfinished journal outside this set belongs to a process that is gone: it is interrupted, not in flight.
+  const owned = new Set();
+  // Delta bookkeeping per active run: the exact message objects already journaled and their leaf signatures.
+  const trackers = new Map();
+
+  // A journal written by an earlier process (never recovered in this one) must be made append-safe before the
+  // first new record: derive the chain position from disk, cut a torn tail, terminate an unterminated final line.
+  // Appending blind used to restart the chain at seq 1 (or glue onto torn bytes), destroying the journal.
+  function adopt(runId) {
+    let raw;
+    try { raw = io.read(runId); }
+    catch (e) { if (e && e.code === 'ENOENT') return; throw e; }
+    if (raw == null || raw === '') return;
+    const file = typeof io.fileOf === 'function' ? io.fileOf(runId) : runId;
+    const state = recoverFile(file, raw);
+    if (state.repairError) throw new Error('run journal is not append-safe: ' + state.repairError);
+    if (state.quarantinedTo) throw new Error('run journal had no valid record and was quarantined');
+    if (state.runId !== runId) throw new Error('run journal identity does not match its file');
+  }
 
   function record(runId, type, payload, fresh) {
     runId = String(runId || '');
     if (!runId) throw new Error('run journal runId is required');
+    if (!fresh && !live.has(runId)) adopt(runId);
     const prior = live.get(runId) || { seq: 0, hash: '' };
     const r = { v: VERSION, runId, seq: prior.seq + 1, ts: now(), type, payload: cloneSafe(payload || {}, redact, 0), prev: prior.hash };
     r.hash = hashRecord(r);
     const line = JSON.stringify(r);
     if (fresh) io.create(runId, line); else io.append(runId, line);
     live.set(runId, { seq: r.seq, hash: r.hash });
+    if (type === 'begin') owned.add(runId);
+    if (type === 'finish') { owned.delete(runId); trackers.delete(runId); }
     return r;
+  }
+
+  // Journal the run-created message list as a delta whenever the previously journaled objects are still an
+  // unchanged prefix of it; otherwise (the loop rewrote its working array) as a full snapshot. Lists longer than
+  // MAX_ARRAY are chunked so cloneSafe's array bound never drops a message.
+  function checkpointMessages(runId, payload) {
+    runId = String(runId || '');
+    payload = payload || {};
+    const list = Array.isArray(payload.messages) ? payload.messages.slice() : [];
+    const head = Object.assign({}, payload);
+    delete head.messages; delete head.from;
+    const sigs = list.map(m => leafSignature(m, [], 0));
+    const t = trackers.get(runId);
+    let from = -1;
+    if (t && t.objs.length <= list.length) {
+      from = t.objs.length;
+      for (let i = 0; i < t.objs.length; i++) {
+        if (list[i] !== t.objs[i] || !sameSignature(sigs[i], t.sigs[i])) { from = -1; break; }
+      }
+    }
+    // Any failure part-way leaves the on-disk reconstruction unknown to the tracker: drop it so the next
+    // checkpoint re-anchors with a full snapshot instead of a delta whose `from` would not match.
+    trackers.delete(runId);
+    let last = null;
+    let at = from;
+    if (from < 0) {
+      last = record(runId, 'checkpoint', Object.assign({}, head, { messages: list.slice(0, MAX_ARRAY) }));
+      at = Math.min(MAX_ARRAY, list.length);
+    }
+    while (last === null || at < list.length) {
+      last = record(runId, 'checkpoint_delta', Object.assign({}, head, { from: at, messages: list.slice(at, at + MAX_ARRAY) }));
+      at = Math.min(at + MAX_ARRAY, list.length);
+    }
+    trackers.set(runId, { objs: list, sigs });
+    return last;
+  }
+
+  // A repaired journal parses clean, but the damage it had is durable in its sibling's name. Mid-file damage stays
+  // forensic across every later inspect (and so never resolves, continues, or retires); a cut torn tail does not.
+  function withEvidence(state, file) {
+    if (!state || !file || typeof io.evidence !== 'function') return state;
+    let ev;
+    try { ev = io.evidence(file); }
+    catch (e) { failNote('run-journal.evidence', e); ev = { corrupt: true, torn: false }; }   // unprovable: fail closed
+    if (ev.corrupt) {
+      state.forensic = true; state.retirable = false; state.damage = 'corrupt';
+    } else if (ev.torn && state.damage === 'none') {
+      state.damage = 'torn_tail';
+    }
+    return state;
   }
 
   function inspect(runId) {
     const p = parseRecords(io.read(runId));
-    return analyze(p.records, p.corrupt);
+    return withEvidence(analyze(p.records, p.corrupt, p.damage), typeof io.fileOf === 'function' ? io.fileOf(runId) : null);
   }
 
-  function recoverFile(file) {
+  function recoverFile(file, rawText) {
     let parsed;
-    try { parsed = parseRecords(io.readFile(file)); }
-    catch (_) { parsed = { records: [], corrupt: true }; }
-    const state = analyze(parsed.records, parsed.corrupt);
+    try { parsed = parseRecords(rawText != null ? rawText : io.readFile(file)); }
+    catch (_) { parsed = { records: [], corrupt: true, damage: 'corrupt' }; }
+    const state = analyze(parsed.records, parsed.corrupt, parsed.damage);
     state.file = file;
     try {
       if (parsed.corrupt && parsed.records.length && typeof io.repair === 'function') {
-        state.repairedFrom = io.repair(file, parsed.records);
+        state.repairedFrom = io.repair(file, parsed.records, parsed.damage === 'torn_tail' ? 'torn' : 'corrupt');
       } else if (parsed.corrupt && !parsed.records.length && typeof io.quarantine === 'function') {
         state.quarantinedTo = io.quarantine(file);
+      } else if (parsed.unterminated && typeof io.terminate === 'function') {
+        io.terminate(file);
       }
     } catch (e) { state.repairError = String((e && e.message) || e); }
-    if (state.runId && parsed.records.length) {
+    if (state.runId && parsed.records.length && !state.repairError) {
       const last = parsed.records[parsed.records.length - 1];
       live.set(state.runId, { seq: last.seq, hash: last.hash });
     }
-    return state;
+    return state.quarantinedTo ? state : withEvidence(state, file);
   }
 
   return {
@@ -304,6 +523,8 @@ function makeRunJournal(opts) {
     toolIntent(runId, payload) { return record(runId, 'tool_intent', payload); },
     toolDispatch(runId, payload) { return record(runId, 'tool_dispatch', payload); },
     toolResult(runId, payload) { return record(runId, 'tool_result', payload); },
+    // the run's taint latched mid-run (untrusted content entered its context); additive record type
+    taint(runId, payload) { return record(runId, 'taint', payload); },
     finish(runId, payload) { return record(runId, 'finish', payload); },
     resolve(runId, payload) {
       payload = payload || {};
@@ -326,7 +547,8 @@ function makeRunJournal(opts) {
         if (sameDecision) return state;
         throw resolutionError('run already has a different durable resolution');
       }
-      if (state.status !== 'needs_review' || state.corrupt) throw resolutionError('run is not safely resolvable');
+      // A lone torn final record is not forensic (see header): its valid prefix resolves like an intact journal.
+      if (state.status !== 'needs_review' || state.forensic) throw resolutionError('run is not safely resolvable');
       const expected = state.uncertain.map(x => String(x.callId || '')).sort();
       const actual = normalized.outcomes.map(x => x.callId).sort();
       if (!expected.length || stable(expected) !== stable(actual)
@@ -349,7 +571,7 @@ function makeRunJournal(opts) {
       const mode = payload.mode === 'automatic' ? 'automatic' : 'reviewed';
       const reviewed = state.status === 'resolved' && !!state.resolution;
       const automatic = mode === 'automatic' && state.status === 'resumable' && !state.uncertain.length;
-      if ((!reviewed && !automatic) || state.corrupt) throw resolutionError('run is not safely continuable');
+      if ((!reviewed && !automatic) || state.forensic) throw resolutionError('run is not safely continuable');
       record(runId, 'continuation_ready', {
         continuationId,
         mode,
@@ -385,31 +607,45 @@ function makeRunJournal(opts) {
       if (state.continuation.state !== 'started') throw resolutionError('continuation has not started');
       record(runId, 'continuation_finish', {
         continuationId, continuedRunId, finishedAt: Number(payload.finishedAt || now()),
-        reason: String(payload.reason || 'unknown')
+        reason: String(payload.reason || 'unknown'),
+        // true only when the host proved the continued run's own transcript acknowledgement was durably recorded
+        // first — the one fact that makes this source journal redundant and retirable.
+        transcriptAck: payload.transcriptAck === true
       });
       return inspect(runId);
     },
     finishAndRetire(runId, payload) {
       record(runId, 'finish', payload);
       const state = inspect(runId);
-      if (state.status !== 'finished') return { retired: false, state };
+      if (!state.retirable) return { retired: false, state };
       const retired = this.remove(runId);
       return { retired: !!retired, state };
     },
     // Retirement is a safety boundary, not a raw unlink. A terminal record does not settle an unmatched tool
     // intent: that journal is the only durable evidence that a side effect may have happened, so ordinary host
     // teardown must retain it for review. Corrupt/unreadable journals also fail closed and remain recoverable.
+    // A continuation SOURCE retires once its continuation finished with a durable transcript acknowledgement
+    // (analyze().retirable); forensic and unresolved-review journals never do.
     remove(runId) {
       let state;
       try { state = inspect(runId); } catch (_) { return false; }
-      if (!state || state.status !== 'finished') return false;
+      if (!state || !state.retirable) return false;
       live.delete(String(runId || ''));
+      trackers.delete(String(runId || ''));
+      owned.delete(String(runId || ''));
       io.remove(runId);
       return true;
     },
     inspect,
+    checkpointMessages,
+    // Begun by this instance and not yet finished: a live run of this process, never "interrupted".
+    isOwned(runId) { return owned.has(String(runId || '')); },
+    // The journal files present right now (sorted, unparsed). A host captures this before it can start a run, so
+    // every file in it provably belongs to an earlier process.
+    listFiles() { return io.list().sort(); },
+    recoverFile(file) { return recoverFile(file); },
     recoverAll() {
-      return io.list().sort().map(recoverFile);
+      return io.list().sort().map(file => recoverFile(file));
     },
     // Lazy/paged recovery preserves every journal while preventing thousands of failed runs
     // from blocking process startup or producing one unbounded API response. Stable filename
@@ -419,10 +655,10 @@ function makeRunJournal(opts) {
       const files = io.list().sort();
       const offset = Math.max(0, Number(options.offset) || 0);
       const limit = Math.max(1, Math.min(500, Number(options.limit) || 100));
-      return { rows: files.slice(offset, offset + limit).map(recoverFile), total: files.length, offset, limit };
+      return { rows: files.slice(offset, offset + limit).map(file => recoverFile(file)), total: files.length, offset, limit };
     },
-    _internals: { parseRecords, analyze, hashRecord, runFileName, cloneSafe, writeAll }
+    _internals: { parseRecords, analyze, hashRecord, runFileName, cloneSafe, writeAll, leafSignature, sameSignature }
   };
 }
 
-module.exports = { makeRunJournal, makeFsIo, DISPATCH_BOUNDARY_MODEL, _internals: { parseRecords, analyze, hashRecord, runFileName, cloneSafe, writeAll } };
+module.exports = { makeRunJournal, makeFsIo, DISPATCH_BOUNDARY_MODEL, _internals: { parseRecords, analyze, hashRecord, runFileName, cloneSafe, writeAll, leafSignature, sameSignature } };

@@ -482,7 +482,10 @@ function chatFixture() {
         messages: [{ role: 'user', content: 'aaa' }, { role: 'assistant', content: 'bbb' }, { role: 'user', content: 'ccc' }],
         provider, emit, cost: makeCostEngine({ priceOf: provider.priceOf }), model: 'm1', agentId: 'a', runId: 'r',
         context: ctxMgr, summarize: async () => { summarized++; return 'SUMMARY'; },
-        approxTokens: 100, contextLimit: 10   // > 0.4*limit -> classifier returns context_overflow -> shouldCompress
+        // 'prompt is too long' classifies as context_overflow by its wording. The loop's window must be one the folded
+        // prompt can FIT: the overflow recovery now verifies the fold got under it before re-sending (a 10-token
+        // window here made the retry a certain second overflow, which the loop now refuses to send).
+        approxTokens: 100, contextLimit: 1000
       });
       A.eq(res.reason, 'done', 'context_overflow -> compacted and retried to completion');
       A.eq(calls, 2, 'one overflow attempt + one post-compaction retry');
@@ -497,20 +500,23 @@ function chatFixture() {
       reg.register({ name: 'fs_write', schema: WRITE_SCHEMA, run: async () => 'w' });   // tiny results: the free micro tier cannot shrink them, so the paid fold is attempted
       let calls = 0;
       const toolT = (id) => [{ type: 'tool_start', index: 0, id, name: 'fs_write' }, { type: 'tool_args', index: 0, chunk: '{"path":"a.md","content":"x"}' }, { type: 'usage', usage: { prompt_tokens: 8, completion_tokens: 1, total_tokens: 9 } }, { type: 'done', finishReason: 'tool_calls' }];
-      const provider = { async *stream() { calls++; if (calls <= 2) { for (const ev of toolT('c' + calls)) yield ev; return; } if (calls === 3) throw new Error('prompt is too long'); for (const ev of okTurn) yield ev; },
+      // the breaker trips on the proactive fold attempts before turns 1 and 2 (the preflight counts); the overflow then
+      // lands on turn 2 while the older history is still unfolded, so the fallback fold has something to shrink
+      const provider = { async *stream() { calls++; if (calls <= 1) { for (const ev of toolT('c' + calls)) yield ev; return; } if (calls === 2) throw new Error('prompt is too long'); for (const ev of okTurn) yield ev; },
         priceOf: () => ({ prompt: '0', completion: '0' }), contextLimit: () => 10 };
-      const ctxMgr = makeContext({ contextLimit: 10, compactAt: 0.65, keepTail: 1 });   // 8 > 6.5 -> a proactive fold is attempted at the top of turns 2 and 3
+      const ctxMgr = makeContext({ contextLimit: 10, compactAt: 0.65, keepTail: 1 });   // 8 > 6.5 -> a proactive fold is attempted at the top of turns 1 and 2
       let attempts = 0;
       const summarize = async () => { attempts++; throw new Error('summarizer down'); };
       const res = await runAgentLoop({
         messages: [{ role: 'user', content: 'directive' }, { role: 'user', content: 'old-a ' + 'x'.repeat(3000) }, { role: 'assistant', content: 'old-b ' + 'y'.repeat(3000) }],   // real-sized history: the fallback digest must actually shrink it
         provider, emit, cost: makeCostEngine({ priceOf: provider.priceOf }), model: 'm1', agentId: 'a', runId: 'r',
         tools: [], dispatch: (c, ctx2) => reg.dispatch(c, ctx2), capCtx: openCtx(),
-        context: ctxMgr, summarize, approxTokens: 100, contextLimit: 10
+        // the loop's window is one the fallback-folded prompt fits (the recovery verifies that before re-sending)
+        context: ctxMgr, summarize, approxTokens: 100, contextLimit: 100000
       });
       A.eq(attempts, 2, 'the summarizer failed twice -> breaker tripped before the overflow');
       A.eq(res.reason, 'done', 'context_overflow after compactionOff no longer ends the run');
-      A.eq(calls, 4, 'the overflowing turn was retried once after the fallback fold');
+      A.eq(calls, 3, 'the overflowing turn was retried once after the fallback fold');
       const comps = seq.filter(e => e.name === 'agent.compact');
       A.ok(comps.length >= 1 && comps[comps.length - 1].payload.reason === 'fallback', 'the recovery fold is the deterministic fallback (' + comps.map(e => e.payload.reason).join(',') + ')');
       A.eq(seq.filter(e => e.name === 'agent.run.error').length, 0, 'no run error');

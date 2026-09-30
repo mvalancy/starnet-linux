@@ -9,6 +9,7 @@
      channel.*                                   -> 'dish'      (outbound comms — the dish transmits too)
      notebook.* / skill.* / recall_conversation  -> 'notebook'  (memory; todo moved to `computer` 2026-08-17)
      image_*                                     -> 'studio'    (media)
+     resolve_*                                   -> 'studio'    (DaVinci Resolve)
      spotify_*                                   -> 'jukebox'   (spotify)
 
    Everything else maps to null ON PURPOSE — those tools already have their own dedicated
@@ -53,6 +54,7 @@ const ToolProps = (() => {
     ['notebook.', 'notebook'],
     ['skill.', 'notebook'],
     ['image_', 'studio'],
+    ['resolve_', 'studio'],   // DaVinci Resolve edit bay — cutting timelines is studio work (tools/builtin/resolve.js)
     ['spotify_', 'jukebox']
   ];
 

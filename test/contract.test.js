@@ -32,6 +32,13 @@ const cases = [
   // 'budget' run. A run without them stays valid (covered above); a bad scope value is rejected.
   ['agent.run.end', { agentId: 'a', runId: 'r', reason: 'budget', turns: 2, usd: 3.01, budgetScope: 'run', budgetCapUsd: 3 }, { agentId: 'a', runId: 'r', reason: 'budget', turns: 2, usd: 3.01, budgetScope: 'weekly' }],
   ['provider.fallback', { agentId: 'a', runId: 'r', fromModel: 'm1', toModel: 'm2', reason: 'rate_limit', rotate: true }, { agentId: 'a', runId: 'r', fromModel: 'm1', toModel: 'm2' }],
+  // ADDITIVE live retry/waiting events (2026-09-23): the silent retry ladder + idle waits become visible. attempt is
+  // an integer rung, stage/phase are closed enums, and the required core (attempt/reason/delayMs · phase/sinceMs) holds.
+  ['provider.retry', { agentId: 'a', runId: 'r', attempt: 3, reason: 'overloaded', delayMs: 4000, maxAttempts: 6, model: 'm', stage: 'pre_stream', retryAfterMs: 2000, waitedMs: 1600, patienceMs: 105600 }, { agentId: 'a', runId: 'r', attempt: 3, reason: 'overloaded' }],
+  ['provider.retry', { agentId: 'a', runId: 'r', attempt: 1, reason: 'truncated', delayMs: 400, stage: 'mid_stream' }, { agentId: 'a', runId: 'r', attempt: 1.5, reason: 'truncated', delayMs: 400 }],
+  ['provider.retry', { agentId: 'a', runId: 'r', attempt: 2, reason: 'timeout', delayMs: 0 }, { agentId: 'a', runId: 'r', attempt: 2, reason: 'timeout', delayMs: 0, stage: 'mid_flight' }],
+  ['agent.waiting', { agentId: 'a', runId: 'r', phase: 'first_byte', sinceMs: 15000, model: 'm' }, { agentId: 'a', runId: 'r', phase: 'first_byte' }],
+  ['agent.waiting', { agentId: 'a', runId: 'r', phase: 'retry_backoff', sinceMs: 0 }, { agentId: 'a', runId: 'r', phase: 'sleeping', sinceMs: 15000 }],
   ['budget.threshold', { scope: 'run', usd: 1, cap: 5 }, { scope: 'weekly', usd: 1, cap: 5 }],
   ['permission.response', { promptId: 'p', decision: 'full' }, { promptId: 'p', decision: 'maybe' }],
   ['memory.recall', { agentId: 'a', runId: 'r', count: 3, chars: 120 }, { agentId: 'a', runId: 'r', count: 'three' }],

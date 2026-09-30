@@ -38,7 +38,7 @@ $confined = ($r.Left -gt $vx) -or ($r.Top -gt $vy) -or ($r.Right -lt ($vx + $vw)
 `;
 
   function defaultRunPs() {
-    const CP = require('node:child_process');
+    const CP = require('./child-env.js').guardChildProcess(require('node:child_process'));   // no station secrets in the helper's env
     return () => new Promise((resolve, reject) => {
       const exe = process.env.SystemRoot ? process.env.SystemRoot + '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe' : 'powershell.exe';
       CP.execFile(exe, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', SCRIPT], { encoding: 'utf8', timeout: 15000, windowsHide: true }, (err, stdout) => {

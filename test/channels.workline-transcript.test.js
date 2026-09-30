@@ -80,14 +80,19 @@ async function run() {
     A.eq(dockAssistant, [SCOUT_SAID], 'the ENTRY DOCK\'s transcript holds what IT said, not the delivered text');
     A.ok(dockAssistant.indexOf(EDITOR_SAID) < 0, 'the editor\'s paragraph is NOT fabricated into the dock\'s history');
 
-    // each hop still owns its own output
-    A.eq((store.hist.get('analyst') || []).filter(t => t.role === 'assistant').map(t => t.content), [ANALYST_SAID],
+    // each hop still owns its own output — under its per-CHAT hop key (sec-taint 09-25: hop history is keyed by
+    // chat lineage, never by the bare agentId every chat of that agent would share)
+    const keyOf = (said) => { const hit = store.appends.find(x => x.role === 'assistant' && x.content === said && x.a !== 'tg_555'); return hit ? hit.a : ''; };
+    const analystKey = keyOf(ANALYST_SAID), editorKey = keyOf(EDITOR_SAID);
+    A.ok(/^hop_[0-9a-f]{32}$/.test(analystKey) && /^hop_[0-9a-f]{32}$/.test(editorKey) && analystKey !== editorKey,
+      'each hop persists under its own per-chat hop key, not the bare agentId');
+    A.eq((store.hist.get(analystKey) || []).filter(t => t.role === 'assistant').map(t => t.content), [ANALYST_SAID],
       'the analyst\'s transcript holds the analyst\'s own output');
-    A.eq((store.hist.get('editor') || []).filter(t => t.role === 'assistant').map(t => t.content), [EDITOR_SAID],
+    A.eq((store.hist.get(editorKey) || []).filter(t => t.role === 'assistant').map(t => t.content), [EDITOR_SAID],
       'the delivering stage\'s transcript holds the delivered text');
 
     // the original symptom, stated directly: three stages had three IDENTICAL transcripts
-    const all = ['tg_555', 'analyst', 'editor'].map(id =>
+    const all = ['tg_555', analystKey, editorKey].map(id =>
       (store.hist.get(id) || []).filter(t => t.role === 'assistant').map(t => t.content).join('|'));
     A.eq(new Set(all).size, 3, 'all three stages have DISTINCT assistant turns (they were byte-identical)');
   }

@@ -154,6 +154,7 @@ async function run() {
       o.emit('agent.run.end', { reason: 'clarifying' });
     };
     const hub = makeChannelHub({
+      isOwner: () => true,   // these scenarios are the paired owner (the non-owner gate: channels.owner-gates.test.js)
       runOnce, store, taskIntent: TaskIntent,
       send: (c, t, opts) => { sends.push({ c, t, opts }); return Promise.resolve({ ok: true, messageId: 'm1' }); },
       secrets: () => ({ key: 'k', model: 'm' }), classify: () => false, newId: idGen('run')
@@ -180,6 +181,7 @@ async function run() {
     };
     const reg = makePromptRegistry({ newId: idGen('tok') });
     const hub = makeChannelHub({
+      isOwner: () => true,   // these scenarios are the paired owner (the non-owner gate: channels.owner-gates.test.js)
       runOnce, store, taskIntent: TaskIntent, prompts: reg,
       send: (c, t, opts) => { sends.push({ c, t, opts }); return Promise.resolve({ ok: true, messageId: 'msg7' }); },
       answerCallback: (id, text) => { acks.push({ id, text }); return Promise.resolve({ ok: true }); },
@@ -228,6 +230,7 @@ async function run() {
       else { o.emit('agent.token', { delta: 'ok' }); o.emit('agent.run.end', { reason: 'done' }); }
     };
     const hub = makeChannelHub({
+      isOwner: () => true,   // these scenarios are the paired owner (the non-owner gate: channels.owner-gates.test.js)
       runOnce, store, taskIntent: TaskIntent, prompts: makePromptRegistry({ newId: idGen('tok') }),
       send: (c, t, opts) => { sends.push({ c, t, opts }); return Promise.resolve({ ok: true, messageId: 'm1' }); },
       answerCallback: () => Promise.resolve({ ok: true }), editMessage: () => Promise.resolve({ ok: true }),
@@ -248,6 +251,7 @@ async function run() {
       else { o.emit('agent.token', { delta: 'ok' }); o.emit('agent.run.end', { reason: 'done' }); }
     };
     const hub = makeChannelHub({
+      isOwner: () => true,   // these scenarios are the paired owner (the non-owner gate: channels.owner-gates.test.js)
       runOnce, store, taskIntent: TaskIntent, prompts: makePromptRegistry({ newId: idGen('tok') }),
       send: () => Promise.resolve({ ok: true, messageId: 'm1' }),
       answerCallback: () => Promise.resolve({ ok: true }), editMessage: () => Promise.resolve({ ok: true }),
@@ -295,6 +299,7 @@ async function run() {
     const runOnce = async (o) => { lastRun = o; o.emit('agent.token', { delta: 'ok' }); o.emit('agent.run.end', { reason: 'done' }); };
     const host = makeHostConsent();
     const hub = makeChannelHub({
+      isOwner: () => true,   // these scenarios are the paired owner (the non-owner gate: channels.owner-gates.test.js)
       runOnce, store, prompts: makePromptRegistry({ newId: idGen('tok') }),
       send: () => Promise.resolve({ ok: true, messageId: 'm1' }),
       answerCallback: () => Promise.resolve({ ok: true }), editMessage: () => Promise.resolve({ ok: true }),
@@ -310,6 +315,7 @@ async function run() {
   {
     const sends = []; const store = fakeStore();
     const hub = makeChannelHub({
+      isOwner: () => true,   // these scenarios are the paired owner (the non-owner gate: channels.owner-gates.test.js)
       runOnce: async () => {}, store, prompts: makePromptRegistry({ newId: idGen('tok') }),
       send: (c, t) => { sends.push(t); return Promise.resolve({ ok: true, messageId: 'm1' }); },
       answerCallback: () => Promise.resolve({ ok: true }), editMessage: () => Promise.resolve({ ok: true }),
@@ -338,6 +344,7 @@ async function run() {
     };
     const reg = makePromptRegistry({ newId: idGen('tok') });
     const hub = makeChannelHub({
+      isOwner: () => true,   // these scenarios are the paired owner (the non-owner gate: channels.owner-gates.test.js)
       runOnce, store, prompts: reg,
       send: (c, t, opts) => { sends.push({ c, t, opts }); return Promise.resolve({ ok: true, messageId: 'consent-msg' }); },
       answerCallback: (id, text) => { acks.push({ id, text }); return Promise.resolve({ ok: true }); },
@@ -378,6 +385,7 @@ async function run() {
       o.emit('agent.run.end', { reason: 'done' });
     };
     const hub = makeChannelHub({
+      isOwner: () => true,   // these scenarios are the paired owner (the non-owner gate: channels.owner-gates.test.js)
       runOnce, store, prompts: makePromptRegistry({ newId: idGen('tok') }),
       send: (c, t, opts) => { sends.push({ c, t, opts }); return Promise.resolve({ ok: true, messageId: 'm1' }); },
       answerCallback: () => Promise.resolve({ ok: true }), editMessage: () => Promise.resolve({ ok: true }),
@@ -402,6 +410,7 @@ async function run() {
     const runOnce = async (o) => { decision = await o.prompt({ name: 'fs.write', args: {} }, { scope: 'write' }); o.emit('agent.token', { delta: 'done' }); o.emit('agent.run.end', { reason: 'done' }); };
     const reg = makePromptRegistry({ newId: idGen('tok') });
     const hub = makeChannelHub({
+      isOwner: () => true,   // these scenarios are the paired owner (the non-owner gate: channels.owner-gates.test.js)
       runOnce, store, prompts: reg,
       send: (c, t, opts) => { sends.push({ c, t, opts }); return Promise.resolve({ ok: true, messageId: 'm1' }); },
       answerCallback: (id, text) => { acks.push(text); return Promise.resolve({ ok: true }); },
@@ -431,6 +440,7 @@ async function run() {
     const runOnce = async (o) => { decision = await o.prompt({ name: 'fs.write', args: {} }, { scope: 'write' }); o.emit('agent.run.end', { reason: 'done' }); };
     const reg = makePromptRegistry({ newId: idGen('tok') });
     const hub = makeChannelHub({
+      isOwner: () => true,   // these scenarios are the paired owner (the non-owner gate: channels.owner-gates.test.js)
       runOnce, store, prompts: reg,
       send: (c, t, opts) => { sends.push({ c, t, opts }); return Promise.resolve({ ok: true, messageId: 'm1' }); },
       answerCallback: (id, text) => { acks.push(text); return Promise.resolve({ ok: true }); },
@@ -463,6 +473,7 @@ async function run() {
       o.emit('agent.run.end', { reason: 'done' });
     };
     const hub = makeChannelHub({
+      isOwner: () => true,   // these scenarios are the paired owner (the non-owner gate: channels.owner-gates.test.js)
       runOnce, store, prompts: makePromptRegistry({ newId: idGen('tok') }),
       // the keyboard send fails; ordinary replies still succeed
       send: (c, t, opts) => Promise.resolve((opts && opts.reply_markup) ? { ok: false, error: 'chat not found' } : { ok: true, messageId: 'm1' }),
@@ -482,6 +493,7 @@ async function run() {
     const reg = makePromptRegistry({ newId: idGen('tok') });
     const runOnce = async (o) => { o.emit('agent.token', { delta: 'TASK_QUESTION: Which? || a | b' }); o.emit('agent.run.end', { reason: 'clarifying' }); };
     const hub = makeChannelHub({
+      isOwner: () => true,   // these scenarios are the paired owner (the non-owner gate: channels.owner-gates.test.js)
       runOnce, store, taskIntent: TaskIntent, prompts: reg,
       send: (c, t, opts) => { sends.push({ c, t, opts }); return Promise.resolve({ ok: true, messageId: 'm1' }); },
       answerCallback: (id, text) => { acks.push(text); return Promise.resolve({ ok: true }); },

@@ -332,6 +332,12 @@ function makeMediaService(options) {
     } else reasons.push('edge: disabled');
     return { ok: false, reason: reasons.join('; ') || 'this station holds no voice-capable credential' };
   }
+  // CERTAIN-availability probe for voice_generate (runOnce's tool footprint): false only when synthesizeForAgent
+  // above has no leg it could even try — no keyed TTS provider AND the keyless Edge floor switched off. Reads the
+  // same provider list and the same switch as the ladder itself, so the two cannot disagree.
+  function voiceRouteAvailable() {
+    return TTS_KEY_PROVIDERS.some(provider => !!providerRuntimeKey(provider, '')) || !!edgetts.enabled();
+  }
 
   async function ttsElevenLabs(res, body, text, fallback) {
     const key = String((body && body.elKey) || '').trim() || String(processEnv.ELEVENLABS_API_KEY || '').trim();
@@ -711,6 +717,7 @@ function makeMediaService(options) {
 
   return {
     synthesizeForAgent,
+    voiceRouteAvailable,
     sttStatus,
     transcribeAudioBuffer,
     transcribeForMime,

@@ -19,6 +19,13 @@
 
   const RE = /^[A-Za-z0-9_-]{1,40}$/;
   const NAME_MAX = 18;
+  // Station-owned directories under WORKSPACES (codex/, channels/, connectors/, plugins/ …): an agent with one
+  // of these ids would get that credential/code directory as its private file jail. The sidecar refuses them
+  // (sidecar/workspace-reserved.js — test/workspace-reserved.test.js keeps the two lists identical); allocate
+  // around them so a custom agent named "Codex" becomes codex-2 instead of a broken agent.
+  const RESERVED = new Set(['_archive', 'channels', 'codex', 'grok', 'kimi', 'connectors', 'plugins', 'skill-packages',
+    'transcript-history-v2', 'con', 'prn', 'aux', 'nul', 'com1', 'com2', 'com3', 'com4', 'com5', 'com6', 'com7', 'com8',
+    'com9', 'lpt1', 'lpt2', 'lpt3', 'lpt4', 'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9']);
 
   // sanitize any seed (specialty id/name) into a valid base: lowercase, non-id chars → '-', trim
   // stray dashes, cap at 32 so a '-N' disambiguator can never push the result past the 40-char limit.
@@ -33,7 +40,7 @@
     const has = (taken && typeof taken.has === 'function') ? (id => taken.has(id)) : (() => false);
     const base = slug(seed);
     let id = base, n = 1;
-    while (id === 'agent' || has(id)) { id = base + '-' + (++n); }
+    while (id === 'agent' || RESERVED.has(id) || has(id)) { id = base + '-' + (++n); }
     return id;
   }
 
@@ -73,5 +80,5 @@
     return ('AGENT ' + Date.now()).slice(0, NAME_MAX);
   }
 
-  return { slug, alloc, normalizeName, nameIssue, nameConflict, allocName, RE, NAME_MAX };
+  return { slug, alloc, normalizeName, nameIssue, nameConflict, allocName, RE, NAME_MAX, RESERVED };
 });

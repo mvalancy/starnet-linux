@@ -26,7 +26,7 @@ A.eq(auth.requiresApiToken(req('POST', '/api/key')), false, 'key push exempt (ow
 A.eq(auth.requiresApiToken(req('GET', '/api/health')), false, 'health probe exempt');
 A.eq(auth.requiresApiToken(req('GET', '/api/spotify/callback?code=abc')), false, 'spotify OAuth redirect exempt');
 A.eq(auth.requiresApiToken(req('GET', '/api/connectors/oauth/callback?code=abc&state=xyz')), false, 'connector OAuth redirect exempt (state is the CSRF fence)');
-A.eq(auth.requiresApiToken(req('GET', '/api/channels/events')), false, 'SSE exempt from header token (uses ?token=)');
+A.eq(auth.requiresApiToken(req('GET', '/api/channels/events')), true, 'SSE is GATED (header, or a single-use SSE ticket) — no longer exempt');
 A.eq(auth.requiresApiToken(req('OPTIONS', '/api/run')), false, 'CORS preflight exempt');
 // non-/api requests never need a token (static assets / app shell)
 A.eq(auth.requiresApiToken(req('GET', '/index.html')), false, 'static asset needs no token');
@@ -40,22 +40,43 @@ A.eq(auth.apiTokenOk(req('POST', '/api/run', { 'x-starnet-token': 'a'.repeat(63)
 A.eq(auth.apiTokenOk(req('POST', '/api/run', {}), TOK), false, 'missing header rejected');
 A.eq(auth.apiTokenOk(req('POST', '/api/run', { 'x-starnet-token': TOK }), ''), false, 'empty server token rejects everything');
 
-// ---- queryTokenOk: SSE path (EventSource can't set headers) ----
-A.eq(auth.queryTokenOk(req('GET', '/api/channels/events?token=' + TOK), TOK), true, 'correct query token accepted');
-A.eq(auth.queryTokenOk(req('GET', '/api/channels/events?token=' + 'b'.repeat(64)), TOK), false, 'wrong query token rejected');
-A.eq(auth.queryTokenOk(req('GET', '/api/channels/events'), TOK), false, 'missing query token rejected');
-A.eq(auth.queryTokenOk(req('GET', '/api/channels/events?foo=1&token=' + TOK), TOK), true, 'query token found among other params');
+// ---- the master token in a QUERY STRING is refused everywhere (2026-09-25: URLs leak) ----
+A.eq(typeof auth.queryTokenOk, 'undefined', 'no query-token acceptor is exported any more');
+A.eq(typeof auth.queryTokenRoute, 'undefined', 'no query-token route matrix is exported any more');
+const T = require('../sidecar/apitickets.js');
+const NOW = 1.8e12;
+const G = () => T.replayGuard();
+for (const u of ['/api/file?agent=a&path=p&token=' + TOK, '/api/channels/events?token=' + TOK, '/api/save?token=' + TOK]) {
+  const m = u.indexOf('/api/save') === 0 ? 'POST' : 'GET';
+  A.eq(auth.ticketOk(req(m, u), TOK, NOW, G()), false, 'master token as ?token= is NOT a credential: ' + m + ' ' + u.split('?')[0]);
+  A.eq(auth.ticketOk(req(m, u.replace('token=', 'ticket=')), TOK, NOW, G()), false, 'master token smuggled as ?ticket= is refused too: ' + u.split('?')[0]);
+}
 
-// ---- queryTokenRoute: the DELIBERATELY TINY method×path matrix allowed to auth via ?token= ----
-// (surfaces that provably cannot set the custom header: native media loads + the unload save beacon)
-A.eq(auth.queryTokenRoute(req('GET', '/api/file?agent=a&path=p&token=x')), true, 'GET /api/file may use the query token');
-A.eq(auth.queryTokenRoute(req('HEAD', '/api/file?agent=a&path=p')), true, 'HEAD /api/file may use the query token');
-A.eq(auth.queryTokenRoute(req('POST', '/api/save?token=x')), true, 'POST /api/save (unload beacon) may use the query token');
-A.eq(auth.queryTokenRoute(req('GET', '/api/save?agent=agent&token=x')), false, 'GET /api/save stays header-only (reads leak more than a dup write)');
-A.eq(auth.queryTokenRoute(req('POST', '/api/file')), false, 'POST /api/file stays header-only');
-A.eq(auth.queryTokenRoute(req('POST', '/api/run?token=x')), false, 'POST /api/run never accepts a query token');
-A.eq(auth.queryTokenRoute(req('POST', '/api/save/recovery-ack?token=x')), false, 'the save sibling routes are NOT in the matrix (exact path match)');
-A.eq(auth.queryTokenRoute(null), false, 'no request -> false, no throw');
+// ---- ticketOk: the ONLY header-less credential, scoped to exactly the request's resource ----
+const fileT = T.mint(TOK, 'file', T.scopeFile('a', 'dir/p q.md'), { now: NOW });
+const fileUrl = '/api/file?agent=a&path=' + encodeURIComponent('dir/p q.md') + '&ticket=' + encodeURIComponent(fileT);
+A.eq(auth.ticketOk(req('GET', fileUrl), TOK, NOW, G()), true, 'file ticket opens its own file (GET)');
+A.eq(auth.ticketOk(req('HEAD', fileUrl), TOK, NOW, G()), true, 'file ticket opens its own file (HEAD)');
+A.eq(auth.ticketOk(req('GET', fileUrl), TOK, NOW + 60000, G()), true, 'file ticket reusable within its life (video Range re-reads)');
+A.eq(auth.ticketOk(req('GET', fileUrl.replace('p%20q.md', 'other.md')), TOK, NOW, G()), false, 'file ticket does NOT open a different file');
+A.eq(auth.ticketOk(req('GET', fileUrl.replace('agent=a', 'agent=b')), TOK, NOW, G()), false, 'file ticket does NOT open another agent\'s file');
+A.eq(auth.ticketOk(req('POST', fileUrl), TOK, NOW, G()), false, 'file ticket is not a POST credential');
+A.eq(auth.ticketOk(req('GET', '/api/transcript?agent=a&ticket=' + encodeURIComponent(fileT)), TOK, NOW, G()), false, 'a ticket on any other route grants nothing');
+A.eq(auth.ticketOk(req('GET', '/api/runs?ticket=' + encodeURIComponent(fileT)), TOK, NOW, G()), false, 'a ticket on /api/runs grants nothing');
+A.eq(auth.ticketOk(req('GET', fileUrl), TOK, NOW + T.KINDS.file.maxTtlMs + 1, G()), false, 'file ticket EXPIRES (5 min)');
+A.eq(auth.ticketOk(req('GET', fileUrl), 'b'.repeat(64), NOW, G()), false, 'a ticket from another launch (other key) is refused');
+const sseT = T.mint(TOK, 'sse', T.SCOPE_SSE, { now: NOW });
+const sg = G();
+A.eq(auth.ticketOk(req('GET', '/api/channels/events?cursor=x&ticket=' + encodeURIComponent(sseT)), TOK, NOW, sg), true, 'SSE ticket connects once');
+A.eq(auth.ticketOk(req('GET', '/api/channels/events?cursor=x&ticket=' + encodeURIComponent(sseT)), TOK, NOW, sg), false, 'SSE ticket is SINGLE-USE (replay refused)');
+A.eq(auth.ticketOk(req('POST', '/api/save?ticket=' + encodeURIComponent(sseT)), TOK, NOW, G()), false, 'an SSE ticket is not a save ticket');
+const saveT = T.mint(TOK, 'save', T.SCOPE_SAVE, { now: NOW });
+const vg = G();
+A.eq(auth.ticketOk(req('POST', '/api/save?ticket=' + encodeURIComponent(saveT)), TOK, NOW, vg), true, 'save ticket authorizes one beacon');
+A.eq(auth.ticketOk(req('POST', '/api/save?ticket=' + encodeURIComponent(saveT)), TOK, NOW, vg), false, 'save ticket is SINGLE-USE');
+A.eq(auth.ticketOk(req('GET', '/api/save?ticket=' + encodeURIComponent(saveT)), TOK, NOW, G()), false, 'save ticket cannot READ the save');
+A.eq(auth.ticketOk(req('POST', '/api/save/recovery-ack?ticket=' + encodeURIComponent(saveT)), TOK, NOW, G()), false, 'save sibling routes are not ticketable (exact path)');
+A.eq(auth.ticketOk(null, TOK, NOW, G()), false, 'no request -> false, no throw');
 
 // ---- isAllowedApiOrigin: foreign sites rejected; absent allowed (token gates those) ----
 A.eq(auth.isAllowedApiOrigin('', PORT), true, 'absent origin allowed (token is the fence for header-less callers)');

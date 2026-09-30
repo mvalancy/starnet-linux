@@ -1,0 +1,39 @@
+{
+  "charId": "26320081-ae62-411a-bbc7-151f18ddc8a2",
+  "template": "walking-8-frames",
+  "rotT": "1",
+  "anims": {
+    "south": [
+      "staged",
+      "1"
+    ],
+    "south-east": [
+      "staged",
+      "1"
+    ],
+    "east": [
+      "staged",
+      "1"
+    ],
+    "north-east": [
+      "staged",
+      "1"
+    ],
+    "north": [
+      "staged",
+      "1"
+    ],
+    "north-west": [
+      "staged",
+      "1"
+    ],
+    "west": [
+      "staged",
+      "1"
+    ],
+    "south-west": [
+      "staged",
+      "1"
+    ]
+  }
+}

@@ -176,7 +176,9 @@ const COMMON = { SKYNET_QUEST_REFRESH: '0', SKYNET_FULL_ACCESS: '1' };
       A.ok(sum1.length >= 1, 'run 1 produced a real summarizer call');
       A.ok(sum1.every(c => c.model === AUX_MODEL), 'the compaction summarizer rode the configured aux model');
       A.ok(sum1.every(c => c.reasoning && c.reasoning.effort === 'low'), 'the fold carried per-request effort low');
-      A.eq(ev1.filter(e => e.name === 'agent.compact').length, 1, 'run 1 emitted one truthful compaction event');
+      // a 10-token window folds before the first call (preflight) and again after the tool turn: one truthful
+      // compaction event per successful aux-model fold
+      A.eq(ev1.filter(e => e.name === 'agent.compact').length, sum1.length, 'run 1 emitted one truthful compaction event per aux fold (' + sum1.length + ')');
       const end1 = ev1.filter(e => e.name === 'agent.run.end').pop();
       A.eq(end1 && end1.payload.reason, 'done', 'run 1 completed after the aux-model fold');
 
@@ -187,7 +189,8 @@ const COMMON = { SKYNET_QUEST_REFRESH: '0', SKYNET_FULL_ACCESS: '1' };
       const sum2 = mock.state.calls.slice(before).filter(c => c.summary);
       A.ok(sum2.some(c => c.model === AUX_MODEL), 'run 2 first attempted the fold on the aux model');
       A.ok(sum2.some(c => c.model === RUN_MODEL), 'the failed aux fold RETRIED on the run\'s own model');
-      A.eq(ev2.filter(e => e.name === 'agent.compact').length, 1, 'run 2 still compacted — the aux tier never made compaction less reliable');
+      const retried2 = sum2.filter(c => c.model === RUN_MODEL).length;
+      A.ok(retried2 >= 1 && ev2.filter(e => e.name === 'agent.compact').length === retried2, 'run 2 still compacted once per fold — every failed aux fold was saved by its run-model retry (' + retried2 + ')');
       const end2 = ev2.filter(e => e.name === 'agent.run.end').pop();
       A.eq(end2 && end2.payload.reason, 'done', 'run 2 completed despite the aux-model summary failure');
     } finally { await fixture.dispose(); try { mock.server.close(); } catch (_) {} }

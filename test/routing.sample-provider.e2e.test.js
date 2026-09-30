@@ -64,6 +64,27 @@ test('sample uses each dock provider and saved model without environment default
     const refused = await fixture.json('POST', '/api/routing/sample', {});
     assert.equal(refused.body.ok, false);
     assert.equal(calls.length, 0, 'missing roster model cannot spend a different provider credential');
+
+    // "Follow station default": an unpinned specialist runs on the OVERSEER's model and provider (what COMMS
+    // resolves), never on a stale provider its row still carries (the #24 leak shape) and never refused outright.
+    const station = [
+      { agentId: 'agent', name: 'Overseer', system: 'Sample', provider: 'custom', model: 'hop-model' },
+      { agentId: 'scout', name: 'Scout', system: 'Sample', provider: 'starnet', model: '' }
+    ];
+    assert.equal((await fixture.json('POST', '/api/roster', { agents: station, updatedAt: Date.now() })).status, 200);
+    const unpinnedPlan = Pipeline.compileRoutingPlan({ props: [
+      { id: 'i', t: 'intake', x: 0, y: 0, w: 1, h: 1 },
+      { id: 's', t: 'bay', x: 3, y: 0, w: 1, h: 1, agentId: 'scout' },
+      { id: 'o', t: 'outbox', x: 6, y: 0, w: 1, h: 1 }
+    ], belts: [1, 2, 4, 5].map(x => ({ x, y: 0, dir: 'E' })) });
+    for (const bay of unpinnedPlan.bays.concat(unpinnedPlan.dockBays)) bay.objects = ['computer'];
+    assert.equal((await fixture.json('POST', '/api/routing', unpinnedPlan)).body.ok, true);
+    calls.length = 0;
+    const followed = await fixture.json('POST', '/api/routing/sample', {});
+    assert.equal(followed.status, 200, JSON.stringify(followed.body));
+    assert.equal(followed.body.delivered.agentId, 'scout', 'the unpinned specialist runs its own bay');
+    assert.ok(calls.length > 0 && calls.every(c => c.model === 'hop-model' && c.auth === 'Bearer direct-fixture'),
+      'the unpinned specialist runs on the Overseer model and credential, not its stale starnet row: ' + JSON.stringify(calls));
   } finally {
     await fixture.dispose();
     await new Promise(resolve => server.close(resolve));

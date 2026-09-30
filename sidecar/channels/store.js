@@ -52,6 +52,32 @@
   // channel agent, which is exactly what this filter exists to prevent.
   const ROLES = new Set(['user', 'assistant', 'system']);
 
+  /* LEGACY HOP TURNS IN A PER-AGENT HISTORY (sec-taint2 09-25). Before hop history was keyed per chat lineage (hub.js
+     hopHistoryKey, commit d37b81a57), a downstream work-line hop appended its handoff turn (the upstream stage's
+     OUTPUT — possibly text that stage read from a hostile page) and its own reply under the BARE agentId, i.e. into
+     the very file that agent's direct chat replays. Those turns survive on disk in existing stations. They are
+     recognised by the exact head chain.js/pipeline.js handoffPrompt has always written, and are dropped from what is
+     REPLAYED: the handoff user turn plus the hop's reply straight after it. Hop-keyed histories (hop_<32 hex>) are
+     where handoffs legitimately live and are never filtered. Non-destructive: loadHistory only filters; the first
+     appendTurn that would rewrite such a file first archives the untouched envelope beside it
+     (<agentId>.history.legacy-hops.json, written once, never overwritten), and only then drops the turns. */
+  const HOP_KEY_RE = /^hop_[0-9a-f]{32}$/;
+  const LEGACY_HOP_TURN = /^PIPELINE HANDOFF — you are stage \d+ of a work line on this station\.\n\nThe original request was:\n/;
+  function withoutLegacyHops(msgs) {
+    const kept = [];
+    let dropped = 0;
+    for (let i = 0; i < msgs.length; i++) {
+      const m = msgs[i];
+      if (m && m.role === 'user' && LEGACY_HOP_TURN.test(m.content)) {
+        dropped++;
+        if (msgs[i + 1] && msgs[i + 1].role === 'assistant') { dropped++; i++; }   // the hop's own reply to that handoff
+        continue;
+      }
+      kept.push(m);
+    }
+    return { kept, dropped };
+  }
+
   function trimTail(messages, maxTurns, maxChars) {
     let m = messages.slice(-maxTurns);
     let total = 0;
@@ -129,7 +155,9 @@
         const raw = readJson(historyFile(agentId));
         const msgs = raw && Array.isArray(raw.messages) ? raw.messages : [];
         // defend against a hand-corrupted file: keep only well-formed {role,content} turns
-        return msgs.filter(m => m && ROLES.has(m.role) && typeof m.content === 'string');
+        const wellFormed = msgs.filter(m => m && ROLES.has(m.role) && typeof m.content === 'string');
+        // a per-agent history never replays a legacy work-line hop exchange (see LEGACY HOP TURNS above)
+        return HOP_KEY_RE.test(String(agentId)) ? wellFormed : withoutLegacyHops(wellFormed).kept;
       },
 
       /* clearHistory — drop this agent's messaging transcript and start fresh. A browser chat can hit /new
@@ -150,7 +178,21 @@
         if (!ROLES.has(role)) throw new Error('bad role: ' + role);
         const file = historyFile(agentId);
         const raw = readJson(file);
-        const prev = raw && Array.isArray(raw.messages) ? raw.messages.filter(m => m && ROLES.has(m.role) && typeof m.content === 'string') : [];
+        let prev = raw && Array.isArray(raw.messages) ? raw.messages.filter(m => m && ROLES.has(m.role) && typeof m.content === 'string') : [];
+        if (!HOP_KEY_RE.test(String(agentId))) {
+          const clean = withoutLegacyHops(prev);
+          if (clean.dropped) {
+            // ONE-TIME, NON-DESTRUCTIVE: keep the untouched envelope before this rewrite drops the legacy hop turns.
+            // If the archive cannot be written, keep the turns on disk (loadHistory still never replays them).
+            const archive = pathMod.join(root, agentId + '.history.legacy-hops.json');
+            let archived = readRaw(archive) !== undefined;
+            if (!archived) {
+              try { writeRaw(archive, raw); archived = true; }
+              catch (e) { failNote('channels.store.legacyHopArchive', e); }
+            }
+            if (archived) prev = clean.kept;
+          }
+        }
         prev.push({ role: role, content: String(text == null ? '' : text), ts: clock.now() });
         const next = trimTail(prev, limits.maxTurns, limits.maxChars);
         writeJsonAtomic(file, { version: 1, messages: next });

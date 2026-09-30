@@ -149,7 +149,7 @@ async function waitUntil(fn, ms, label) { const deadline = Date.now() + ms; whil
   try {
     const token = await bootToken(B, B);
     A.ok(token.length >= 32, 'got a session API token');
-    sse = await startSseCollector(B + '/api/channels/events?token=' + encodeURIComponent(token));
+    sse = await startSseCollector(B + '/api/channels/events?' + require('./_httpToken.js').sseQuery(token));
 
     // ================= workitem.superseded =================
     // wait for the adapter's drop-pending poll so the hub is live, then HOLD run #1 in-flight.

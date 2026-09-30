@@ -7,6 +7,7 @@ const footOf=(x,y)=>({x:x*12+6,y:y*12+11}),tileOf=(x,y)=>({x:Math.floor(x/12),y:
 function runtime(g){return Function('geo','blocked','footOf','tileOf',`
 const T=12, CORNER_LOOK=2.5, movementBlockers=(b,v)=>v, beltUnion=()=>blocked, tileBlockedFor=(v,x,y)=>v.has(x+','+y);
 const stepGait=(b,dx,dy,d,sp,last,dt)=>Math.min(d,sp*dt/1000);
+const gaitMove=(b,dx,dy,d,s)=>{b.px+=dx/d*s;b.py+=dy/d*s};
 // This fixture has one worker; multi-body right-of-way is exercised by hallway-traffic.test.js.
 const stepTraffic=()=>false;
 ${['seatFoot','startBodyPath','canRoundCorner','crewNextWaypoint','stepCrewToSeat'].map(fn).join('\n')}

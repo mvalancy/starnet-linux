@@ -22,6 +22,7 @@ const P = require('../frontend/app/pipeline.js');
 
 const src = f => fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', f), 'utf8');
 const build = src('build.js');
+const panelSrc = src('workflowpanel.js');   // the JOINER/LOOP/INBOX/STEP editing moved into the docked Workflow panel (2026-09-22)
 
 /* ---------- 1. PURE helpers, extracted from the shipped source ---------- */
 const BEGIN = 'REFIT-JUNCTION-PURE-BEGIN', END = 'REFIT-JUNCTION-PURE-END';
@@ -127,21 +128,21 @@ const workflow = new Function(build.slice(build.indexOf('*/', wbi) + 2, build.la
 }
 
 /* ---------- 3. SOURCE wiring laws ---------- */
-const flow = build.slice(build.indexOf('function openFlowCard'), build.indexOf('function openBeltCard'));
+const flow = panelSrc.slice(panelSrc.indexOf('  function paintTrigger('), panelSrc.indexOf('  /* ===== THE STEP TEST'));
 A.ok(/jnField\('jn-timeout', '[^']+', 1, 120, 1, [^,]+, '10'\)/.test(flow), 'JOINER card: a TIMEOUT number field, 1–120, default 10 as its placeholder');
 A.ok(/type="number" min="' \+ min \+ '" max="' \+ max \+ '"/.test(flow), 'the gate number field is a .refit-num with min/max (never OS paint)');
 A.ok(/marked PARTIAL/.test(flow), 'JOINER card explains what partial release means');
 A.ok(/jnField\('loop-max', 'MAX PASSES', 1, loopMaxCeil, 1, [^,]+, String\(loopMaxDef\)\)/.test(flow), 'LOOP card: MAX PASSES field, 1..compiler ceiling, compiler default as placeholder');
-A.ok(/class="bb sm loop-exit/.test(flow) && /loopExitLabels\(valPlan/.test(flow), 'LOOP card: DONE lane picker lists the compiled plan\'s real exits');
+A.ok(/class="bb sm loop-exit/.test(flow) && /H\.loopExits\(p\.id\)/.test(flow) && /loopExitLabels\(valPlan/.test(build.slice(build.indexOf('loopExits: id =>'), build.indexOf('loopExits: id =>') + 400)), 'LOOP card: DONE lane picker lists the compiled plan\'s real exits (build.js hands the panel loopExitLabels over valPlan)');
 A.ok(/loop-when/.test(flow) && /\['code', 'CODE'\], \['research', 'RESEARCH'\], \['general', 'GENERAL'\]/.test(flow),
   'LOOP verdict tag is a pick of the ONLY tags the classifier can produce (a typed "approved" could never match)');
 A.ok(/\['approved', 'APPROVED'\], \['revise', 'REVISE'\]/.test(flow) && /loop-verdict/.test(flow), 'LOOP verdict picks: APPROVED / REVISE (the words routing/verdict.js parses) sit beside the classifier tags (2026-08-22)');
 A.ok(/loopRuleTxt\(p\.when, p\.maxIter \|\| loopMaxDef\)/.test(flow) && /loopRuleTxt\(res\.when/.test(flow), 'the card copy and saved-note use the same rule, including the saved pass limit');
 A.ok(/goes round until the reviewer’s last line says VERDICT: ' \+ when/.test(build) && /or MAX PASSES/.test(build) && /marked unapproved/.test(build), 'the verdict rule copy: round until VERDICT: <word> or MAX PASSES, then DONE marked unapproved — what chain.js runs');
 A.ok(/goes round again ONLY while the reviewer’s output reads as/.test(build), 'the classifier-tag rule copy is unchanged: the tag keeps it looping, anything else leaves on DONE');
-A.ok(/station\.configureJunction\(propId, Object\.keys\(cfg\)\.length \? cfg : null\)/.test(flow), 'gate saves go through configureJunction (the validated model path)');
-A.ok(/const closeP = \(\) => \{ saveName\(\); saveLimits\(\); saveGate\(\);/.test(flow), 'closing the flow card saves the gate config (ESC never discards it)');
-A.ok(/for \(const el of \[jnTimeout, loopMax\]\)[\s\S]{0,300}addEventListener\('blur', saveGate\)[\s\S]{0,200}e\.key === 'Enter'/.test(flow), 'number fields save on blur AND Enter');
+A.ok(/station\(\)\.configureJunction\(p\.id, Object\.keys\(cfg\)\.length \? cfg : null\)/.test(flow), 'gate saves go through configureJunction (the validated model path)');
+A.ok(/el\._saveGate = saveGate;/.test(flow) && /if \(el\._saveGate\) el\._saveGate\(\);/.test(panelSrc), 'closing the panel saves the gate config (ESC never discards it)');
+A.ok(/for \(const n of \[jnTimeout, loopMax\]\)[\s\S]{0,300}addEventListener\('blur', saveGate\)[\s\S]{0,200}e\.key === 'Enter'/.test(flow), 'number fields save on blur AND Enter');
 A.ok(/lbNote\.textContent = \(res\.limits \? '✓ line budget saved/.test(flow), 'LINE BUDGET confirms ON THE CARD after a save (blur or Enter)');
 A.ok(!/JSON\.stringify\(plan\.(junctions|gate)/.test(src('world.js')), 'nothing was added to the plan-poster key — junction config rides plan.hash already');
 
@@ -162,13 +163,12 @@ A.ok(/SAMPLE RIDING THE LINE/.test(fin), 'an in-flight sample is shown as in fli
 A.ok(/finSampleHTML\(sr\.view\)/.test(fin) && /fl-result/.test(fin), 'the result block is rendered into the card');
 A.ok(!/sample job dispatched — watch the line/.test(fin), 'the old fire-and-forget flash is gone');
 
-// STEP card: live line fact, compute rule, display names
-const step = build.slice(build.indexOf('function lineFactHTML'), build.indexOf('function openWorkstationPicker'));
-A.ok(/data-linefact=/.test(step) && /function refreshLineFacts/.test(step), 'the ON <LINE> fact is addressable and refreshable');
-A.ok(/renderFinCard\(\);\n\s*refreshLineFacts\(\);/.test(build), 'line facts refresh after every plan recompile (click-connect lands on the open card)');
-A.ok(/esc\(agentLabel\(p\.agentId\)\) \+ ' needs an assigned workstation in this room/.test(step), 'the workstation requirement names the assigned agent and room');
-A.ok(/station\.addProp\(\{ t: 'desk', x, y, w: 2, h: 1, agentId: p\.agentId \}\)/.test(step), 'the one-click fix places a real desk in the room, bound to the agent (object=capability)');
-A.ok(/'Assigned to ' \+ esc\(agentLabel\(cur\)\)/.test(step) && /'Assigned to ' \+ agentLabel\(aid\)/.test(step), 'assignment shows the display name, never the raw id');
+// STEP (the panel's BAY editor): live line facts, compute rule, display names
+A.ok(/data-live="gets"/.test(panelSrc) && /data-live="to"/.test(panelSrc) && /function refreshLineFacts/.test(build) && /WorkflowPanel\.refresh\(\)/.test(build), 'the GETS/TO line facts are addressable and refresh off the recompiled plan');
+A.ok(/renderFinCard\(\);\n\s*refreshLineFacts\(\);/.test(build), 'line facts refresh after every plan recompile (click-connect lands on the open panel)');
+A.ok(/esc\(nameOf\(p\.agentId\)\) \+ ' needs an assigned workstation in this room/.test(panelSrc), 'the workstation requirement names the assigned agent and room');
+A.ok(/station\.addProp\(\{ t: 'desk', x, y, w: 2, h: 1, agentId: p\.agentId \}\)/.test(build) && /H\.requisitionPcFor\(S\.sel\)/.test(panelSrc), 'the one-click fix places a real desk in the room, bound to the agent (object=capability)');
+A.ok(/esc\(String\(a\.name \|\| a\.id\)\.toUpperCase\(\)\)/.test(panelSrc) && /H\.flashTip\('bay → ' \+ nameOf\(b\.dataset\.aid\)/.test(panelSrc), 'assignment shows the display name, never the raw id');
 
 // FINISH card follows the focused line; coach bubbles stack
 A.ok(/function finFocusLine\(propId\)/.test(build), 'a focus-line helper exists');

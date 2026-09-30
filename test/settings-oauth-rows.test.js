@@ -66,7 +66,11 @@ A.ok(/p !== 'codex' && p !== 'grok' && p !== 'kimi'/.test(keycta), 'keycta treat
   A.eq(g.kind, 'oauth', 'a grok_not_connected error classifies as the oauth sign-in class');
   A.eq(g.provider, 'grok', 'the verdict carries the grok provider so the door can name it');
   A.ok(/key/i.test(g.userMessage), 'the grok oauth message still names the add-a-key alternative (never a dead-end)');
-  A.eq(actionButton(g).label, '⏼ RECONNECT GROK', 'the grok door reads ⏼ RECONNECT GROK');
+  // never connected is not "expired": nothing to reconnect, so the door reads SIGN IN
+  A.eq(actionButton(g).label, '⏼ SIGN IN TO GROK', 'a never-connected grok door reads ⏼ SIGN IN TO GROK');
+  A.ok(!/expired/i.test(g.userMessage), 'a never-connected grok is not told its sign-in expired');
+  const gDead = friendlyError(new Error('Grok (xAI) http 401 - invalid access token'));
+  A.eq(actionButton(gDead).label, '⏼ RECONNECT GROK', 'a grok sign-in that died mid-life still reads ⏼ RECONNECT GROK');
 
   const km = friendlyError(new Error('kimi_auth_error: refresh_token rejected — sign in again'));
   A.eq(km.kind, 'oauth', 'a kimi auth error classifies as oauth');

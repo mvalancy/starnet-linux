@@ -32,6 +32,8 @@ A.eq(map('skill.view'), 'notebook', 'skill.view -> notebook');
 A.eq(map('recall_conversation'), 'notebook', 'recall_conversation -> notebook');
 A.eq(map('todo'), null, 'todo rides the computer (taskplan freebie, 2026-08-17) — no cap-prop pulse, same rule as quest.update');
 A.eq(map('image_generate'), 'studio', 'image_generate -> studio');
+A.eq(map('resolve_timeline_file'), 'studio', 'resolve_timeline_file -> studio');
+A.eq(map('resolve_control'), 'studio', 'resolve_control -> studio');
 A.eq(map('spotify_play'), 'jukebox', 'spotify_play -> jukebox');
 
 /* ---- the no-double-fire law: tools with their OWN floor visual return null ---- */

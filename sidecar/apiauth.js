@@ -6,8 +6,9 @@
    - PRIMARY (defended): a malicious WEBSITE the user visits must not drive the agent or read its data via
      fetch()/EventSource to the loopback port. Three layers stop it: (a) the Host pin defeats DNS-rebinding;
      (b) the Origin allow-list rejects foreign origins; (c) a per-launch secret token is REQUIRED on every
-     API call — normally as a custom header, with documented query-token escape hatches for browser APIs that
-     cannot set headers. A custom header cannot be set cross-origin without a CORS preflight the server refuses,
+     API call — as a custom header. Browser surfaces that cannot set a header (link/tab opens, EventSource, the
+     unload beacon) present a SCOPED, SHORT-LIVED ticket instead (./apitickets.js) — never the master token; the
+     master token in a query string is refused everywhere (2026-09-25: URLs leak into history/Referer/logs). A custom header cannot be set cross-origin without a CORS preflight the server refuses,
      and cross-origin reads of our page/responses are opaque, so a site can neither forge nor steal it.
    - RESIDUAL (accepted, documented): a process running as the SAME OS user can read the token (it is injected
      into the served page), the keychain, and the data files. That is inherent to a single-user loopback app —
@@ -17,6 +18,7 @@
    All functions are pure (no ambient clock/rng). timingSafeEqual is deterministic, so this passes lint-determinism. */
 'use strict';
 const nodeCrypto = require('node:crypto');
+const apitickets = require('./apitickets.js');
 
 // the desktop (Tauri) build serves the bundled UI from a custom-scheme origin, not the loopback http origin.
 const TAURI_ORIGINS = new Set(['tauri://localhost', 'http://tauri.localhost', 'https://tauri.localhost', 'app://localhost']);
@@ -49,14 +51,9 @@ function pathOf(url) { const u = String(url || ''); const i = u.indexOf('?'); re
      /api/spotify/callback : an OAuth redirect — a top-level browser navigation, no place to put a header
      /api/connectors/oauth/callback : same — the MCP-connector OAuth redirect; the CSRF `state` param (matched
                              against the in-memory pending map) is its fence, exactly like the Spotify callback
-     /api/channels/events  : SSE — EventSource cannot set headers, so it carries a ?token= query instead,
-                             validated by queryTokenOk in the handler
-     /api/file query token : not exempt; index.js accepts ?token only for GET/HEAD /api/file because native
-                             media/link loads cannot attach a custom header
-     /api/save query token : not exempt; index.js accepts ?token only for POST /api/save because the unload
-                             beacon (navigator.sendBeacon) cannot attach a custom header either — the last
-                             debounced save must survive a window close (see queryTokenRoute) */
-const TOKEN_EXEMPT = new Set(['/api/key', '/api/channels/token', '/api/health', '/api/spotify/callback', '/api/connectors/oauth/callback', '/api/channels/events']);
+   NOT exempt, but header-less: GET/HEAD /api/file (link/tab open), GET /api/channels/events (EventSource) and
+   POST /api/save (unload beacon) may present a ?ticket= scoped to exactly that request — see ticketOk below. */
+const TOKEN_EXEMPT = new Set(['/api/key', '/api/channels/token', '/api/health', '/api/spotify/callback', '/api/connectors/oauth/callback']);
 function requiresApiToken(req) {
   if (!req || req.method === 'OPTIONS') return false;
   const p = pathOf(req.url);
@@ -68,11 +65,6 @@ function headerToken(req) {
   const h = (req && req.headers) || {};
   return String(h['x-starnet-token'] || h['x-skynet-token'] || '');   // dual-accept the legacy header name
 }
-function queryToken(req) {
-  const u = String((req && req.url) || ''); const i = u.indexOf('?');
-  if (i < 0) return '';
-  try { return String(new URLSearchParams(u.slice(i + 1)).get('token') || ''); } catch (_) { return ''; }
-}
 // constant-time compare; false on any length mismatch / empty (never throws).
 function constTimeEq(a, b) {
   a = String(a == null ? '' : a); b = String(b == null ? '' : b);
@@ -80,23 +72,18 @@ function constTimeEq(a, b) {
   try { return nodeCrypto.timingSafeEqual(Buffer.from(a), Buffer.from(b)); } catch (_) { return false; }
 }
 function apiTokenOk(req, token) { return constTimeEq(headerToken(req), token); }     // header path (fetch)
-function queryTokenOk(req, token) { return constTimeEq(queryToken(req), token); }    // query path (EventSource/SSE)
 
-/* The narrow method×path matrix allowed to authenticate via ?token= instead of the custom header — ONLY the
-   browser surfaces that PROVABLY cannot set a header:
-     GET/HEAD /api/file : native media/link loads (<img>, <video>, clicked links)
-     POST     /api/save : the unload beacon (navigator.sendBeacon) — the last debounced save on window close
-   Everything else keeps the header-only rule (a query token in a URL is loggable/copyable, so the escape
-   hatch stays as small as possible). Pure predicate on (method, path) so it is unit-testable. */
-function queryTokenRoute(req) {
-  const m = req && req.method;
-  const p = pathOf(req && req.url);
-  if ((m === 'GET' || m === 'HEAD') && p === '/api/file') return true;
-  if (m === 'POST' && p === '/api/save') return true;
-  return false;
+/* The header-less escape hatch: a ?ticket= minted for EXACTLY this request's resource (apitickets.apiTicketClaim
+   derives kind + scope from method/path/query; the ticket itself carries no scope). Only three request shapes can
+   claim one — GET/HEAD /api/file, GET /api/channels/events, POST /api/save — everything else is header-only.
+   `now` and the single-use `guard` are injected (pure). */
+function ticketOk(req, token, now, guard) {
+  const claim = apitickets.apiTicketClaim(req);
+  if (!claim || !claim.ticket) return false;
+  return apitickets.verify(token, claim.ticket, claim.kind, claim.scope, { now: now, guard: guard }).ok;
 }
 
 module.exports = {
-  isAllowedApiOrigin, isAllowedHost, requiresApiToken, apiTokenOk, queryTokenOk, queryTokenRoute,
-  headerToken, queryToken, constTimeEq, pathOf, loopbackOrigins, TAURI_ORIGINS, TOKEN_EXEMPT
+  isAllowedApiOrigin, isAllowedHost, requiresApiToken, apiTokenOk, ticketOk,
+  headerToken, constTimeEq, pathOf, loopbackOrigins, TAURI_ORIGINS, TOKEN_EXEMPT
 };

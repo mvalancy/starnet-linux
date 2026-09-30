@@ -10833,7 +10833,9 @@ const PropSprites = (() => {
     { id: "treasury_token_furnace", label: "TOKEN FURNACE", cat: "storage", tier: "cosmetic", w: 1, h: 2, animated: true, blocks: true },
     // COMMS — antennas & mail dressing.
     { id: "commswall", label: "COMMS WALL", cat: "comms", tier: "cosmetic", w: 6, h: 1, animated: true, blocks: false },
-    { id: "comms_inbox", label: "INBOX", cat: "comms", tier: "cosmetic", w: 2, h: 1, animated: true, blocks: true },
+    // ONE CANONICAL INBOX (2026-09-23 playtest): this decor tray used to be labelled INBOX too, so searching "inbox"
+    // offered two different INBOX pieces (2x2 workflow machine, 2x1 decor). The id never renames (saves keep rendering).
+    { id: "comms_inbox", label: "MAIL TRAY", cat: "comms", tier: "cosmetic", w: 2, h: 1, animated: true, blocks: true, desc: "Decoration — a desk mail tray. It routes nothing: the workflow INBOX, where outside work enters a line, is in Conveyors › MACHINES." },
     { id: "gigs_thumbwall", label: "THUMB WALL", cat: "comms", tier: "cosmetic", w: 2, h: 1, animated: true, blocks: false },
     { id: "gigs_amp", label: "AMP", cat: "comms", tier: "cosmetic", w: 1, h: 1, animated: true, blocks: true, stack: true },
     { id: "pub_publishpress", label: "PUBLISH PRESS", cat: "comms", tier: "cosmetic", w: 2, h: 2, animated: true, blocks: true },

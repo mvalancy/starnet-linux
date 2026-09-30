@@ -54,6 +54,18 @@
     return b + sep + s;
   }
 
+  /* ---- nonLocalPathReason(raw) — '' for a path that names THIS machine's filesystem, else why not (audit
+     2026-09-25 #19). A UNC root (\\server\share, //host/share) makes even a stat() an SMB connection that can leak
+     the user's NTLM hash to whoever runs the server; device-namespace forms (\\?\, \\.\, \??\) bypass Win32 path
+     normalization. Checked on the RAW string, before path.resolve can reshape it. ---- */
+  function nonLocalPathReason(raw) {
+    const s = String(raw == null ? '' : raw);
+    if (s.indexOf('\0') >= 0) return 'the path contains a NUL byte';
+    if (/^[\\/]{2}[?.](?:[\\/]|$)/.test(s) || /^[\\/]\?\?[\\/]/.test(s)) return 'device paths (\\\\?\\, \\\\.\\) are not accepted here — use an ordinary local folder path';
+    if (/^[\\/]{2}/.test(s)) return 'network (UNC) paths are not accepted here — use a folder on this computer';
+    return '';
+  }
+
   /* ---- detectCandidates({ platform, env }) — build the BASE candidate roots purely from env. No existence checks
      and no per-agent enumeration here (index.js does that with fs); this only says "here is where each harness
      would live on this machine". Returns [{ harness, root, kind:'state'|'home', label }]. A candidate whose env
@@ -396,7 +408,7 @@
 
   return {
     TEXT_MAX,
-    detectCandidates, filesWanted, scanProfile,
+    detectCandidates, filesWanted, scanProfile, nonLocalPathReason,
     // parseJson5 + openclawAgents power index.js's detect enumeration; openclawModel/hermesModel ride along for
     // the pure tests. Everything else stays internal.
     parseJson5, openclawAgents, openclawModel, hermesModel

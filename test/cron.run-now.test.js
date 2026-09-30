@@ -27,7 +27,7 @@ const runOnceBlock = sliceBetween(src, /async function runOnce\(/, /\/\/ ---- co
 
 A.ok(/function placeCronWorkitem\s*\(/.test(src), 'shared cron workitem helper exists');
 A.ok(/placeWorkitem:\s*placeCronWorkitem/.test(driverBlock), 'scheduled cron uses the shared workitem helper');
-A.ok(/placeCronWorkitem\s*\(\s*job\.agentId\s*,\s*job\.prompt\s*,\s*runId\s*\)/.test(runNowBlock), 'manual Run Now places a cron workitem');
+A.ok(/placeCronWorkitem\s*\(\s*job\.agentId\s*,\s*job\.prompt\s*,\s*runId\s*(,\s*job\.dockId\s*)?\)/.test(runNowBlock), 'manual Run Now places a cron workitem');
 A.ok(/broadcast:\s*true/.test(runNowBlock), 'manual Run Now opts into SSE lifecycle broadcast');
 A.ok(/manual[\s/]+Run Now[\s/]+opts into broadcast/i.test(runOnceBlock), 'runOnce comment documents manual cron broadcast reason');
 
@@ -75,6 +75,6 @@ A.ok(/entryUsd:\s*state\.usd/.test(runNowBlock), "Run Now seeds the chain ceilin
    `lastUsd 0` — the hop-only chain spend was dropped and markRun never received usd at all. Both fire paths must
    add line.usd to the entry spend and hand it to markRun. */
 A.ok(/state\.usd \+= line\.usd/.test(runNowBlock), "Run Now adds the line's hop spend to the entry run's spend");
-A.ok(/cronStore\.markRun\([^;]*usd:\s*state\.usd/.test(runNowBlock), "Run Now records the line total on the routine (markRun usd)");
+A.ok(/cronDriver\.settleRun\(job\.id, runId, state, null\)/.test(runNowBlock), "Run Now passes the line's full state into the shared durable settlement path");
 
 if (require.main === module) A.report('cron.run-now.test');

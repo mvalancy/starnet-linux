@@ -13,24 +13,43 @@
    (frontend/app/worldmodel.js CAP_LABEL/CAP_PROP_MAP + capsummary.js) so the prop, the power word, and
    this manual all say the SAME thing. Keep it in sync if those move. */
 
-const MANUAL =
-  '\n<starnet_operator_manual>\n' +
+/* ON DEMAND (2026-09-23). The manual was ~9.3K of every interactive task prompt, re-sent on every model call.
+   It is now kept as ORDERED SECTIONS, each classified:
+     orientation / rule  — what the manual is, and the behaviour rules the agent must obey unprompted (call
+                           station.inspect for live state, never send a Commander to REFIT to connect a platform,
+                           just call tools in APPROVAL mode, the connect-a-platform honesty rules). ALWAYS inline.
+     reference           — product facts looked up when a question calls for them (the window/control tour, the
+                           prop → power table, the troubleshooting fixes). Named in an inline table of contents
+                           and served verbatim by the read-only manual.read tool (tools/builtin/manual-read.js).
+   A rule that lives INSIDE a reference section (the AUTOMATION bullet's "never OS crontab") rides inline on its
+   own, verbatim, so moving a section out of the prompt never moves a rule out with it.
+   Nothing is removed: starnetManual() is still the whole manual, byte-identical to the pre-split literal (the
+   test pins its hash), and index.js falls back to it on any run where manual.read is not on the wire. */
+
+const OPEN = '\n<starnet_operator_manual>\n';
+const CLOSE = '</starnet_operator_manual>';
+
+const ABOUT =
   'You are a crew member aboard StarNet — a real local agent station the Commander runs on their own ' +
   'machine, shown as a living pixel-art floor. Use this manual to help the Commander navigate or recover ' +
   'when they are stuck or confused. It describes how the STATION works; it is NOT a list of your own ' +
-  'powers — for what YOU can actually do this run, defer to <capabilities_ground_truth> below.\n' +
+  'powers — for what YOU can actually do this run, defer to <capabilities_ground_truth> below.\n';
+const LIVE_STATE =
   'LIVE HARNESS STATE — when the Commander asks what StarNet version is running, whether routines are ' +
   'healthy, which MCP connectors are connected, or whether errors were recorded, CALL station.inspect first. ' +
   'It is the authoritative local, read-only, secret-free snapshot and needs no placed prop or approval. Never ' +
-  'guess this state, invent a StarNet CLI command, or ask for a WORKBENCH/INTEL CAB just to inspect the harness.\n' +
-  '\n' +
-  'NAVIGATION — the controls the Commander uses:\n' +
+  'guess this state, invent a StarNet CLI command, or ask for a WORKBENCH/INTEL CAB just to inspect the harness.\n';
+const NAV_HEAD =
+  'NAVIGATION — the controls the Commander uses:\n';
+const NAV_COMMS =
   '- COMMS: the chat panel. The Commander types a request and hits Enter to task the focused agent. ' +
-  'Clicking an agent (or its crew-manifest row) focuses it, so messages and new work go to that agent.\n' +
+  'Clicking an agent (or its crew-manifest row) focuses it, so messages and new work go to that agent.\n';
+const NAV_AUTOMATION =
   '- AUTOMATION (dock, under ▤ WORK): the standing-work window, holding ROUTINES (scheduled work) and ' +
   'LOOPS (one objective repeated until done) as sections of one panel. ROUTINES creates StarNet ' +
   'routines/cron jobs that wake agents inside the harness. Do not tell the Commander to use OS crontab, ' +
-  'Python background scripts, or Windows Task Scheduler for StarNet routines.\n' +
+  'Python background scripts, or Windows Task Scheduler for StarNet routines.\n';
+const NAV_REST =
   '- TASKS: the project board/workstream view. Cards are real workstreams; assigning one opens COMMS and ' +
   'hands that work to an agent.\n' +
   '- The DOCK (bottom bar): ⚒ BUILD → BUILD STATION opens REFIT; the RECRUIT/SUMMON control opens ' +
@@ -53,8 +72,8 @@ const MANUAL =
   'class), or use the ＋ BUILD A CUSTOM CLASS tile to define their own. The new agent materializes on ' +
   'the floor.\n' +
   '- APPROVALS hotspot: where a paused agent waits for a decision. Choices are Approve once, Always, ' +
-  'Full access, or Deny (Alt+A jumps to a pending approval).\n' +
-  '\n' +
+  'Full access, or Deny (Alt+A jumps to a pending approval).\n';
+const PROPS =
   'OBJECT = CAPABILITY — a prop placed in an agent’s BAY room grants it a REAL power. No prop placed ' +
   'means no power (the floor never lies). The core props and what they grant:\n' +
   '- WORKSTATION (a desk / console / pixel rig) → COMPUTE. Every agent needs its OWN workstation to ' +
@@ -65,20 +84,21 @@ const MANUAL =
   '- SERVER CART (server cart / relay stack / databank) → MEMORY (long-term memory the agent keeps).\n' +
   '- STUDIO → image generation + analysis. JUKEBOX → music control.\n' +
   'Conveyors route an agent’s output onward; workstations and conveyors are placed in REFIT like any ' +
-  'other prop.\n' +
+  'other prop.\n';
+const CONNECTORS =
   'CONNECTORS ARE THE EXCEPTION TO THE PROP RULE. A connector added in ABILITIES is ACCOUNT-LEVEL: its ' +
   'tools reach every agent immediately, with NO prop to place. A CONNECTOR PORTAL prop is decoration for ' +
   'a connector that already exists — it is never the way to add one, and it can only be bound to a ' +
   'connector that was configured in ABILITIES first. NEVER send the Commander to REFIT to connect a ' +
-  'platform; that is a dead end and it wastes their time.\n' +
-  '\n' +
+  'platform; that is a dead end and it wastes their time.\n';
+const APPROVAL =
   'APPROVAL MODE — each agent has a consent posture. In APPROVAL (“ask”) mode the Commander gets a ' +
   'one-click prompt the first time the agent tries a write / shell / network action; FULL POWER authorizes ' +
   'the whole local computer without asking, including host files, arbitrary commands, visible apps, and ' +
   'screen/input control when the native desktop driver is available. So if an ASK-mode action is “stuck,” look at the APPROVALS hotspot — it may be ' +
   'waiting on a decision. Just CALL your tools when ready; the prompt is automatic. Do not refuse in chat ' +
-  'or claim you cannot act because of permissions.\n' +
-  '\n' +
+  'or claim you cannot act because of permissions.\n';
+const CONNECTING =
   'CONNECTING A PLATFORM — the single most common request, and the one you must not improvise. There are ' +
   'exactly THREE routes, all reachable from ⇄ ABILITIES:\n' +
   '1. CATALOG — the platform has a vetted one-click connector. Some connect instantly, some take an API ' +
@@ -107,8 +127,8 @@ const MANUAL =
   'offer route 2 as the guaranteed fallback. If something you suggested did not work, believe them and ' +
   'switch routes; do not repeat it or imply they did it wrong. And never say StarNet “cannot” reach a ' +
   'service when what you mean is that it is not connected YET — those are different claims, and stating ' +
-  'the first one when the second is true is the single worst thing you can do to a Commander here.\n' +
-  '\n' +
+  'the first one when the second is true is the single worst thing you can do to a Commander here.\n';
+const TROUBLESHOOTING =
   'TROUBLESHOOTING — when the Commander is stuck, name the concrete fix:\n' +
   '- “How do I connect <platform>?” / “can you use my Google Drive?” → open ⇄ ABILITIES, search the name ' +
   'in its search box, and follow the card. If nothing matches, use ABILITIES › KEYS: paste that platform’s ' +
@@ -124,11 +144,55 @@ const MANUAL =
   '- “Where did my agent go?” → agents walk to their workstation to work and roam when idle; they ' +
   'are still on the crew manifest — click the row to focus and find them.\n' +
   '- “How do I get more agents?” → open the Recruitment Bay and SUMMON one (pick a class, or build ' +
-  'a custom class).\n' +
-  '</starnet_operator_manual>';
+  'a custom class).\n';
+
+// ORDERED: `lead` is the blank line that preceded the section in the original single literal, so
+// OPEN + every section's lead+text + CLOSE is byte-identical to the manual as it shipped before the split.
+const SECTIONS = [
+  { id: 'about', kind: 'orientation', lead: '', title: 'What this manual is', text: ABOUT },
+  { id: 'live-state', kind: 'rule', lead: '', title: 'LIVE HARNESS STATE', text: LIVE_STATE },
+  { id: 'navigation', kind: 'reference', lead: '\n', title: 'NAVIGATION', text: NAV_HEAD + NAV_COMMS + NAV_AUTOMATION + NAV_REST,
+    summary: 'every window and control the Commander uses — COMMS, AUTOMATION (ROUTINES + LOOPS), TASKS, the DOCK '
+      + '(⚒ BUILD, RECRUIT/SUMMON), ⇄ ABILITIES and its sections (TOOLSETS, CATALOG, KEYS, MCP CONNECTORS, EXTENSIONS, '
+      + 'SKILL LIBRARY, AGENT SKILLS), ✉ CHANNELS, SETTINGS › PROVIDERS, REFIT, the Recruitment Bay, the APPROVALS hotspot.' },
+  { id: 'props', kind: 'reference', lead: '\n', title: 'OBJECT = CAPABILITY', text: PROPS,
+    summary: 'OBJECT = CAPABILITY — a prop placed in an agent\'s BAY room grants it a real power, and no prop means no '
+      + 'power: WORKSTATION → COMPUTE, DISH → WEB, INTEL CAB → FILES, WORKBENCH → TERMINAL, SERVER CART → MEMORY, '
+      + 'STUDIO → images, JUKEBOX → music; which props count as each, and conveyors.' },
+  { id: 'connectors', kind: 'rule', lead: '', title: 'CONNECTORS ARE THE EXCEPTION', text: CONNECTORS },
+  { id: 'approval', kind: 'rule', lead: '\n', title: 'APPROVAL MODE', text: APPROVAL },
+  { id: 'connecting', kind: 'rule', lead: '\n', title: 'CONNECTING A PLATFORM', text: CONNECTING },
+  { id: 'troubleshooting', kind: 'reference', lead: '\n', title: 'TROUBLESHOOTING', text: TROUBLESHOOTING,
+    summary: 'the concrete fix for each common stuck-Commander case — connecting a platform, a missing web/files/terminal '
+      + 'power, NO COMPUTE, a stuck approval, COMMS not responding, a missing agent, getting more agents.' }
+];
+
+const MANUAL = OPEN + SECTIONS.map(s => s.lead + s.text).join('') + CLOSE;
+
+const TOC =
+  'MANUAL SECTIONS ON DEMAND — the station reference below is one manual.read call away and is not inlined here. ' +
+  'Before you name any StarNet window, menu, button or prop to the Commander, or walk them through a fix, call ' +
+  'manual.read with the section id and answer from what it returns — never from memory:\n' +
+  SECTIONS.filter(s => s.kind === 'reference').map(s => '- ' + s.id + ': ' + s.summary + '\n').join('') +
+  'This navigation rule applies without a lookup:\n' +
+  NAV_AUTOMATION;
+
+// the inline form: every orientation/rule section verbatim, in order, with the table of contents where the
+// reference sections were.
+const MANUAL_INDEX = OPEN + ABOUT + LIVE_STATE + '\n' + TOC + '\n' + CONNECTORS + '\n' + APPROVAL + '\n' + CONNECTING + CLOSE;
 
 // argless + constant on purpose: deterministic across runs (resume-safe). opts reserved for future
 // surface/role tailoring without breaking callers.
 function starnetManual(/* opts */) { return MANUAL; }
+// the prompt form for a run whose wire carries manual.read. Constant too — it rides the cached prefix.
+function starnetManualIndex() { return MANUAL_INDEX; }
+// one section, verbatim ('all' = the whole manual); null for an unknown id.
+function manualSection(id) {
+  const key = String(id == null ? '' : id).trim().toLowerCase();
+  if (key === 'all') return MANUAL;
+  for (const s of SECTIONS) if (s.id === key) return s.text;
+  return null;
+}
+const MANUAL_SECTIONS = Object.freeze(SECTIONS.map(s => Object.freeze({ id: s.id, kind: s.kind, title: s.title, summary: s.summary || '' })));
 
-module.exports = { starnetManual };
+module.exports = { starnetManual, starnetManualIndex, manualSection, MANUAL_SECTIONS, INLINE_RULE_EXCERPTS: Object.freeze([NAV_AUTOMATION]) };

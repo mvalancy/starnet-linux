@@ -294,6 +294,22 @@ A.eq(rank([gA, sX], '', { now: 1000 })[0].id, 'gA', 'no streamId passed -> no bo
 A.eq(rank([gA, sY], '', { now: 1000, streamId: 'ws_x' }).length, 2, 'an other-stream record is still ranked (searchable, not filtered)');
 A.eq(rank([sX], 'totally unrelated zzz', { now: 1000, streamId: 'ws_x' }).length, 0, 'the stream boost never overrides the relevance floor: a zero-overlap record drops under a real query');
 
+// ---- PROJECT TIER (memory-compound lane): a 'project'-scoped record surfaces ONLY inside its own project ----
+const { projectKey } = require('../sidecar/context.js');
+A.eq(projectKey('C:\\Users\\X\\Proj\\'), 'c:/users/x/proj', 'projectKey: backslashes, trailing slash and case are folded');
+A.eq(projectKey('/home/a/proj/'), '/home/a/proj', 'projectKey: posix root keeps its shape minus the trailing slash');
+A.eq(projectKey(null), '', 'projectKey: no root -> empty key');
+const pG = { id: 'pG', kind: 'fact', title: 'Fact', content: 'registry pushes rate-limit; batch retries', createdAt: 1000, scope: 'global' };
+const pA = { id: 'pA', kind: 'fact', title: 'Fact', content: 'registry pushes rate-limit in repo A', createdAt: 1000, scope: 'project', projectRoot: 'C:\\Proj\\A' };
+const pB = { id: 'pB', kind: 'fact', title: 'Fact', content: 'registry pushes rate-limit in repo B', createdAt: 1000, scope: 'project', projectRoot: 'c:/proj/b/' };
+A.eq(rank([pG, pA, pB], 'registry push', { now: 1000, projectRoot: 'c:/proj/a' }).map(r => r.id).join(','), 'pA,pG', 'inside project A: the A lesson floats above the global one; the B lesson is NOT injected');
+A.eq(rank([pG, pA, pB], 'registry push', { now: 1000, projectRoot: 'C:/Proj/B' }).map(r => r.id).join(','), 'pB,pG', 'inside project B (root differing only in case/slashes): the B lesson, never the A one');
+A.eq(rank([pG, pA, pB], 'registry push', { now: 1000 }).map(r => r.id).join(','), 'pG', 'an UNSCOPED run sees only the global tier — a project lesson never leaks out of its project');
+A.eq(rank([pG, pA, pB], '', { now: 1000, projectRoot: 'c:/proj/a' }).map(r => r.id).join(','), 'pA,pG', 'queryless turn: the project filter still holds (recency fallback never leaks B)');
+const legacy = { id: 'lg', kind: 'fact', title: 'Fact', content: 'registry pushes rate-limit legacy', createdAt: 1000 };
+A.eq(rank([legacy], 'registry', { now: 1000, projectRoot: 'c:/proj/a' }).length, 1, 'a legacy record with no scope/projectRoot is global (byte-identical recall for old notebooks)');
+A.eq(compactionMemoryBlock([pA, pB], 'registry push', { now: 1000, projectRoot: 'c:/proj/a' }).indexOf('repo B'), -1, 'the compaction memory block honours the project tier too');
+
 // floor:false opts out (notebook.read reorders substring-admitted matches — must never truncate them)
 A.eq(rank([sX], 'totally unrelated zzz', { now: 1000, streamId: 'ws_x', floor: false }).length, 1, 'floor:false keeps a zero-relevance record (explicit-read reorder contract)');
 

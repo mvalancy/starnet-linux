@@ -51,6 +51,21 @@ function scriptPrompt(decision) {
   await fsp.writeFile(path.join(proj, '.env'), 'SECRET=1\n');
 
   const fileAbs = path.join(proj, 'src', 'main.js');
+  // A final symlink whose target does not exist must fail closed before a
+  // blessed project can turn it into a protected workspace file.
+  {
+    const target = path.join(ROOT, 'forged-hooks-allowed.json');
+    const link = path.join(proj, 'dangling-approval.json');
+    let linked = false;
+    try { await fsp.symlink(target, link, 'file'); linked = true; }
+    catch (e) { if (!['EPERM', 'EACCES', 'ENOTSUP'].includes(e.code)) throw e; }
+    if (linked) {
+      const h = harness({ roots: [proj] });
+      await rejects(h.pt.guard(link, { scope: 'write', surface: 'autonomous' }), 'pathtrust refuses a dangling final symlink');
+      A.ok(!fs.existsSync(target), 'pathtrust created no outside target');
+      await fsp.unlink(link);
+    }
+  }
 
   // ---- PRIVATE WORKSPACE FLOOR: station-global grants and Full Access cannot cross agent jails ----
   {
@@ -266,7 +281,7 @@ function scriptPrompt(decision) {
     const LINK = '/proj/notes.txt', ENV = '/proj/.env';
     const fspFake = {
       async realpath(p) { return p === LINK ? ENV : p; },
-      async lstat(p) { if (p === LINK || p === ENV || p === '/proj') return {}; throw new Error('ENOENT'); },
+      async lstat(p) { if (p === LINK || p === ENV || p === '/proj') return {}; const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; },
       async stat(p) { if (p === '/proj') return { isDirectory: () => true }; throw new Error('ENOENT'); }
     };
     const pt = makePathTrust({ fsp: fspFake, pathMod: PM, roots: () => ['/proj'] });

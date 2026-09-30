@@ -135,6 +135,14 @@ body {
 #crew .crew-row.selected { border-color: var(--ui-edge); border-left: 2px solid var(--ph); background: var(--ui-face); box-shadow: inset 0 1px 0 var(--ui-highlight), 0 2px 4px rgba(0,0,0,.3); }
 #crew .crew-portrait { width: 35px; height: 43px; }
 #crew .crew-portrait img { width: 27px; height: 33px; object-fit: contain; image-rendering: pixelated; }
+/* SKIN THUMB (AgentPortraits.thumbHTML) — an agent shown by its body wherever a letter used to stand in. The image is
+   already rendered at the box's DEVICE size (integer NN / sharp downscale), so it is laid 1:1: no object-fit, and
+   pixelated as a safety net should a zoom step land between device pixels. A well draws its edge as an INSET ring
+   (box-shadow), never a border: a border would shrink the box and resample the image. A skin still loading shows a quiet
+   silhouette in the same box (never a letter). Each surface owns its own well; this rule owns only the figure. */
+.agt { display: inline-flex; align-items: flex-end; justify-content: center; flex: 0 0 auto; box-sizing: content-box; padding: 0; border: 0; overflow: hidden; vertical-align: middle; line-height: 0; }
+.agt img { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
+.agt .agt-sil { width: 62%; height: 78%; margin-bottom: 8%; fill: rgba(var(--ph-rgb),.22); }
 #crew .crew-row > .dot { position: absolute; left: 35px; bottom: 10px; width: 6px; height: 6px; outline: 2px solid var(--panel); }
 #crew .crew-main { min-width: 0; flex: 1; }
 #crew .crew-name { font-size: 17px; line-height: 1.2; text-shadow: none; }

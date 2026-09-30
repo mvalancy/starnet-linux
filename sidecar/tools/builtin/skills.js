@@ -27,6 +27,13 @@
     const onManage = deps && deps.onManage;
     const gate = (deps && deps.gate) || null;                          // skills/gate.js instance: may the MODEL read this skill?
     const readBeforeWrite = !!(deps && deps.readBeforeWrite);           // set for the autonomous review/curator passes
+    /* BUNDLED RECIPES ON DEMAND (2026-09-23). The run prompt indexes the Commander's enabled library recipes
+       instead of inlining their bodies; this is where a body is fetched. `bundled(name, ctx)` resolves a name
+       against the recipes THIS run is offered and returns { name, content } or null. It is consulted ONLY after
+       the agent's own store finds nothing, so every agent-authored lookup is unchanged, and it never touches the
+       guard, the read-before-write ledger, or onView — a shipped recipe is curated content, not a model-authored
+       skill the review/curator passes may rewrite. Absent (the review/curator forks), skill.view is exactly as before. */
+    const bundled = (deps && typeof deps.bundled === 'function') ? deps.bundled : null;
 
     /* THE READ-BEFORE-WRITE LEDGER (autonomous passes only).
        The background review and curator forks are handed skill.write/manage over the Commander's
@@ -178,12 +185,18 @@
 
     const viewTool = {
       name: 'skill.view', capability: 'memory', scope: 'read', requiresConsent: false,
-      description: 'Load the full step-by-step body of one saved skill by name or id. Call this whenever a saved skill may apply.',
+      description: bundled
+        ? 'Load the full step-by-step body of one saved skill, or of an installed recipe by its library:<slug> name, by name or id. Call this whenever a saved skill or installed recipe may apply.'
+        : 'Load the full step-by-step body of one saved skill by name or id. Call this whenever a saved skill may apply.',
       schema: { type: 'object', required: ['name'], properties: { name: { type: 'string' } } },
       run: (args, ctx) => {
         if (!store) return { content: 'The skill library is unavailable.', summary: 'unavailable' };
         const v = store.view((ctx && ctx.agentId) || 'agent', args && args.name);
-        if (!v) return { content: 'No skill named "' + (args && args.name) + '". Use skill.list to see what you have.', summary: 'not found' };
+        if (!v) {
+          const recipe = bundled ? bundled(args && args.name, ctx) : null;
+          if (recipe && recipe.content) return { content: recipe.content, summary: 'loaded ' + recipe.name };
+          return { content: 'No skill named "' + (args && args.name) + '". Use skill.list to see what you have.', summary: 'not found' };
+        }
         /* THE DELIVERY GATE. This is the only place a full body crosses into the conversation, so it
            gets the strict check (gate.verify re-digests the hydrated package: SKILL.md is read back
            off disk and can differ from what the scanner saw). A refused view is NOT a read — it must

@@ -86,6 +86,18 @@ with tempfile.TemporaryDirectory() as tmp:
         else:
             assert version and json.loads(receipt.read_text())['upgrade']['to'] == version
 `;
-const result = require('child_process').spawnSync(process.platform === 'win32' ? 'python' : 'python3', ['-c', probe], { encoding: 'utf8' });
-A.eq(result.status, 0, 'receipt uses actual installed XML/binary plist and rejects missing version: ' + result.stderr);
+const python = process.platform === 'win32' ? 'python' : 'python3';
+const result = require('child_process').spawnSync(python, ['-c', probe], { encoding: 'utf8' });
+// Missing = not on PATH (ENOENT), or the Windows Store ALIAS stub: python.exe exists but only prints 'Python was not
+// found; run without arguments to install from the Microsoft Store…' and exits 9009 with no stdout.
+const storeAlias = !result.error && !String(result.stdout || '').trim()
+  && (result.status === 9009 || /Python was not found/i.test(String(result.stderr || '')));
+if ((result.error && result.error.code === 'ENOENT') || storeAlias) {
+  console.log(`SKIP: ${python} not on PATH${storeAlias ? ' (only the Windows Store alias stub answered)' : ''} — installed plist receipt probe requires Python; other assertions still run.`);
+} else if (result.error) {
+  A.ok(false, `could not start ${python} for installed plist receipt probe: ${result.error.message}`);
+} else {
+  A.eq(result.status, 0, 'receipt uses actual installed XML/binary plist and rejects missing version: ' +
+    (result.stderr || (result.signal ? 'terminated by ' + result.signal : 'no stderr')));
+}
 A.report('desktop-build-macos-notarization.test');

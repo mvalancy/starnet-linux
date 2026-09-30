@@ -24,7 +24,7 @@ A.eq(ModelDock._internals.selectorLabel('anthropic/claude-haiku-4.5', 'medium'),
 A.eq(ModelDock._internals.selectorLabel('', 'none'),
   'Model selector: no model selected, Reasoning off',
   'the model-chip accessible name stays honest when no model is selected');
-A.ok(/toggle\.setAttribute\('aria-label',\s*selectorLabel\(current,\s*effort\)\)/.test(dock),
+A.ok(/toggle\.setAttribute\('aria-label',\s*selectorLabel\(current,\s*effort(?:,\s*item)?\)\)/.test(dock),
   'every ModelDock reflect refreshes the toggle accessible name from live model state');
 
 // ---- the shared picker component loads before its consumers ----
@@ -127,4 +127,59 @@ A.ok(/refreshIdBar:\s*renderIdBar/.test(chat), 'chat.js exposes refreshIdBar so 
 A.ok(/function applyQuickModel[\s\S]{0,2200}Chat\.refreshIdBar\(\)/.test(appjs), 'the footer dock model change re-syncs the COMMS header readout');
 A.ok(/function setAgentModelPin[\s\S]{0,1500}Chat\.refreshIdBar\(\)/.test(appjs), 'the dossier model pin re-syncs the COMMS header readout');
 
+// Execute the actual dossier handlers: a dropdown clear must not fall back to the
+// old pin in the collapsed advanced fields (v0.12.4 BYOK delegation escape).
+for (const file of ['frontend/app/stationui.js', 'website/app/app/stationui.js']) {
+  const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+  const start = source.indexOf("    const mSave = body.querySelector('#ag-model-save');");
+  const end = source.indexOf('    // PERSONALITY chips', start);
+  const handlers = source.slice(start, end);
+  function dossier() {
+    const nodes = {};
+    for (const id of ['ag-model-save', 'ag-model-msg', 'ag-model-pick', 'ag-model-in', 'ag-prov-in', 'ag-model-clear']) {
+      nodes['#' + id] = { value: '', listeners: {}, addEventListener(event, callback) { this.listeners[event] = callback; } };
+    }
+    nodes['#ag-model-in'].value = 'fixture/managed';
+    nodes['#ag-prov-in'].value = 'starnet';
+    let selection = { model: 'fixture/managed', provider: 'starnet', effort: 'high' }, change;
+    const saves = [];
+    new Function('body', 'ModelPicker', 'access', 'a', 'sfx', 'rerender', handlers)(
+      { querySelector: id => nodes[id] || null },
+      { populate: () => Promise.resolve(), read: () => selection, onChange: (_, callback) => { change = callback; } },
+      { config: { setModel: (...args) => { saves.push(args); return true; } } },
+      { id: 'worker', model: 'fixture/managed', provider: 'starnet' }, () => {}, () => {}
+    );
+    return { nodes, saves, pick(value) { selection = value; change(value); }, save() { nodes['#ag-model-save'].listeners.click(); } };
+  }
+  const clear = dossier();
+  clear.pick({ model: '', provider: '', effort: '' }); clear.save();
+  A.eq(JSON.stringify(clear.saves[0]), JSON.stringify(['worker', '', '', '']), file + ': follow-default SAVE clears the managed model/provider/effort');
+  const pin = dossier();
+  pin.pick({ model: 'fixture/byok', provider: 'openrouter', effort: 'medium' }); pin.save();
+  A.eq(JSON.stringify(pin.saves[0]), JSON.stringify(['worker', 'fixture/byok', 'openrouter', 'medium']), file + ': explicit BYOK pin still saves');
+  const advanced = dossier();
+  advanced.pick({ model: '', provider: '', effort: '' });
+  advanced.nodes['#ag-model-in'].value = 'custom-model'; advanced.nodes['#ag-prov-in'].value = 'custom'; advanced.save();
+  A.eq(JSON.stringify(advanced.saves[0]), JSON.stringify(['worker', 'custom-model', 'custom', '']), file + ': deliberately typed advanced model still saves');
+  const button = dossier(); button.nodes['#ag-model-clear'].listeners.click();
+  A.eq(JSON.stringify(button.saves[0]), JSON.stringify(['worker', '', '', '']), file + ': dedicated clear button clears the same identity');
+}
+for (const file of ['frontend/app/app.js', 'website/app/app/app.js']) {
+  const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+  const restore = source.match(/function rehydrateRoster\(savedAgents\) \{[\s\S]*?\n  \}/)[0];
+  const agents = new Map();
+  new Function('agents', 'agent', 'DATA', 'executionProfileOf', 'agentDocs', 'composeSystemPrompt', 'registerAgent', restore + '; rehydrateRoster(' + JSON.stringify([
+    { id: 'inherited', model: null, provider: null, reasoningEffort: null },
+    { id: 'legacy', model: '' },
+    { id: 'pinned', model: 'fixture/byok', provider: 'openrouter', reasoningEffort: 'low' }
+  ]) + ');')(agents, { model: 'fixture/managed', provider: 'starnet', reasoningEffort: 'high' }, { DEFAULT_SKIN: 'default' }, () => 'local', () => {}, () => '', () => {});
+  for (const id of ['inherited', 'legacy']) {
+    A.eq(agents.get(id).model, null, file + ': ' + id + ' stays unpinned after reload');
+    A.eq(agents.get(id).provider, null, file + ': ' + id + ' does not acquire the managed provider on reload');
+    A.eq(agents.get(id).reasoningEffort, null, file + ': ' + id + ' stays free of a pinned effort');
+  }
+  A.eq(agents.get('pinned').model, 'fixture/byok', file + ': explicit model survives reload');
+  A.eq(agents.get('pinned').provider, 'openrouter', file + ': explicit provider survives reload');
+  A.eq(agents.get('pinned').reasoningEffort, 'low', file + ': explicit effort survives reload');
+}
 A.report('agent-model-select.test');

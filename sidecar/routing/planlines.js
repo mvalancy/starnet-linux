@@ -25,6 +25,7 @@
        TWO lines rather than one. That is the safe direction: under-merging can only make a dock terminal
        (a line that did not run, visible and re-triggerable), never buy a stage the work never entered. */
 'use strict';
+const Pipeline = require('../../frontend/app/pipeline.js');
 
 const key = (x, y) => x + ',' + y;
 
@@ -114,19 +115,34 @@ function deriveLines(plan) {
   return { lines, lineOfProp, lineOfAgent };
 }
 
-/* healPlan(plan) -> the plan, or a shallow clone carrying a derived line map when it has none.
-   A plan that already answers `lineOfAgent` (every compile since 2026-08-07 does) is returned UNTOUCHED —
-   the compiled answer is always the authority; this only fills a hole. */
+/* healPlan(plan) -> the plan, or a shallow clone filling whichever DERIVABLE layer it lacks:
+     · the LINE map (lines / lineOfProp / lineOfAgent) — a plan written before line identity (2026-08-07);
+     · the DOCK layer (bayTileToDock / agentOfDock / docksOfAgent / dockChains / reachDock / gateDocks /
+       lineOfDock / entryDock) — a plan written before multi-bay agents (2026-09-22), marked docksDerived:true.
+   ⛔ The early return used to fire on `lineOfAgent` alone, which EVERY plan since 2026-08-07 carries — so a
+   stored plan with no dock layer would never have been healed. A plan returns untouched only when it answers
+   BOTH layers: the compiled answer is always the authority; this only fills holes. The dock layer comes from
+   Pipeline.deriveDockLayer — the same helpers the compiler attaches it with — and is lossless for any plan
+   compiled while DUP_AGENT was in force (one dock per agent). */
+const hasLines = p => Object.prototype.hasOwnProperty.call(p, 'lineOfAgent') && p.lineOfAgent && typeof p.lineOfAgent === 'object';
 function healPlan(plan) {
   if (!plan || typeof plan !== 'object') return plan;
-  if (Object.prototype.hasOwnProperty.call(plan, 'lineOfAgent') && plan.lineOfAgent && typeof plan.lineOfAgent === 'object') return plan;
-  const d = deriveLines(plan);
-  const out = Object.assign({}, plan, { lines: d.lines, lineOfProp: d.lineOfProp, lineOfAgent: d.lineOfAgent, linesDerived: true });
-  if (Array.isArray(plan.dockBays)) {
-    out.dockBays = plan.dockBays.map(b => {
-      const l = b && b.propId != null ? d.lineOfProp[String(b.propId)] : null;
-      return l ? Object.assign({}, b, { lineId: l }) : b;
-    });
+  const linesOk = hasLines(plan), docksOk = Pipeline.hasDockLayer(plan);
+  if (linesOk && docksOk) return plan;
+  let out = plan;
+  if (!linesOk) {
+    const d = deriveLines(plan);
+    out = Object.assign({}, plan, { lines: d.lines, lineOfProp: d.lineOfProp, lineOfAgent: d.lineOfAgent, linesDerived: true });
+    if (Array.isArray(plan.dockBays)) {
+      out.dockBays = plan.dockBays.map(b => {
+        const l = b && b.propId != null ? d.lineOfProp[String(b.propId)] : null;
+        return l ? Object.assign({}, b, { lineId: l }) : b;
+      });
+    }
+  }
+  if (!docksOk) {
+    const L = Pipeline.deriveDockLayer(out);
+    out = Object.assign({}, out, L, { docksDerived: true });
   }
   return out;
 }

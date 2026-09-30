@@ -11,9 +11,9 @@
    price catalog. With it, the final chunk carries the authoritative billed cost cost.js prefers. */
 'use strict';
 (function (root, factory) {
-  if (typeof module !== 'undefined' && module.exports) module.exports = factory(require('./provider.js'), require('./errorClass.js'));
-  else { root.SK = root.SK || {}; root.SK.providers = root.SK.providers || {}; root.SK.providers.openrouter = factory(root.SK.providers.provider, root.SK.providers.errorClass); }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (provider, errorClass) {
+  if (typeof module !== 'undefined' && module.exports) module.exports = factory(require('./provider.js'), require('./errorClass.js'), require('./toolschema.js'));
+  else { root.SK = root.SK || {}; root.SK.providers = root.SK.providers || {}; root.SK.providers.openrouter = factory(root.SK.providers.provider, root.SK.providers.errorClass, root.SK.providers.toolschema); }
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (provider, errorClass, toolschema) {
   'use strict';
 
   const normalizeFinish = provider.normalizeFinish;
@@ -211,7 +211,11 @@
       Promise.resolve().then(() => loadCatalog()).catch(() => {});
     }
 
-    async function* stream(req) {
+    // A tool advertised under sanitized property keys gets its args mapped back to the declared names before
+    // the loop sees them; with no such tool this is the raw stream itself.
+    function stream(req) { return toolschema.withRestoredArgKeys(wireStream(req), req && req.tools); }
+
+    async function* wireStream(req) {
       maybeRewarmCatalog();
       // usage.include asks OpenRouter to return the real billed `cost` in the final usage chunk (opt-in for
       // streaming). Without it tokens still tally but usd stays 0 unless priceOf(model) resolves — so SPEND
@@ -219,10 +223,14 @@
       const meta = findModel(req.model);
       const allowed = reasoningEffortsForModel(req.model, meta);
       const effort = clampReasoningEffortForModel(req.model, req.reasoningEffort || reasoningEffort, meta);
-      const body = { model: req.model, messages: applyCacheControl(preserveClaudeContinuations(repairToolPairs(req.messages), req.model), req.model, req.cacheSystemPrefix), stream: true, usage: { include: true } };
+      // ONE pre-send normalization (provider.js prepareWireMessages) — for this wire, exactly repairToolPairs.
+      const body = { model: req.model, messages: applyCacheControl(preserveClaudeContinuations(provider.prepareWireMessages(req.messages, 'chat'), req.model), req.model, req.cacheSystemPrefix), stream: true, usage: { include: true } };
       if (effort !== 'none' || allowed.length > 1) body.reasoning = { effort };
       if (req.tools && req.tools.length) {
-        body.tools = req.tools;
+        // Grammar-safe property keys on every tool (OpenRouter fronts Anthropic/Bedrock, which 400 the whole request
+        // on one bad key), and the Moonshot dialect for a moonshotai/* model. A well-formed catalog on any other
+        // model is req.tools itself, byte-identical.
+        body.tools = toolschema.wireTools(req.tools, { moonshot: toolschema.isMoonshotRoute(req.model) });
         body.tool_choice = 'auto';
         /* parallel_tool_calls is deliberately OMITTED (provider default: enabled). It was forced `false` in the
            MVP "to keep the visualization linear" — a decision made BEFORE the loop grew its concurrent dispatch
@@ -232,7 +240,7 @@
            four prompt re-sends). Reverses docs/harness-runtime-spec.md's MVP position, dated 2026-08-17. */
       }
       let res;
-      try { res = await requestWithRetry(body, req.signal); }   // retries transient 429/5xx + network errors BEFORE any token streams
+      try { res = await requestWithRetry(body, req.signal, provider.runtime.preStreamRetries(req, RETRY_DELAYS.length)); }   // retries transient 429/5xx + network errors BEFORE any token streams
       catch (e) { if (isAbort(e, req.signal)) return; throw e; }  // cancel during the POST/backoff -> end cleanly so the loop reports 'cancelled', not 'error'
       // idle watchdog: no bytes for SKYNET_PROVIDER_IDLE_MS -> cancel the reader + throw a `timeout` error (a hung
       // stream must not pin a paid run forever). A user-cancel via req.signal still surfaces as an AbortError below.
@@ -253,7 +261,12 @@
       }
       // one decoded chunk -> 0..n normalized HarnessEvents (shared by the loop + end-of-stream flush)
       function* emitFrom(j) {
-        if (j.error) throw new Error((j.error && j.error.message) || 'openrouter stream error');
+        if (j.error) {
+          const err = new Error((j.error && j.error.message) || 'openrouter stream error');
+          err.body = j;   // the structured error (code, metadata) — errorClass reads it
+          err.ownMessage = true;
+          throw err;
+        }
         const choice = j.choices && j.choices[0];
         if (choice && choice.delta) {
           const d = choice.delta;
@@ -356,7 +369,11 @@
 
     // POST the chat request, retrying transient failures (429/5xx + network resets) BEFORE the stream
     // starts — safe because no tokens have been emitted yet. Aborts propagate at once. Returns an ok Response.
-    async function requestWithRetry(body, signal) {
+    async function requestWithRetry(body, signal, maxRetries) {
+      // maxRetries: the loop may LOWER this ladder (req.preStreamRetries = 0 once it owns the pacing — provider.js).
+      // `waited` is the backoff actually spent; the exhaustion marker reports it so the loop counts it, not repeats it.
+      const retries = (maxRetries == null) ? RETRY_DELAYS.length : maxRetries;
+      let waited = 0;
       let lowCreditHealed = false;   // one-shot: a 402 affordability refusal retries ONCE with a clamped max_tokens
       for (let attempt = 0; ; attempt++) {
         if (signal && signal.aborted) throw abortError();
@@ -373,14 +390,16 @@
           });
         } catch (e) {
           if (isAbort(e, signal)) throw e;
-          if (attempt < RETRY_DELAYS.length) { await delay(RETRY_DELAYS[attempt], signal); continue; }   // network error / connect timeout -> retry
-          throw provider.runtime.markPreStreamRetriesExhausted(e);
+          // a TLS rejection or a crash in our own request code cannot heal by re-sending: fail fast, unmarked
+          if (!classifyApiError(e, { model: body.model }).retryable) throw e;
+          if (attempt < retries) { waited += RETRY_DELAYS[attempt]; await delay(RETRY_DELAYS[attempt], signal); continue; }   // network error / connect timeout -> retry
+          throw provider.runtime.markPreStreamRetriesExhausted(e, { attempts: attempt + 1, waitedMs: waited });
         } finally {
           guard.disarm();
         }
         if (res.ok && res.body) return res;
-        let detail = res.statusText || '';
-        try { const j = await res.json(); detail = (j && j.error && j.error.message) || JSON.stringify(j); }
+        let detail = res.statusText || '', errBody = null;
+        try { const j = await res.json(); errBody = j; detail = (j && j.error && j.error.message) || JSON.stringify(j); }
         catch (e) { try { detail = (await res.text()).slice(0, 300); } catch (_) {} }
         // LOW-CREDIT SELF-HEAL (402): with max_tokens unset, OpenRouter reserves the model's FULL output
         // ceiling against the account balance — a low-credit account gets "requires more credits, or fewer
@@ -401,10 +420,14 @@
         const err = new Error('openrouter http ' + res.status + ' — ' + detail);
         err.status = res.status;
         err.headers = res.headers;   // H6.1: let classifyApiError read Retry-After / X-RateLimit-Reset off the real response
+        /* KEEP THE PROVIDER'S ERROR BODY (same law as codex.js): errorClass reads error.code off it (a 429 carrying
+           'insufficient_quota' is an empty wallet, not a busy moment). The message stays this adapter's own sentence
+           (label + status — what the UI routes on; err.ownMessage tells errorClass so). */
+        if (errBody && typeof errBody === 'object') { err.body = errBody; err.ownMessage = true; }
         const cls = classifyApiError(err, { model: body.model });   // single source of truth for retryability
         err.transient = cls.retryable;                              // keep the field other code reads, now classifier-derived
-        if (cls.retryable && attempt < RETRY_DELAYS.length) { await delay(Math.min(60000, Math.max(RETRY_DELAYS[attempt], cls.retryAfterMs || 0)), signal); continue; }   // honor the server-stated wait, capped at 60s
-        throw cls.retryable ? provider.runtime.markPreStreamRetriesExhausted(err) : err;
+        if (cls.retryable && attempt < retries) { const wait = Math.min(60000, Math.max(RETRY_DELAYS[attempt], cls.retryAfterMs || 0)); waited += wait; await delay(wait, signal); continue; }   // honor the server-stated wait, capped at 60s
+        throw cls.retryable ? provider.runtime.markPreStreamRetriesExhausted(err, { attempts: attempt + 1, waitedMs: waited }) : err;
       }
     }
 

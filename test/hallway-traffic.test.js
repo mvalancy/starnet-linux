@@ -20,7 +20,7 @@ function fixture(width=2){
   };
   function next(b){b.target=b.pathIdx<b.pathPts.length?footOf(b.pathPts[b.pathIdx].x,b.pathPts[b.pathIdx++].y):null;}
   const runtime=Function('geo','blocked','T','allBodies','footOf','tileOf','crewNextWaypoint','seizeFromIdle','U','performance','dirToward',
-    'const agent=null,crew=allBodies();'+gait+starts+traffic+separation+';return {stepTraffic,separateBodies,startBodyPath,stepGait,finishGait,plans:trafficPlans};')(
+    'const agent=null,crew=allBodies();'+gait+starts+traffic+separation+';return {stepTraffic,separateBodies,startBodyPath,stepGait,gaitMove,finishGait,plans:trafficPlans};')(
     geo,blocked,12,()=>bodies,footOf,tileOf,next,b=>{b.goal=null;dropped++;},{irnd:()=>300},{now:()=>now},()=> 'north');
   const errors=[];
   function step(count=1){for(let i=0;i<count;i++){
@@ -29,7 +29,7 @@ function fixture(width=2){
       const x=b.px,y=b.py;
       if(!runtime.stepTraffic(b,16,now)&&b.target){
         const dx=b.target.x-b.px,dy=b.target.y-b.py,d=Math.hypot(dx,dy);
-        if(d<.1)next(b);else{const s=runtime.stepGait(b,dx,dy,d,b.speed||28,b.pathIdx>=b.pathPts.length,16);b.px+=dx/d*s;b.py+=dy/d*s;b.state='walk';}
+        if(d<.1)next(b);else{const s=runtime.stepGait(b,dx,dy,d,b.speed||28,b.pathIdx>=b.pathPts.length,16);runtime.gaitMove(b,dx,dy,d,s);b.state='walk';}
       }
       if(!geo.clearFootSegment(x,y,b.px,b.py,blocked))errors.push('wall');
     }

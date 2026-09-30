@@ -78,17 +78,24 @@ const openCtx = () => ({ canRun: () => true, canUse: () => ({ ok: true }), agent
   }
 
   // (2a-adapter-bound) provider adapters own a separate PRE-STREAM retry ladder. Once an adapter marks that
-  //     ladder exhausted, the loop must surface the failure instead of multiplying the adapter's attempts by
-  //     its own five-round stream-recovery ladder. Unmarked mid-stream timeouts above still retry unchanged.
+  //     ladder exhausted, the loop must NOT multiply the adapter's attempts by its own six-rung ladder (the old
+  //     15-POST storm) — but since 2026-09-22 it no longer gives up either (a 2s blip killed single-provider
+  //     runs): the adapter's spend is COUNTED against the rungs and the ladder continues. This provider ignores
+  //     req.preStreamRetries and never stamps its spend, so every attempt is assumed to be the standard 3-POST
+  //     ladder (2 rungs): 1st call -> rungs 0-1 spent, loop rung 2; 2nd call -> rungs 3-4 spent, loop rung 5;
+  //     3rd call -> the ladder is spent. Three calls, not one and not seven. Full coverage lives in
+  //     loop.prestream-outage-ladder.test.js.
   {
     const { seq, emit } = setup();
     let attempt = 0;
     const exhausted = timeoutErr();
     exhausted.preStreamRetriesExhausted = true;
+    const waits = [];
     const provider = scriptedProvider(async function* () { attempt++; throw exhausted; yield; });
-    const res = await runAgentLoop({ messages: [{ role: 'user', content: 'x' }], provider, emit, cost: cost(), model: 'm', agentId: 'a', runId: 'r' });
-    A.eq(attempt, 1, 'an exhausted adapter ladder is not retried again by the loop');
-    A.eq(res.reason, 'error', 'the exhausted pre-stream failure ends honestly');
+    const res = await runAgentLoop({ messages: [{ role: 'user', content: 'x' }], provider, emit, cost: cost(), model: 'm', agentId: 'a', runId: 'r', sleep: async ms => { waits.push(ms); }, random: () => 0.5 });
+    A.eq(attempt, 3, 'an exhausted adapter ladder is continued but COUNTED — never multiplied');
+    A.eq(waits, [4000, 60000], 'the loop sleeps only the rungs the adapter did not already spend');
+    A.eq(res.reason, 'error', 'a persistent pre-stream failure still ends honestly');
     A.eq(seq.find(e => e.name === 'agent.run.error').payload.transient, true, 'the prompt failure remains classified as transient');
   }
 
@@ -144,7 +151,7 @@ const openCtx = () => ({ canRun: () => true, canUse: () => ({ ok: true }), agent
     const res = await runAgentLoop({
       messages: [{ role: 'user', content: 'inspect the fixture' }], provider, emit, cost: cost(), model: 'm',
       agentId: 'a', runId: 'r', tools: [], dispatch: (c, ctx) => registry.dispatch(c, ctx), capCtx: openCtx(),
-      sleep: async ms => { waits.push(ms); }
+      sleep: async ms => { waits.push(ms); }, random: () => 0.5   // 0.5 = the un-jittered rung (±20% jitter otherwise)
     });
     A.eq(res.reason, 'done', 'a Hermes-length overload window is ridden out instead of ending the task');
     A.eq(streamAttempt, 7, 'one tool turn + five overloaded continuation attempts + one recovered continuation');

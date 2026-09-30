@@ -159,10 +159,8 @@
 
 /* TERMINAL MARKDOWN — a small, restrained subset in the agent's prose (chat.js renderMarkdown). Phosphor tokens
    only; a header is BRIGHT text, never oversized web type. XSS is handled upstream (escape-then-wrap). */
-.cmsg .body .md-b { color: var(--ph-bright); }
-.cmsg .body .md-h { display: inline-block; color: var(--ph-bright); letter-spacing: .5px; }
-.cmsg .body .md-li { display: inline-block; }
-.cmsg .body .md-li .md-bul { color: var(--ph); }
+.cmsg .body .md-b { color: var(--ph-bright); font-weight: 400; text-shadow: none; }
+.cmsg .body .md-h { color: var(--ph-bright); letter-spacing: .5px; }   /* display/margins: the block rule in the report-markdown section below */
 .cmsg .body .md-code {
   font-family: inherit; color: var(--ph-bright); background: rgba(var(--ph-rgb),.10);
   border: 1px solid var(--ph-faint); border-radius: 3px; padding: 0 4px;
@@ -339,6 +337,13 @@
 #comms-presence.paused .cp-verb { color: var(--gold); text-shadow: 0 0 5px color-mix(in srgb, var(--gold) 45%, transparent); }
 #comms-presence .cp-tool.paused-note { color: var(--gold); flex: 1 1 auto; white-space: normal; opacity: .95; }
 #comms-presence .cp-tool.paused-note::before { content: ''; }
+/* LIVE WAIT LINE (chat.js waitNoteText) — the retry rung / countdown / reason / duration must stay readable at the
+   300 px FIT minimum, so it wraps instead of ellipsis-clipping (a long model id breaks anywhere). */
+#comms-presence .cp-tool.wait-note { white-space: normal; overflow-wrap: anywhere; }
+#comms-presence .cp-tool.wait-note .cp-model {
+  display: inline-block; max-width: 100%; vertical-align: bottom;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 /* RESOLVED — the card collapses to a single quiet summary line, no blink, no live glow */
 #comms-presence.resolved {
@@ -843,11 +848,19 @@
 .gc-file-image { display: block; max-width: 100%; max-height: 50vh; object-fit: contain; margin: 10px auto; }
 
 /* Semantic report structure stays inside the station's phosphor theme. */
+.cmsg .body .md-p { display: block; white-space: pre-wrap; margin: .5em 0; }
+.cmsg .body .md-h { display: block; margin: .65em 0 .3em; }
 .cmsg .body .md-list { white-space: normal; margin: .4em 0; padding-left: 1.8em; }
 .cmsg .body .md-list li { margin: .2em 0; }
+.cmsg .body .md-list li > .md-b:first-child {
+  margin-right: .2em; text-decoration: underline;
+  text-decoration-color: var(--ph-dim); text-underline-offset: 2px;
+}
 .cmsg .body .md-list .md-list { margin: .15em 0; }
 .cmsg .body .md-quote { white-space: normal; margin: .5em 0; padding: .3em .7em; border-left: 2px solid var(--ph-faint); color: var(--ph); }
 .cmsg .body .md-table-scroll { display: block; max-width: 100%; overflow-x: auto; margin: .6em 0; white-space: normal; }
 .cmsg .body .md-table { border-collapse: collapse; font: inherit; min-width: 100%; }
 .cmsg .body .md-table th, .cmsg .body .md-table td { border: 1px solid var(--ph-faint); padding: .3em .6em; text-align: left; vertical-align: top; overflow-wrap: normal; word-break: normal; }
 .cmsg .body .md-table th { color: var(--ph-bright); }
+.cmsg .body > :first-child { margin-top: 0; }
+.cmsg .body > :last-child { margin-bottom: 0; }

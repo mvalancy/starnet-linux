@@ -167,11 +167,16 @@ function stopChild(child) {
     const fallbacks = events.filter(e => e.name === 'provider.fallback');
     A.eq(fallbacks.length, 1, 'the primary failure emitted one bounded fallback');
     A.eq(fallbacks[0] && fallbacks[0].payload.reason, 'rate_limit', 'the primary failure classified as rate_limit');
-    const summaries = mock.requests.filter(r => r.summary);
-    A.eq(summaries.length, 1, 'the production summarize closure made one real provider request');
-    A.eq(summaries[0] && summaries[0].key, 'KEYB', 'the summarizer used the rotated credential, not failed KEYA');
-    A.eq(summaries[0] && summaries[0].model, 'compact/model', 'the summarizer kept the live model');
-    A.eq(events.filter(e => e.name === 'agent.compact').length, 1, 'the run emitted one truthful compaction event');
+    /* The history is over this 10-token window before the first call, so the preflight fold runs FIRST — on KEYA,
+       the live key at that moment, which 429s (the fold is skipped, history kept). What this test guards is what
+       happens AFTER the rotation: every later summarizer request rides KEYB, never the key that just failed. */
+    const rotatedAt = mock.requests.findIndex(r => !r.summary && r.key === 'KEYA');   // the main request that 429'd
+    A.ok(rotatedAt >= 0, 'the primary main request failed on KEYA');
+    const afterRotation = mock.requests.slice(rotatedAt + 1).filter(r => r.summary);
+    A.ok(afterRotation.length >= 1, 'the production summarize closure made real provider requests after the rotation (' + afterRotation.length + ')');
+    A.ok(afterRotation.every(r => r.key === 'KEYB'), 'every post-rotation summarizer request used the rotated credential, not failed KEYA');
+    A.ok(afterRotation.every(r => r.model === 'compact/model'), 'the summarizer kept the live model');
+    A.eq(events.filter(e => e.name === 'agent.compact').length, afterRotation.length, 'one truthful compaction event per successful KEYB fold');
     const end = events.filter(e => e.name === 'agent.run.end').pop();
     A.eq(end && end.payload.reason, 'done', 'the failed-over run completed after compaction');
   } finally {

@@ -1600,6 +1600,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
   // 'brief' fallback; it's the single source of truth for the memory-live guard + the BRIEF-only tick.
   function agSection() { return consoleSection['agents'] || 'brief'; }
   const agEdit = {};        // config fileKey -> true while its editor is open
+  const agEditBase = {};    // config fileKey -> { id, text } the doc held when its editor opened (SAVE's stale-text check)
   let memLiveWired = false, memRefreshTimer = 0;   // M-mem.6: the once-wired, debounced Memory Core live-refresh
   let skillsLiveWired = false, skillsRefreshTimer = 0;   // A3: the once-wired, debounced AGENT SKILLS live-refresh
 
@@ -1657,10 +1658,10 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       // NAME — read-only with a ✎ rename affordance, or an inline editor while agEdit['__name'] is set (wired in wireHead).
       (agEdit['__name']
         ? '<div class="ag-name-edit">' +
-            '<input id="ag-rename-in" class="ag-name-input" type="text" maxlength="18" spellcheck="false" autocomplete="off" value="' + esc(a.name) + '" aria-label="Rename agent" style="color:' + a.color + '">' +
+            '<input id="ag-rename-in" class="ag-name-input" type="text" maxlength="18" spellcheck="false" autocomplete="off" value="' + esc(a.name) + '" aria-label="Rename agent" style="color:' + esc(a.color) + '">' +
             '<button class="ag-name-ok" id="ag-rename-save" title="save name" aria-label="Save name">✓</button>' +
             '<button class="ag-name-x" id="ag-rename-cancel" title="cancel" aria-label="Cancel rename">✕</button></div>'
-        : '<div class="ag-name" style="color:' + a.color + '">' + esc(a.name) +
+        : '<div class="ag-name" style="color:' + esc(a.color) + '">' + esc(a.name) +
             (duplicateAgentName(a) ? '<span class="ag-name-id">[' + esc(duplicateAgentName(a)) + ']</span>' : '') +
             '<button class="ag-rename" id="ag-rename-btn" title="rename this agent" aria-label="Rename agent">✎</button>' +
             (lv ? '<span class="ag-lv">Lv ' + lv + '</span>' : '') + '</div>') +
@@ -2525,16 +2526,27 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       group.addEventListener('toggle', () => { if (group.isConnected) cfOpen.set(group.dataset.cfGroup, group.open); });
     });
     body.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => {
-      agEdit[b.dataset.edit] = true; sfx('click'); rerender('agents');
+      agEdit[b.dataset.edit] = true; agEditBase[b.dataset.edit] = { id: a && a.id, text: docVal(a, b.dataset.edit) };
+      sfx('click'); rerender('agents');
     }));
     body.querySelectorAll('[data-cancel]').forEach(b => b.addEventListener('click', () => {
-      delete agEdit[b.dataset.cancel]; sfx('click'); rerender('agents');
+      delete agEdit[b.dataset.cancel]; delete agEditBase[b.dataset.cancel]; sfx('click'); rerender('agents');
     }));
     body.querySelectorAll('[data-save]').forEach(b => b.addEventListener('click', () => {
       const key = b.dataset.save, ta = body.querySelector('#cf-ta-' + key);
       const val = ta ? ta.value : '';
+      // STALE-TEXT CHECK: the lead can rewrite this doc from chat (team.configure) while the editor is open. A
+      // blind SAVE would silently undo an edit the lead already reported as saved. First SAVE warns and keeps the
+      // draft; a second SAVE is a deliberate overwrite of the new text.
+      const base = agEditBase[key], liveText = docVal(a, key);
+      if (base && a && base.id === a.id && liveText !== base.text && val !== liveText) {
+        agEditBase[key] = { id: a.id, text: liveText };
+        sfx('bad');
+        notify('This document changed since you opened it (the lead may have edited it from chat). Your draft is kept; SAVE again to replace the new text, or CANCEL to see it.', 'warn');
+        return;
+      }
       if (access.config && access.config.apply) access.config.apply({ [key]: val }, a && a.id);
-      delete agEdit[key]; sfx('click');
+      delete agEdit[key]; delete agEditBase[key]; sfx('click');
       const meta = CONFIG_FILES.find(f => f.key === key);
       notify('saved ' + (meta ? meta.file : key) + ' — your agent runs on it now', 'good');
       rerender('agents');
@@ -2552,7 +2564,14 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       ModelPicker.populate(pickWrap, { current: { model: (a && a.model) || '', provider: (a && a.provider) || '', effort: (a && a.reasoningEffort) || '' } }).catch(() => {});
       // re-fit the effort <select> to the newly-chosen model on every model change (clamps/clears an effort the
       // new model can't do) — without this the effort could stay 'high' on a non-reasoning model and be persisted.
-      ModelPicker.onChange(pickWrap, () => {});
+      ModelPicker.onChange(pickWrap, pick => {
+        // Keep the advanced fallback aligned with a deliberate picker change. In particular,
+        // an empty selection must clear the old pin, not resurrect its model/provider on SAVE.
+        const modelInput = body.querySelector('#ag-model-in');
+        const providerInput = body.querySelector('#ag-prov-in');
+        if (modelInput) modelInput.value = pick.model || '';
+        if (providerInput) providerInput.value = pick.provider || '';
+      });
     }
     const applyModel = (model, provider, effort) => {
       if (!(access.config && access.config.setModel)) { setMMsg('per-agent model unavailable'); return; }
@@ -3044,7 +3063,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
         top.innerHTML =
           '<div class="ag-list" role="listbox" aria-label="Agents on station">' +
           present.map((x, i) => '<div class="ag-item ' + (i === sel ? 'sel' : '') + '" data-i="' + i + '" role="option" aria-selected="' + (i === sel ? 'true' : 'false') + '" tabindex="0" style="--ci:' + i + '">' +
-            '<span class="ag-item-dot" style="color:' + x.color + '">●</span>' +
+            '<span class="ag-item-dot" style="color:' + esc(x.color) + '">●</span>' +
             '<span class="ag-item-nm">' + esc(x.name) + '</span>' + hint(x) + '</div>').join('') +
           '</div>';
         const pick = (it) => { sel = +it.dataset.i; delete agEdit['__name']; sfx('click'); rerender('agents'); };
@@ -3105,27 +3124,11 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
        the master 1:1 in the buffer, then integer-NN it into the frame. The frame is sized so the largest
        shipped character (43×46, pikachu) still clears ×2, which means EVERY skin lands on exactly ×2 — the
        roster reads at one consistent size instead of each skin finding its own fractional fit. */
-    const buf = drawPortrait._buf || (drawPortrait._buf = document.createElement('canvas'));
-    const BW = 220, BH = 220; buf.width = BW; buf.height = BH;
-    const bctx = buf.getContext('2d');
-    bctx.clearRect(0, 0, BW, BH);
-    bctx.imageSmoothingEnabled = false;   // the blit below is 1:1; keep it exact
-    bctx.save();
-    bctx.translate(BW / 2, BH - 40);
-    // 1/sc makes drawBody's own `dw = frame.width * sc` resolve to frame.width — an exact, unresampled
-    // 1:1 blit of the master. A missing/zero scale falls back to the old 3× rather than dividing by zero.
-    const sc = (typeof SPRITES.bodyScale === 'function') ? SPRITES.bodyScale({ id: a.id, skin: a.skin }) : 0;
-    bctx.scale(sc > 0 ? 1 / sc : 3, sc > 0 ? 1 / sc : 3);
-    SPRITES.drawBody(bctx, { id: a.id, skin: a.skin, px: 0, py: 0, dir: 'south', color: a.color, state: 'idle', sitting: false, working: false, phase: 0, noShadow: true }, performance.now());
-    bctx.restore();
-    // measure the drawn body's real bounds (alpha > 16), so the fit ignores the master's transparent padding
-    const d = bctx.getImageData(0, 0, BW, BH).data;
-    let minX = BW, minY = BH, maxX = 0, maxY = 0, any = false;
-    for (let y = 0; y < BH; y++) for (let x = 0; x < BW; x++) {
-      if (d[(y * BW + x) * 4 + 3] > 16) { any = true; if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; }
-    }
-    if (!any) return;
-    const sw = maxX - minX + 1, sh = maxY - minY + 1;
+    // The 1:1 render + measured bounds live in AgentPortraits.renderBody (shared with the Workflow skin thumbs,
+    // so every surface draws the same figure the floor does); this function owns only the frame fit below.
+    const r = (typeof AgentPortraits !== 'undefined' && AgentPortraits.renderBody) ? AgentPortraits.renderBody(a, performance.now()) : null;
+    if (!r) return;
+    const buf = r.canvas, minX = r.minX, minY = r.minY, sw = r.sw, sh = r.sh;
     // INTEGER fit, floored at 1× — a fractional k is the whole defect, and 1× (native) is always honest.
     // Pads are device px so the fit math and the drawn result share one coordinate space.
     const padX = 6 * dev, padTop = 6 * dev, padBot = 6 * dev;
@@ -4881,6 +4884,8 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
         const p = card.dataset.provider;
         if (!h || !p || !h.setProv) return;
         h.setProv(p);
+        // the station default (the Overseer's pin) follows the pick, so unpinned agents do too (#24 follow-up)
+        if (typeof App !== 'undefined' && App.setStationProvider) App.setStationProvider(p);
         if (typeof KeyCTA !== 'undefined' && KeyCTA.refresh) KeyCTA.refresh();
         // MODEL RECONCILE (subscription providers): the model slug is GLOBAL, so switching to codex/grok/kimi
         // with the previous provider's model (e.g. anthropic/claude-…) streams a foreign id to the new endpoint
@@ -5817,7 +5822,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
           let env; try { env = JSON.parse(String(reader.result || '')); } catch (_) { setMsg('that is not a valid StarNet backup file'); sfx('bad'); fileIn.value = ''; return; }
           setMsg('importing…');
           Harness.api.post('/api/config/import', { envelope: env })
-            .then(({ ok, j }) => {
+            .then(async ({ ok, j }) => {
               fileIn.value = '';
               if (!ok) {
                 const partial = j && Array.isArray(j.applied) && j.applied.length ? ' (already applied: ' + j.applied.join(', ') + ')' : '';
@@ -5828,7 +5833,10 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
               if (b.settings) { Object.assign(store.settings, b.settings); }
               if (b.notifyPrefs) { store.settings.notifyPrefs = Object.assign(notifyDefaults(), b.notifyPrefs); }
               save(); applySettings();
-              try { if (b.autonomy && typeof AutonomyStore !== 'undefined' && AutonomyStore.importState) AutonomyStore.importState(b.autonomy); } catch (_) {}
+              if (b.autonomy && typeof AutonomyStore !== 'undefined' && AutonomyStore.importState) {
+                const restored = await AutonomyStore.importState(b.autonomy);
+                if (!restored.ok) { setMsg('Backup partly imported. ' + restored.error); sfx('bad'); return; }
+              }
               // GROWTH Tier 3: an import is a NON-DIAL posture writer — reconcile the earned-rung record against
               // the imported rung (a diverged record is retired; user override wins), so a stale earned record can
               // never later demote FROM a rung the dial isn't even at (the silent-escalation blocker).
@@ -6658,19 +6666,22 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       };
       const paintAuto = () => {
         const a = AutonomyStore.summary() || {};
-        if (initWrap) initWrap.querySelectorAll('[data-init]').forEach(x => x.classList.toggle('sel', x.dataset.init === a.initiative));
-        if (reachWrap) reachWrap.querySelectorAll('[data-reach]').forEach(x => x.classList.toggle('sel', x.dataset.reach === a.reach));
-        if (paceWrap) paceWrap.querySelectorAll('[data-pace]').forEach(x => x.classList.toggle('sel', Number(x.dataset.pace) === a.leashPerDay));
-        if (autoDesc) autoDesc.textContent = AutonomyStore.describe();
+        const sync = AutonomyStore.status();
+        if (initWrap) initWrap.querySelectorAll('[data-init]').forEach(x => x.classList.toggle('sel', sync.loaded && x.dataset.init === a.initiative));
+        if (reachWrap) reachWrap.querySelectorAll('[data-reach]').forEach(x => x.classList.toggle('sel', sync.loaded && x.dataset.reach === a.reach));
+        if (paceWrap) paceWrap.querySelectorAll('[data-pace]').forEach(x => x.classList.toggle('sel', sync.loaded && Number(x.dataset.pace) === a.leashPerDay));
+        for (const wrap of [initWrap, reachWrap, paceWrap]) if (wrap) wrap.querySelectorAll('button').forEach(x => { x.disabled = sync.pending; });
+        if (autoDesc) { autoDesc.setAttribute('role', 'status'); autoDesc.textContent = sync.pending ? 'Confirming autonomy settings…' : (sync.error ? sync.error + (sync.loaded ? ' Current setting: ' + AutonomyStore.describe() : ' Reopen this panel to retry.') : sync.loaded ? AutonomyStore.describe() : 'Autonomy settings have not been confirmed.'); }
         try { paintEarned(a); } catch (_) {}   // GROWTH Tier 3: the EARNED badge on an earned rung
         try { syncPerm(); } catch (_) {}   // keep the permissions level highlight + blurb in step with the dial
       };
       // a MANUAL set retires the earned record (the user override wins, recorded as such) BEFORE the dial writes —
       // so a set above an earned rung reads as a plain user grant, a set below as a user override (no badge either way).
-      if (initWrap) initWrap.querySelectorAll('[data-init]').forEach(b => b.addEventListener('click', () => { try { if (typeof TrustStore !== 'undefined' && TrustStore.onManualInitiative) TrustStore.onManualInitiative(b.dataset.init); } catch (_) {} AutonomyStore.setInitiative(b.dataset.init); paintAuto(); sfx('click'); }));
-      if (reachWrap) reachWrap.querySelectorAll('[data-reach]').forEach(b => b.addEventListener('click', () => { AutonomyStore.setReach(b.dataset.reach); paintAuto(); sfx('click'); }));
-      if (paceWrap) paceWrap.querySelectorAll('[data-pace]').forEach(b => b.addEventListener('click', () => { AutonomyStore.setLeash(Number(b.dataset.pace)); paintAuto(); sfx('click'); }));
+      if (initWrap) initWrap.querySelectorAll('[data-init]').forEach(b => b.addEventListener('click', async () => { const write = AutonomyStore.setInitiative(b.dataset.init); paintAuto(); const result = await write; if (result.ok) { try { if (typeof TrustStore !== 'undefined' && TrustStore.onManualInitiative) TrustStore.onManualInitiative(b.dataset.init); } catch (_) {} } paintAuto(); sfx(result.ok ? 'click' : 'bad'); }));
+      if (reachWrap) reachWrap.querySelectorAll('[data-reach]').forEach(b => b.addEventListener('click', async () => { const write = AutonomyStore.setReach(b.dataset.reach); paintAuto(); const result = await write; paintAuto(); sfx(result.ok ? 'click' : 'bad'); }));
+      if (paceWrap) paceWrap.querySelectorAll('[data-pace]').forEach(b => b.addEventListener('click', async () => { const write = AutonomyStore.setLeash(Number(b.dataset.pace)); paintAuto(); const result = await write; paintAuto(); sfx(result.ok ? 'click' : 'bad'); }));
       repaintAutonomyDial = paintAuto;   // GROWTH Tier 3: let an accepted trust offer repaint the open panel's EARNED badge live
+      AutonomyStore.refresh().then(paintAuto);
       paintAuto();
     }
     // DIRECTION (autonomy-tuning) — focus/steer/off-limits/learned-interests, every value painted from a route's
@@ -7029,13 +7040,7 @@ const StationUI = typeof document === 'undefined' ? {} : (() => {
       const plabel = (k) => (typeof Permissions !== 'undefined' && Permissions.catalogLabel) ? Permissions.catalogLabel(k) : k;
       const pcurated = () => (typeof Permissions !== 'undefined' && Permissions.grantableKeys) ? Permissions.grantableKeys() : [];
       const repaintDial = () => {
-        if (typeof AutonomyStore === 'undefined' || !AutonomyStore.summary) return;
-        const a = AutonomyStore.summary() || {};
-        const iw = host.querySelector('#auto-init'), rw = host.querySelector('#auto-reach'), pw = host.querySelector('#auto-pace'), ad = host.querySelector('#auto-desc');
-        if (iw) iw.querySelectorAll('[data-init]').forEach(x => x.classList.toggle('sel', x.dataset.init === a.initiative));
-        if (rw) rw.querySelectorAll('[data-reach]').forEach(x => x.classList.toggle('sel', x.dataset.reach === a.reach));
-        if (pw) pw.querySelectorAll('[data-pace]').forEach(x => x.classList.toggle('sel', Number(x.dataset.pace) === a.leashPerDay));
-        if (ad && AutonomyStore.describe) ad.textContent = AutonomyStore.describe();
+        if (repaintAutonomyDial) repaintAutonomyDial();
       };
       // the agent's LIVE placed caps (cabinet→files …) — so a granted-but-inert capability is shown honestly with a
       // "place a cabinet" nudge instead of a silent "writes files" lie (object=capability: the grant is consent, the

@@ -1,0 +1,10 @@
+{
+  "id": "rickybobby",
+  "track": "type",
+  "dir": "north",
+  "job": "1fa678ff-8438-40fb-b415-4ee573ed88e5",
+  "result": "frames: 5\nhttps://api.pixellab.ai/mcp/images/1fa678ff-8438-40fb-b415-4ee573ed88e5/download?index=0",
+  "packed": true,
+  "lastRaw": "output/agent-animation-study/rollout-20px/full-motion/rickybobby/minimax/type-north/1fa678ff-8438-40fb-b415-4ee573ed88e5/4.png",
+  "frameCount": 5
+}

@@ -29,7 +29,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
-  const CP = require('node:child_process');
+  const CP = require('../../child-env.js').guardChildProcess(require('node:child_process'));   // no station secrets in the launched app's env
   const browser = require('./browser.js');
   const defaultAssertSafeUrl = browser._internals.assertSafeUrl;
 

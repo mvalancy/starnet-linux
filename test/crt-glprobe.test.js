@@ -29,6 +29,11 @@ A.ok(glStart > 0, 'world.js still has drawCurveGL');
 const glBody = src.slice(glStart, src.indexOf('function drawCurveCPU'));
 
 A.ok(src.indexOf('function probeMeans') > 0, 'probeMeans sampler exists (16×16 downscale means)');
+// 2026-09-23: one big drawImage to 16×16 point-samples the frame; scanlines/grain/texture aliased a healthy
+// warp to "+27% brighter" and pinned sessions to the CPU warp. The sampler must reduce by 2:1 halvings.
+const pmBody = src.slice(src.indexOf('function probeMeans'), src.indexOf('function probeMeans') + 1600);
+A.ok(/w \/ 2/.test(pmBody) && /h \/ 2/.test(pmBody) && /for \(;;\)/.test(pmBody), 'probeMeans averages through a 2:1 halving chain, not one point-sampled step');
+A.ok(!/drawImage\(src, 0, 0, src\.width, src\.height, 0, 0, 16, 16\)/.test(pmBody), 'no single-step full-frame → 16×16 downscale');
 const preIdx = glBody.indexOf('pre = probeMeans(cv)');
 const upIdx = glBody.indexOf('texImage2D');
 const blitIdx = glBody.indexOf('drawImage(_glc');

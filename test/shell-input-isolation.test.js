@@ -70,6 +70,39 @@ try {
   A.eq(inputIsolationRisk('curl http://127.0.0.1:5173/', { cwd: root, fs, pathMod: path }), null, 'HTTP health probes stay allowed');
   A.eq(inputIsolationRisk('echo SetCursorPos is forbidden', { cwd: root, fs, pathMod: path }), null, 'API words as inert echo arguments do not false-trip');
 
+  // Issue #50: GUI runtimes are judged as launched PROGRAMS, not as words anywhere in a referenced script.
+  const plain = fs.mkdtempSync(path.join(os.tmpdir(), 'starnet-gui-words-'));
+  try {
+    const at = { cwd: plain, fs, pathMod: path };
+    put(plain, 'routine.mjs', '// Re-read before each write so a new pause or external assignment wins.\n' +
+      'process.stdout.write("status ok\\n");\nconst width = "calc(100% - 4px)";\nopen(p, { mode: \'write\' });\n');
+    A.eq(inputIsolationRisk('node routine.mjs', at), null, 'a comment/identifier/string containing "write" or "calc" does not refuse a Node routine (#50)');
+    A.eq(inputIsolationRisk('echo write', at), null, 'a GUI program name as an inert echo argument does not false-trip');
+    A.eq(inputIsolationRisk('git commit -m "write notepad docs"', at), null, 'a commit message naming a GUI program is data');
+
+    put(plain, 'launch-notepad.mjs', "import { spawn } from 'node:child_process';\nspawn('notepad', ['notes.txt']);\n");
+    put(plain, 'launch-electron.js', "require('child_process').execSync(`electron .`);\n");
+    put(plain, 'launch-calc.py', 'import os\nos.system("calc")\n');
+    put(plain, 'launch-write.mjs', "spawn('C:\\\\Windows\\\\write.exe');\n");
+    put(plain, 'launch.cmd', '@echo off\nnotepad notes.txt\n');
+    put(plain, 'launch.ps1', 'Start-Process calc\n');
+    put(plain, 'package.json', JSON.stringify({ scripts: { desktop: 'cross-env NODE_ENV=dev electron .', dev: 'concurrently "vite" "electron ."' } }));
+    A.ok(inputIsolationRisk('node launch-notepad.mjs', at), 'a script that spawns notepad is still refused');
+    A.ok(inputIsolationRisk('node launch-electron.js', at), 'a script that execs electron is still refused');
+    A.ok(inputIsolationRisk('python launch-calc.py', at), 'os.system("calc") is still refused');
+    A.ok(inputIsolationRisk('node launch-write.mjs', at), 'an explicit write.exe launch is still refused');
+    A.ok(inputIsolationRisk('cmd /c launch.cmd', at), 'a batch file launching notepad is still refused');
+    A.ok(inputIsolationRisk('powershell -File launch.ps1', at), 'a PowerShell script starting calc is still refused');
+    A.ok(inputIsolationRisk('npm run desktop', at), 'an npm script launching electron behind cross-env is still refused');
+    A.ok(inputIsolationRisk('npm run dev', at), 'concurrently "electron ." is still refused');
+    for (const c of ['notepad x.txt', 'write foo.txt', 'calc', 'npx electron .', 'cmd /c notepad', 'powershell -Command "Start-Process calc"', 'java -jar app.jar', 'dotnet run',
+      'node -e "require(\'child_process\').exec(\'notepad\')"']) {
+      A.ok(inputIsolationRisk(c, at), 'direct GUI runtime launch is still refused: ' + c);
+    }
+  } finally {
+    fs.rmSync(plain, { recursive: true, force: true });
+  }
+
   const ordinary = fs.mkdtempSync(path.join(os.tmpdir(), 'starnet-browser-safe-'));
   try {
     put(ordinary, 'src/app.js', 'document.body.textContent = "hello";\n');

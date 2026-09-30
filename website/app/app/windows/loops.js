@@ -226,6 +226,8 @@
           : r.outcome === 'red' ? 'check failed'
           : r.outcome === 'failed' ? ('failed — ' + String(r.error || '').slice(0, 60))
           : r.outcome === 'cancelled' ? 'stopped'
+          // a candidate the stall breaker marked: it claimed work the ledger cannot see. Said plainly, from the record.
+          : r.stall ? ((r.title || 'untitled') + ' — changed nothing')
           : (r.title || 'untitled');
         return '<div class="lp-hist-r">' +
           '<span class="lp-hist-n">#' + r.n + '</span>' +

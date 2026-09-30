@@ -137,4 +137,13 @@ eq(C.parseImport({}).ok, false, 'a file with no version marker is rejected');
 eq(C.parseImport(null).ok, false, 'null is rejected, not thrown');
 eq(C.parseImport({ starnetExport: 1, sections: { budget: 'not an object' } }).ok, true, 'a malformed section does not fail the whole import');
 
+
+// ---- security audit 2026-09-25: an imported file cannot bless folders (path:<root> grants are machine authority) ----
+{
+  const hostile = C.parseImport({ starnetExport: 1, sections: { permissions: { allow: ['fs.write:workspace', 'path:C:\\', 'PATH:/', 'path:/home/victim'] } } });
+  ok(hostile.ok, 'an import carrying path grants still parses');
+  eq(JSON.stringify(hostile.sections.permissions.allow), JSON.stringify(['fs.write:workspace']), 'every path:<root> grant is dropped; capability grants survive');
+  ok(hostile.notes.some(x => /skipped 3 project folder grants/.test(x)), 'the skipped folder grants are named in the import notes');
+}
+
 console.log('configexport.test.js OK —', n, 'assertions');

@@ -148,7 +148,7 @@ async function startSse(url) {
     const token = await bootToken(B, B);
     A.ok(token.length >= 32, 'got a session API token');
     const headers = { 'Content-Type': 'application/json', 'X-StarNet-Token': token, Origin: B };
-    sse = await startSse(B + '/api/channels/events?token=' + encodeURIComponent(token));
+    sse = await startSse(B + '/api/channels/events?' + require('./_httpToken.js').sseQuery(token));
 
     // 0. EMPTY BACKLOG (granted, nothing queued) -> silent no-op, no workshop.built.
     await fetch(B + '/api/workshop/grant', { method: 'POST', headers, body: JSON.stringify({ agentId: 'builder', on: true }) });
@@ -222,9 +222,12 @@ async function startSse(url) {
     const webRun = webRes.runId;
     A.ok(webRes.manifest && webRes.manifest.files.some(f => /index\.html$/.test(f.path)), 'W7: manifest lists index.html');
 
-    // (1) GET /workshop-run/.../index.html?token= returns the RUNNABLE page (text/html, script intact, no-store).
-    const runBase = B + '/workshop-run/builder/' + webRun;
-    const pageRes = await fetch(runBase + '/index.html?token=' + encodeURIComponent(token));
+    // (1) GET /workshop-run/~t/<run ticket>/.../index.html returns the RUNNABLE page (text/html, script intact, no-store).
+    //     The ticket rides the PATH so the page's relative assets inherit it (never the master token in a URL).
+    const { runPrefix } = require('./_httpToken.js');
+    const runBase = B + runPrefix(token, 'builder', webRun) + 'builder/' + webRun;
+    const plainBase = B + '/workshop-run/builder/' + webRun;
+    const pageRes = await fetch(runBase + '/index.html');
     A.eq(pageRes.status, 200, 'W7: /workshop-run serves the html page 200');
     A.ok(/text\/html/.test(pageRes.headers.get('content-type') || ''), 'W7: html is served as text/html (RUNNABLE, not octet-stream)');
     A.ok(/no-store/.test(pageRes.headers.get('cache-control') || ''), 'W7: /workshop-run is Cache-Control no-store');
@@ -239,32 +242,46 @@ async function startSse(url) {
     A.ok(/\bsandbox\b/.test(cspOf(pageRes)), 'AUDIT 0.3: served html carries a sandbox CSP');
     A.ok(/allow-scripts/.test(cspOf(pageRes)), 'AUDIT 0.3: the sandbox allows scripts (interactive deliverables still run)');
     A.ok(!/allow-same-origin/.test(cspOf(pageRes)), 'AUDIT 0.3: the sandbox does NOT allow-same-origin (opaque origin — token/API unreachable)');
-    const headRes = await fetch(runBase + '/index.html?token=' + encodeURIComponent(token), { method: 'HEAD' });
+    const headRes = await fetch(runBase + '/index.html', { method: 'HEAD' });
     A.ok(/\bsandbox\b/.test(cspOf(headRes)) && !/allow-same-origin/.test(cspOf(headRes)), 'AUDIT 0.3: HEAD response carries the same opaque-origin sandbox CSP');
 
     // correct content-type for a non-html asset too (README.md → text/markdown).
-    const mdRes = await fetch(runBase + '/README.md?token=' + encodeURIComponent(token));
+    const mdRes = await fetch(runBase + '/README.md');   // a SIBLING asset under the same ticketed prefix (what a relative <link>/<script> resolves to)
     A.ok(/text\/markdown/.test(mdRes.headers.get('content-type') || ''), 'W7: .md served with markdown content-type');
     A.ok(/\bsandbox\b/.test(cspOf(mdRes)) && !/allow-same-origin/.test(cspOf(mdRes)), 'AUDIT 0.3: sibling assets served from the run dir carry the sandbox CSP too');
 
-    // (2) TOKEN REQUIRED — no ?token= → 403 (a tab nav can\'t send the header, so the query token is the fence).
-    const noTok = await fetch(runBase + '/index.html');
-    A.eq(noTok.status, 403, 'W7: /workshop-run without a token is 403 forbidden');
-    const badTok = await fetch(runBase + '/index.html?token=wrong');
-    A.eq(badTok.status, 403, 'W7: /workshop-run with a WRONG token is 403 forbidden');
+    A.eq(pageRes.headers.get('referrer-policy'), 'no-referrer', 'W7: a served tool never leaks its ticketed URL as a Referer');
+
+    // (2) CREDENTIAL REQUIRED — a run ticket (tab nav) or the header (fetch); the MASTER token in a URL is refused.
+    const noTok = await fetch(plainBase + '/index.html');
+    A.eq(noTok.status, 403, 'W7: /workshop-run without a credential is 403 forbidden');
+    const badTok = await fetch(B + '/workshop-run/~t/wrong/builder/' + webRun + '/index.html');
+    A.eq(badTok.status, 403, 'W7: /workshop-run with a WRONG ticket is 403 forbidden');
+    const masterQuery = await fetch(plainBase + '/index.html?token=' + encodeURIComponent(token));
+    A.eq(masterQuery.status, 403, 'W7: the MASTER token as ?token= is refused (it leaked into OS-browser history)');
+    const masterPath = await fetch(B + '/workshop-run/~t/' + encodeURIComponent(token) + '/builder/' + webRun + '/index.html');
+    A.eq(masterPath.status, 403, 'W7: the MASTER token in the ticket slot is refused');
+    const otherRun = await fetch(B + runPrefix(token, 'builder', 'some-other-run') + 'builder/' + webRun + '/index.html');
+    A.eq(otherRun.status, 403, 'W7: a ticket for another run does not open this run');
+    const Tickets = require('../sidecar/apitickets.js');
+    const oldT = Tickets.mint(token, 'run', Tickets.scopeRun('builder', webRun), { now: Date.now() - Tickets.KINDS.run.maxTtlMs - 1000 });
+    const expiredRun = await fetch(B + '/workshop-run/~t/' + oldT + '/builder/' + webRun + '/index.html');
+    A.eq(expiredRun.status, 403, 'W7: an EXPIRED run ticket is 403');
+    const viaHeader = await fetch(plainBase + '/index.html', { headers: { 'x-starnet-token': token } });
+    A.eq(viaHeader.status, 200, 'W7: a fetch with the header still reads the run (no URL credential needed)');
 
     // (3) TRAVERSAL IMPOSSIBLE — a ../ escape and an encoded escape both refuse (never reach a file outside the jail).
-    const trav1 = await fetch(B + '/workshop-run/builder/' + webRun + '/../../builder.workshop.json?token=' + encodeURIComponent(token));
+    const trav1 = await fetch(runBase + '/../../builder.workshop.json');
     A.ok(trav1.status === 403 || trav1.status === 404, 'W7: ../ traversal is refused (403/404), never served');
-    const trav2 = await fetch(B + '/workshop-run/builder/' + encodeURIComponent('..') + '/' + encodeURIComponent('..') + '/builder.workshop.json?token=' + encodeURIComponent(token));
+    const trav2 = await fetch(B + runPrefix(token, 'builder', '..') + 'builder/' + encodeURIComponent('..') + '/' + encodeURIComponent('..') + '/builder.workshop.json');
     A.ok(trav2.status === 403 || trav2.status === 404, 'W7: encoded ../ traversal is refused');
-    const badAgent = await fetch(B + '/workshop-run/..%2f..%2fetc/' + webRun + '/index.html?token=' + encodeURIComponent(token));
+    const badAgent = await fetch(B + runPrefix(token, '../../etc', webRun) + '..%2f..%2fetc/' + webRun + '/index.html');
     A.ok(badAgent.status === 403 || badAgent.status === 404, 'W7: a bad agentId segment is refused');
 
     // (4) NO DIRECTORY LISTING — requesting the run dir itself (a directory) 404s, never lists.
-    const dirReq = await fetch(runBase + '/?token=' + encodeURIComponent(token));
+    const dirReq = await fetch(runBase + '/');
     A.eq(dirReq.status, 404, 'W7: requesting a directory 404s (no directory listing)');
-    const dirReq2 = await fetch(runBase + '?token=' + encodeURIComponent(token));
+    const dirReq2 = await fetch(runBase);
     A.ok(dirReq2.status === 404, 'W7: the run dir with no trailing file also 404s');
 
     // (5) POST /api/workshop/open is inert for every payload; token possession

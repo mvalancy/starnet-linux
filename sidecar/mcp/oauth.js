@@ -160,6 +160,33 @@
     throw new Error('authorization server requires an unsupported token endpoint authentication method');
   }
 
+  /* METADATA CHECKS (audit 2026-09-25 #21). The AS metadata is served by the (untrusted) server being connected:
+       · issuer (RFC 8414 §3.3): when present it MUST equal the authorization server the resource named, or one
+         server's metadata could be substituted for another's (mix-up). Compared exactly, modulo a trailing slash.
+         A document with no issuer is tolerated — several hosted MCP servers omit it, and refusing would break them.
+       · PKCE: we always send S256. A server that ADVERTISES its methods without S256 is refused up front instead
+         of silently receiving a challenge it will ignore. (Absent list = unknown, tolerated, as before.)
+       · endpoints: authorization_endpoint is opened in the user's browser, token/registration receive the code
+         and client material — all three must be https on a public host, carry no embedded credentials, and the
+         authorization endpoint has no fragment (RFC 6749 §3.1). Checked here, for catalog and custom alike. */
+  function sameIssuer(a, b) { return String(a || '').replace(/\/+$/, '') === String(b || '').replace(/\/+$/, ''); }
+  function assertEndpoint(raw, label) {
+    const u = assertSafeUrl(String(raw), label);
+    if (u.username || u.password) throw new Error(label + ': url cannot contain embedded credentials');
+    return u;
+  }
+  function checkAuthServerMetadata(asMeta, authServer) {
+    if (asMeta.issuer != null && !sameIssuer(asMeta.issuer, authServer)) {
+      throw new Error('authorization-server metadata issuer mismatch (expected ' + authServer + ', got ' + String(asMeta.issuer).slice(0, 200) + ')');
+    }
+    if (Array.isArray(asMeta.code_challenge_methods_supported) && asMeta.code_challenge_methods_supported.map(String).indexOf('S256') < 0) {
+      throw new Error('authorization server does not support PKCE S256');
+    }
+    if (assertEndpoint(asMeta.authorization_endpoint, 'authorization endpoint').hash) throw new Error('authorization endpoint: url cannot contain a fragment');
+    assertEndpoint(asMeta.token_endpoint, 'token endpoint');
+    if (asMeta.registration_endpoint) assertEndpoint(asMeta.registration_endpoint, 'client registration');
+  }
+
   // DISCOVERY: server URL (+ optional WWW-Authenticate header) -> the AS endpoints the flow needs.
   async function discover(opts) {
     opts = opts || {};
@@ -177,6 +204,7 @@
     }
     if (!asMeta) throw lastErr || new Error('no authorization-server metadata');
     if (!asMeta.authorization_endpoint || !asMeta.token_endpoint) throw new Error('authorization-server metadata missing endpoints');
+    checkAuthServerMetadata(asMeta, authServer);
     return {
       authorizationServer: authServer,
       authorizationEndpoint: String(asMeta.authorization_endpoint),
@@ -239,6 +267,9 @@
     if (!o.clientId) throw new Error('buildAuthorizeUrl needs clientId');
     if (!o.redirectUri) throw new Error('buildAuthorizeUrl needs redirectUri');
     if (!o.challenge) throw new Error('buildAuthorizeUrl needs a PKCE challenge');
+    // the URL the user's browser opens: https, public host, no credentials, no fragment — for every path in
+    // (discovered AND catalog staticOauth rows), not only the custom-server one (audit 2026-09-25 #21)
+    if (assertEndpoint(o.authorizationEndpoint, 'authorization endpoint').hash) throw new Error('authorization endpoint: url cannot contain a fragment');
     const q = new URLSearchParams({
       response_type: 'code',
       client_id: o.clientId,

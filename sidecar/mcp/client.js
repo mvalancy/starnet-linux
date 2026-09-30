@@ -8,7 +8,7 @@
    makeMcpClient({ transport, timeoutMs?, protocolVersion?, capabilities?, clientInfo?, onError? }) -> {
      initialize() -> Promise<{ protocolVersion, capabilities, serverInfo }>,
      listTools()  -> Promise<tool[]>,             // follows tools/list nextCursor pagination
-     callTool(name, args) -> Promise<{ content, isError }>,
+     callTool(name, args, { signal? }?) -> Promise<{ content, isError }>,   // an abort rejects at once + notifications/cancelled
      listResources() / listResourceTemplates() / readResource(uri),   // the RESOURCES primitive
      listPrompts() / getPrompt(name, args),                            // the PROMPTS primitive
      supports('resources'|'prompts'|'tools') -> bool,                  // from the server's initialize response
@@ -30,6 +30,9 @@
   else { root.SK = root.SK || {}; (root.SK.mcp = root.SK.mcp || {}).client = api; }
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
+
+  // failopen.note — the tagged swallow: a best-effort cancel notification that fails is counted, never invisible.
+  const { note: failNote } = (typeof require === 'function') ? require('../failopen.js') : { note: function (tag, e) { console.warn('[failopen] ' + tag + ':', (e && e.message) || e); } };
 
   const JSONRPC = '2.0';
   const DEFAULT_PROTOCOL = '2025-06-18';   // MCP revision; the server's echoed version wins after initialize
@@ -67,6 +70,7 @@
       if (!p) return;                   // already settled / timed out / unknown id -> ignore
       pending.delete(id);
       if (p.timer) clearTimeout(p.timer);
+      if (p.detach) p.detach();
       apply(p);
       if (drainReason !== null && pending.size === 0) close(drainReason);
     }
@@ -98,16 +102,34 @@
     }
     if (typeof transport.onMessage === 'function') transport.onMessage(receive);
 
-    function request(method, params) {
+    /* opts.signal (optional): the caller's cancellation. An already-aborted signal never sends; an abort mid-flight
+       rejects the pending request AT ONCE (the run's STOP must not wait out a slow server) and tells the server
+       with the protocol's `notifications/cancelled` for that request id, best-effort. The request may already
+       have taken effect server-side — the rejection says "cancelled", never "did not happen". */
+    function request(method, params, opts) {
       if (closed || drainReason !== null) return Promise.reject(new Error('mcp client closed'));
+      const signal = opts && opts.signal;
+      if (signal && signal.aborted) return Promise.reject(Object.assign(new Error('mcp request cancelled before it was sent: ' + method), { cancelled: true, sent: false }));
       const id = ++nextId;
       const msg = { jsonrpc: JSONRPC, id, method };
       if (params !== undefined) msg.params = params;
       return new Promise((resolve, reject) => {
-        const entry = { resolve, reject, timer: null };
+        const entry = { resolve, reject, timer: null, detach: null };
         if (timeoutMs > 0) {
-          entry.timer = setTimeout(() => { settle(id, p => p.reject(new Error('mcp request timed out: ' + method))); }, timeoutMs);
+          // __timeout + timeoutMs: the registry reads this exactly like its own timer (effect-unknown wording for a
+          // non-read tool), so a connector call that outlived the client's budget is never reported as a plain failure.
+          entry.timer = setTimeout(() => { settle(id, p => p.reject(Object.assign(new Error('mcp request timed out: ' + method), { __timeout: true, timeoutMs: timeoutMs }))); }, timeoutMs);
           if (entry.timer && typeof entry.timer.unref === 'function') entry.timer.unref();   // never keep the host alive
+        }
+        if (signal && typeof signal.addEventListener === 'function') {
+          const onAbort = () => {
+            if (!pending.has(id)) return;
+            settle(id, p => p.reject(Object.assign(new Error('mcp request cancelled: ' + method), { cancelled: true, sent: true, effectUnknown: true })));
+            notify('notifications/cancelled', { requestId: id, reason: 'cancelled by the StarNet host (run stopped)' })
+              .catch(err => { failNote('mcp.client.cancelNotify', err); onError(err); });
+          };
+          signal.addEventListener('abort', onAbort, { once: true });
+          entry.detach = () => { try { signal.removeEventListener('abort', onAbort); } catch (err) { failNote('mcp.client.abortDetach', err); } };
         }
         pending.set(id, entry);
         // send on a microtask so a synchronous transport that echoes inside send() still finds the pending entry
@@ -161,8 +183,8 @@
     }
 
     const listTools = () => listPaged('tools/list', 'tools');
-    function callTool(name, args) {
-      return request('tools/call', { name: name, arguments: args || {} });
+    function callTool(name, args, opts) {
+      return request('tools/call', { name: name, arguments: args || {} }, opts);
     }
 
     /* RESOURCES AND PROMPTS (2026-07-27). This client spoke `tools/list` and `tools/call` and nothing else,
@@ -189,7 +211,7 @@
       if (closed) return;
       closed = true;
       const err = new Error('mcp client closed' + (reason ? ': ' + reason : ''));
-      for (const p of pending.values()) { if (p.timer) clearTimeout(p.timer); try { p.reject(err); } catch (e) {} }
+      for (const p of pending.values()) { if (p.timer) clearTimeout(p.timer); if (p.detach) p.detach(); try { p.reject(err); } catch (e) {} }
       pending.clear();
       if (typeof transport.close === 'function') { try { transport.close(); } catch (e) { onError(e); } }
     }

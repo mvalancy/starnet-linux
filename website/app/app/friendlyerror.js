@@ -94,6 +94,8 @@
     // auth: the pure message is context-blind (classify time can't know if ChatGPT is already connected). It names the
     // one honest next step; the action BUTTON (actionButton) tailors the door — "add a key" vs "sign in with ChatGPT".
     auth:          { retryable: false, action: 'settings', msg: 'No model is connected yet — add a provider key (or sign in with ChatGPT) to let it run.' },
+    // a provider is connected but no MODEL is picked: the fix is the model dock, not a key or a sign-in
+    no_model:      { retryable: false, action: 'settings', msg: 'No model is picked yet — choose one from the model dock in COMMS, then send again.' },
     oauth:         { retryable: false, action: 'settings', msg: 'Your ChatGPT sign-in expired — reconnect it (or add a provider key instead).' },
     // xAI can 403-allowlist the Grok OAuth device flow off for an account — signing in is a dead-end there, so
     // point the user at the xAI (API KEY) provider instead of a doomed reconnect. Door is the PROVIDERS key field.
@@ -240,13 +242,27 @@
   const QUOTA_EXHAUSTED_RE = /usage[_ ]?limit(?:[_ ]?(?:has|is)(?:[_ ]?been)?)?[_ ]?reached|hit (?:your|the) (?:usage|weekly|monthly|plan|daily) limit|(?:weekly|monthly|daily) (?:quota|limit)|resets? in \s*\d+\s*(?:day|hour|week)|resets? (?:on|at) \d|quota (?:will )?reset(?:s)? (?:in|on|at)/;
   const SHORT_WINDOW_RE = /per[- ]?(?:minute|second)|quota metric|rpm|tpm|requests per/;
   const TERMINAL_BILLING_RE = /insufficient[_ ]?quota|exceeded your current quota|out of credit|add credits|payment required/;
+  /* Mirrored from sidecar/providers/errorClass.js (REJECTED_KEY_RE / NO_CREDIT_RE) — keep the two in step. xAI
+     answers a bad key with HTTP 400 "Incorrect API key provided", and a team with no prepaid credits with 403
+     "…doesn't have any credits yet. You can purchase credits on https://console.x.ai/…" (2026-09-27). */
+  const REJECTED_KEY_RE = /incorrect api key|invalid api key|api key (?:is )?(?:invalid|not valid|incorrect)|invalid x-api-key/;
+  const NO_CREDIT_RE = /(?:doesn'?t|does not) have any credits|purchase (?:more )?credits|used all (?:of )?(?:its |your )?available credits|(?:reached|exceeded|hit) (?:its |your |the |their )?(?:monthly )?spending limit|insufficient[_ ]?(?:credit|funds|balance)|out of credits?/;
+  // the ONE sentence both classifier paths use for "no model is picked": the sidecar guard and the page preflight
+  const NO_MODEL_RE = /\bno model selected\b/;
+  /* WHICH grok failures mean "this account can't use Grok sign-in" (the allowlist yank)? Only ones that carry the
+     OAuth surface's own voice: the adapter label "Grok (xAI) http 403", the refresh path's "xAI OAuth API access",
+     or an explicit grok OAuth/sign-in phrase. The bare word "grok" is NOT enough: an XAI (API KEY) provider error
+     names grok MODELS too, and sending that user to "add an xAI key" is a door onto the room they are already in. */
+  const GROK_OAUTH_VOICE_RE = /grok \(xai\) http|grok[ _-]?oauth|grok sign-?in|xai[ _]oauth/;
+  const GROK_ALLOWLIST_RE = /allowlist|not allowed|not enabled|not available|unavailable|access forbidden|\bforbidden\b|\b403\b/;
 
   function kindFromRaw(raw, status) {
     const low = String(raw || '').toLowerCase();
     // Harness pre-flight guards ("no API key set" / "no model selected"): a misconfig, not a fault — point at
     // Settings instead of offering a doomed retry. (Match before capdenied, which the em-dash-less strings miss.)
     if (/chatgpt.*sign-?in|sign-?in.*chatgpt|not signed in to chatgpt|codex_not_connected|codex auth|codex_auth|chatgpt subscription.*connect/.test(low)) return 'oauth';
-    if (/no api key set|no model selected|missing key\/model/.test(low)) return 'auth';
+    if (NO_MODEL_RE.test(low) && !/missing key\/model/.test(low)) return 'no_model';
+    if (/no api key set|missing key\/model/.test(low)) return 'auth';
     // a forwarded capability denial ("no web — …" / "capdenied")
     if (/\bcapdenied\b/.test(low) || /^no\s+\w+\s+—/.test(low) || /needs a capability|capability.*(off|denied)/.test(low)) return 'capdenied';
     // MUST precede isTransportLoss: that predicate also matches `fetch failed`, and whichever runs first owns the
@@ -262,7 +278,7 @@
       // OUR OWN sidecar's token gate (crash+respawn → stale X-StarNet-Token): a "sidecar HTTP 403" throw or a
       // "forbidden token/origin/host" body means reload for the fresh boot token — never the provider-key door.
       if (s === 403 && (/sidecar http/.test(low) || /\bforbidden\b/.test(low))) return 'stale_session';
-      if (s === 401 || s === 403) return 'auth';
+      if (s === 401 || s === 403) return NO_CREDIT_RE.test(low) ? 'billing' : 'auth';
       if (s === 402) return /(resets? at|retry[- ]?after|rate limit)/.test(low) ? 'rate_limit' : 'billing';
       if (s === 404) return 'model_not_found';
       if (s === 408 || s === 504) return 'timeout';
@@ -287,6 +303,7 @@
         if (/\b(anthropic|openai|openrouter|google|gemini|grok|xai|kimi|codex|deepseek|mistral|groq|ollama)\b/.test(low)) return 'provider_server_error';
         return /sidecar http/.test(low) ? 'server_error' : 'provider_server_error';
       }
+      if (s === 400 && REJECTED_KEY_RE.test(low)) return 'auth';
       if (s === 400 || s === 413 || s === 422) return /context length|maximum context|context window|too many tokens|reduce the length/.test(low) ? 'context_overflow' : 'unknown';
     }
     // message patterns (no status / in-band error text)
@@ -294,8 +311,8 @@
     if (/overloaded|over capacity|temporarily unavailable|try again later/.test(low)) return 'provider_server_error';
     if (QUOTA_EXHAUSTED_RE.test(low) && !SHORT_WINDOW_RE.test(low)) return 'quota_exhausted';
     if (/rate limit|too many requests|rate-limit/.test(low)) return 'rate_limit';
-    if (/insufficient|out of credit|not enough credit|quota|payment required|add credits|billing/.test(low)) return 'billing';
-    if (/unauthorized|invalid api key|invalid key|no auth credentials|authentication|key was rejected|rejected/.test(low)) return 'auth';
+    if (/insufficient|out of credit|not enough credit|quota|payment required|add credits|billing/.test(low) || NO_CREDIT_RE.test(low)) return 'billing';
+    if (/unauthorized|invalid api key|invalid key|no auth credentials|authentication|key was rejected|rejected/.test(low) || REJECTED_KEY_RE.test(low)) return 'auth';
     if (/no endpoints|model not found|not a valid model|unknown model/.test(low)) return 'model_not_found';
     if (/timed out|timeout/.test(low)) return 'timeout';
     if (/context length|maximum context|context window|too many tokens/.test(low)) return 'context_overflow';
@@ -321,7 +338,8 @@
     } else
     // xAI's Grok OAuth device flow can be 403-allowlisted off for an account: the backend says the OAuth surface
     // is unavailable/forbidden. That's a dead-end for RECONNECT, so route to the xAI (API KEY) provider instead.
-    if (/\bgrok\b/.test(raw.toLowerCase()) && /allowlist|not allowed|not enabled|not available|unavailable|access forbidden|\bforbidden\b|\b403\b/.test(raw.toLowerCase())) {
+    // Keyed on the OAuth surface's own voice (GROK_OAUTH_VOICE_RE), not the bare word "grok".
+    if (GROK_OAUTH_VOICE_RE.test(raw.toLowerCase()) && GROK_ALLOWLIST_RE.test(raw.toLowerCase())) {
       kind = 'grok_oauth_unavailable';
     } else
     // grok/kimi keyless sign-ins are a reconnect case (same class as codex): not-connected, auth-error, or a
@@ -342,7 +360,9 @@
     // — the old `sign-?in` missed the space and the consumed-token escape fell through to a generic door.
     if (/chatgpt.*sign[- ]?in|sign[- ]?in.*chatgpt|not signed in to chatgpt|codex_not_connected|codex auth|codex_auth|codex (token )?refresh|refresh_token_reused|chatgpt subscription.*connect/.test(raw.toLowerCase())) {
       kind = 'oauth';
-    } else if (/no api key set|no model selected|missing key\/model/.test(raw.toLowerCase())) {
+    } else if (NO_MODEL_RE.test(raw.toLowerCase()) && !/missing key\/model/.test(raw.toLowerCase())) {
+      kind = 'no_model';
+    } else if (/no api key set|missing key\/model/.test(raw.toLowerCase())) {
       kind = 'auth';
     } else if (/spotify is not connected|spotify.*not connected|connect (it in settings|it in toolsets|spotify)|spotify session expired|spotify auth failed/.test(raw.toLowerCase())) {
       // the JUKEBOX is placed but Spotify's OAuth isn't linked (or its session died) — every flavor gets the
@@ -406,8 +426,33 @@
       // loose contains-match (an underscore like "grok_not_connected" is a word char, so \b would miss it).
       const provider = /grok/.test(low) ? 'grok' : /kimi/.test(low) ? 'kimi' : 'codex';
       const nm = provider === 'grok' ? 'Grok' : provider === 'kimi' ? 'Kimi' : null;
-      const userMessage = nm ? ('Your ' + nm + ' sign-in expired — reconnect it (or add a provider key instead).') : k.msg;
-      return { userMessage: userMessage, kind: kind, retryable: k.retryable, action: k.action, provider: provider, raw: raw };
+      // NEVER signed in is not "expired". The sidecar says "not signed in" / "sign in to <X> first" (or the
+      // provider's *_not_connected code); a sign-in that died mid-life keeps the reconnect wording. The door
+      // reads SIGN IN vs RECONNECT off `signedOut` (actionButton).
+      const signedOut = !!nm && /not signed in|not[ _-]?connected|sign in to [a-z0-9 ()]+ first/.test(low);
+      const userMessage = !nm ? k.msg
+        : !signedOut ? ('Your ' + nm + ' sign-in expired — reconnect it (or add a provider key instead).')
+        : provider === 'grok'
+          ? "Grok isn't signed in yet — sign in with your SuperGrok or X Premium+ account under SETTINGS → PROVIDERS → GROK (XAI), or add an xAI API key instead."
+          : "Kimi isn't signed in yet — sign in with your Kimi account under SETTINGS → PROVIDERS → KIMI FOR CODING, or add a provider key instead.";
+      return { userMessage: userMessage, kind: kind, retryable: k.retryable, action: k.action, provider: provider, signedOut: signedOut, raw: raw };
+    }
+    // auth: say WHICH credential is missing, or that the provider REJECTED one. "No model is connected yet" is only
+    // true when nothing names a provider (a bare guard, a page preflight).
+    if (kind === 'auth') {
+      const low = raw.toLowerCase();
+      const named = raw.match(/connect an? (.+?) api key\b/i);   // the sidecar guard: providerCredentialError()
+      let userMessage = k.msg;
+      if (/link this station to a starnet account/.test(low)) {
+        userMessage = "This station isn't linked to StarNet credits yet — link it under SETTINGS → PROVIDERS → STARNET MANAGED, or connect your own provider key.";
+      } else if (named) {
+        userMessage = 'No ' + named[1].trim().replace(/\s+api$/i, '') + ' API key is connected yet — add it under SETTINGS → PROVIDERS, or pick a model from a provider you have already connected.';
+      } else if (/configure the (.+?) base url/i.test(raw)) {
+        userMessage = 'The ' + raw.match(/configure the (.+?) base url/i)[1].trim() + ' endpoint has no base URL yet — set it under SETTINGS → PROVIDERS.';
+      } else if (!/sidecar http|chatgpt|codex/.test(low) && (REJECTED_KEY_RE.test(low) || /\bhttp (?:400|401|403)\b/.test(low))) {
+        userMessage = 'The provider rejected the API key — check it, or paste a new one under SETTINGS → PROVIDERS.';
+      }
+      return { userMessage: userMessage, kind: kind, retryable: k.retryable, action: k.action, raw: raw };
     }
     // transport loss: the ONE kind whose copy names a component, so it is the one kind that owes proof. The
     // measured verdict rides along on `engineAlive` so a diagnostic report can state what was actually probed.
@@ -490,6 +535,21 @@
       }
     };
   }
+  /* ▸ PICK A MODEL. The model dock closes on any click OUTSIDE it (modeldock.js wire()), and this door is a chip in
+     the COMMS log — so opening the dock synchronously let the SAME click bubble on to that closer, which shut it
+     in the same tick and the door looked dead (live-caught 2026-09-27). Open after the originating click is done.
+     Falls back to Settings only when the dock isn't mounted (headless/tests). */
+  function pickModelDoor() {
+    return { label: '▸ PICK A MODEL', run: () => {
+      try {
+        if (typeof ModelDock !== 'undefined' && ModelDock.open) {
+          setTimeout(() => { try { ModelDock.open(); } catch (_) {} }, 0);
+          return;
+        }
+      } catch (_) {}
+      openSettings('models');
+    } };
+  }
   function actionButton(verdict) {
     if (!verdict) return null;
     switch (verdict.action) {
@@ -509,12 +569,16 @@
         // door — the 2026-07-08 escape was exactly this error landing with only a generic "add a key" path.
         // Settings→PROVIDERS is where the row's ⏼ RE-SIGN-IN action now lives.
         if (verdict.kind === 'oauth') {
-          // the door names the specific provider whose sign-in died (all land on the same PROVIDERS section).
-          const label = verdict.provider === 'grok' ? '⏼ RECONNECT GROK'
-            : verdict.provider === 'kimi' ? '⏼ RECONNECT KIMI'
+          // the door names the specific provider whose sign-in died (all land on the same PROVIDERS section);
+          // a never-signed-in grok/kimi reads SIGN IN — there is nothing to reconnect.
+          const verb = verdict.signedOut ? '⏼ SIGN IN TO ' : '⏼ RECONNECT ';
+          const label = verdict.provider === 'grok' ? verb + 'GROK'
+            : verdict.provider === 'kimi' ? verb + 'KIMI'
             : '⏼ RECONNECT CHATGPT';
           return { label: label, run: () => openSettings('providers') };
         }
+        // no_model: a provider is connected, only the model is missing — the model dock is the door
+        if (verdict.kind === 'no_model') return pickModelDoor();
         // other auth/no-key: if ChatGPT is already the connected brain, the honest door is still "reconnect";
         // otherwise the provider key field. Both land on the same PROVIDERS section.
         if (verdict.kind === 'auth' && codexConnected())
@@ -525,12 +589,7 @@
         // NOT Settings→MODELS (that section is the fallback chain + class tiers and cannot change the primary;
         // sending users there was a door onto a room without the lever). Fall back to Settings only when the
         // dock isn't mounted (headless/tests).
-        if (verdict.kind === 'model_not_found') {
-          return { label: '▸ PICK A MODEL', run: () => {
-            try { if (typeof ModelDock !== 'undefined' && ModelDock.open) { ModelDock.open(); return; } } catch (_) {}
-            openSettings('models');
-          } };
-        }
+        if (verdict.kind === 'model_not_found') return pickModelDoor();
         return { label: '⚙ Open Settings', run: () => openSettings('providers') };
       case 'reload':
         // stale_session: the page holds a dead boot token — a reload is the ONE honest reconnect (the token is

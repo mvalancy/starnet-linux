@@ -176,6 +176,17 @@ const wire = (h) => PermissionsStore.init({ api: h.api, getPosture: h.getPosture
 
   // --- read-only citizen: never emits, no bus dependency ---
   {
+    let grantCalls = 0;
+    PermissionsStore.init({ load: false, getPosture: () => ({ initiative: 'wait' }),
+      applyPreset: async () => ({ ok: false, error: 'posture offline' }),
+      api: { grant: async () => { grantCalls++; return { ok: true, grants: ['cabinet:write'] }; } } });
+    const snap = await PermissionsStore.setLevel('full');
+    ok(/posture offline/.test(snap.error), 'permission preset reports failed posture');
+    ok(grantCalls === 0, 'failed posture never proceeds to capability grants');
+  }
+
+  // --- read-only citizen: never emits, no bus dependency ---
+  {
     const src = fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', 'permissionsstore.js'), 'utf8');
     ok(!/\.emit\s*\(/.test(src), 'permissionsstore never emits on the bus (read-only citizen)');
     ok(!/U\.bus\.(on|once|emit)\s*\(|require\(['"][^'"]*events/.test(src), 'permissionsstore makes no real U.bus calls / events require (read-only citizen)');

@@ -152,7 +152,9 @@ A.eq(taint.postTaintBoundary(FS_WRITE, { taintedBy: 'web_fetch', surface: 'auton
 // ---- 6. poisoned documents and upstream agent output begin tainted ----
 {
   const hub = fs.readFileSync(path.join(root, 'sidecar', 'channels', 'hub.js'), 'utf8');
-  A.ok(/initialTaint: mediaIngest\.attachments\.length \? 'channel attachment' : null/.test(hub), 'channel attachments begin tainted');
+  A.ok(/initialTaint: entryTaint \|\| \(mediaIngest\.attachments\.length \? 'channel attachment' : \(carriesThirdPartyText\(msg\) \? 'forwarded message' : null\)\)/.test(hub), 'channel attachments and forwarded messages begin tainted (a hub entryTaint wins when set)');
+  const idx = fs.readFileSync(path.join(root, 'sidecar', 'index.js'), 'utf8');
+  A.ok(/function makeTriggerHub\(hooks\) \{[\s\S]{0,4000}entryTaint: 'line trigger payload'/.test(idx), 'line-trigger runs (webhook bodies, watched files) begin tainted');
   A.ok(/initialTaint: 'upstream agent output'/.test(hub), 'agent-chain hops cannot treat upstream output as Commander-authored');
 }
 

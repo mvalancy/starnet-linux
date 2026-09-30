@@ -196,7 +196,7 @@ async function journeyRoutines(cdp, A) {
     const s = document.querySelector('#rt-sched'); if (!s) return 'NO_SCHED';
     s.value = 'every 30m'; s.dispatchEvent(new Event('input', { bubbles: true })); return 'typed';
   })()`).catch((e) => 'ERR:' + e.message);
-  const previewShown = await waitFor(cdp, `(() => { const p = document.querySelector('#rt-preview'); return !!p && /next/i.test(p.textContent) && /✓/.test(p.textContent); })()`, 40);
+  const previewShown = await waitFor(cdp, `(() => { const p = document.querySelector('#rt-preview'); return !!p && !!p.querySelector('.rt-next-label') && /Next run/.test(p.textContent) && /in 30m/.test(p.textContent); })()`, 40);
   const previewText = await evalJS(cdp, `(document.querySelector('#rt-preview') || {}).textContent || ''`).catch(() => '');
   A.ok('JW-routines/preview-server-math', preview === 'typed' && previewShown, 'rt-preview = ' + J(String(previewText).slice(0, 90)));
 
@@ -307,10 +307,9 @@ async function journeyRecipes(cdp, A) {
   A.ok('JW-recipes/card-selected', pick && pick.id && pick.name, 'selected recipe id=' + (pick && pick.id) + ' name=' + J(pick && pick.name));
   if (!pick || !pick.name) return;
 
-  const launchBtn = await waitSel(cdp, '.mkt-launch', 40);
-  await clickSel(cdp, '.mkt-launch');
+  // Recipe details now contain the launch form directly; no intermediary launch button.
   const formShown = await waitSel(cdp, '.mkt-do-launch', 40);
-  A.ok('JW-recipes/setup-launch-opens-form', launchBtn && formShown, formShown ? 'launch form (.mkt-do-launch) shown' : 'SET UP & LAUNCH did not open the run form');
+  A.ok('JW-recipes/setup-launch-opens-form', formShown, formShown ? 'inline START SESSION form shown' : 'recipe selection did not reveal its run form');
 
   const taskBefore = await evalJS(cdp, `(typeof Workstreams !== 'undefined') ? Workstreams.list().filter(w => w.kind === 'task').map(w => w.id) : []`).catch(() => []);
   const filled = await evalJS(cdp, `(() => {

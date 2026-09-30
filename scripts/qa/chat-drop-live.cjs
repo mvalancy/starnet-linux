@@ -58,7 +58,7 @@ const { chromium } = require(process.env.STARNET_PLAYWRIGHT_MODULE || 'playwrigh
     assert.equal(await page.locator('.chat-drop-hint').isVisible(),false);
     await waitUploads(2);
     for(const ref of uploaded){
-      const bytes=await page.evaluate(async ref=>{const r=await fetch('/api/file?agent=agent&path='+encodeURIComponent(ref.path)+'&token='+encodeURIComponent(Harness.apiToken()));return {status:r.status,bytes:Array.from(new Uint8Array(await r.arrayBuffer()))};},ref);
+      const bytes=await page.evaluate(async ref=>{const r=await fetch('/api/file?agent=agent&path='+encodeURIComponent(ref.path));return {status:r.status,bytes:Array.from(new Uint8Array(await r.arrayBuffer()))};},ref);
       assert.equal(bytes.status,200);assert.deepEqual(Buffer.from(bytes.bytes),fs.readFileSync(ref.name==='drop-proof.txt'?textPath:pngPath));
     }
     proof.checks.push('Transcript drop: two real files uploaded exactly once; exact bytes read back; image preview; draft preserved; overlay clears');proof.overlay=overlay;

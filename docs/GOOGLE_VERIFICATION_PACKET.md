@@ -37,12 +37,16 @@ under `https://www.googleapis.com/auth/`.
 | Service | Requested scopes | User-visible operation |
 | --- | --- | --- |
 | Gmail | gmail.readonly, gmail.compose | Search/read messages and attachments; create/send drafts |
+| Gmail (send only) | gmail.send | Send a user-approved plain-text email; cannot read, search or draft (sensitive tier, added 2026-09-22) |
 | Drive | drive.readonly, drive.file | Search/read/export existing files; create/update permitted metadata |
 | Calendar | calendar.calendarlist.readonly, calendar.events.readonly, calendar.events.freebusy | Read calendars/events/availability |
 | Docs | documents, drive.file | Read/create/edit by document ID; minimal Drive account probe |
 | Sheets | spreadsheets, drive.file | Read/create/edit by spreadsheet ID; minimal Drive account probe |
 
-The combined scope declaration stays at eleven unique scopes: Drive still needs
+Services now release one at a time by review tier (sensitive vs restricted); see
+[GOOGLE_REVIEW_BUILD.md](GOOGLE_REVIEW_BUILD.md) for the two-submission plan and the review launcher.
+
+The combined scope declaration is twelve unique scopes with gmail.send: Drive still needs
 drive.readonly, but connecting Docs or Sheets no longer grants whole-Drive read access.
 An older grant is not automatically revoked by narrowing a new authorization request.
 

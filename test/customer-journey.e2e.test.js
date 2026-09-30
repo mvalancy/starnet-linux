@@ -10,6 +10,9 @@ const { SidecarFixture } = require('./helpers/sidecar-fixture.js');
 const Pipeline = require('../frontend/app/pipeline.js');
 const IPC = 'customer-journey-fixture-ipc-token-1234567890';
 const providers = ['starnet', 'openrouter', 'custom', 'gemini', 'codex'];
+// Agent ids are NOT provider names: WORKSPACES/codex holds the ChatGPT tokens, so an agent id `codex` is reserved
+// (sidecar/workspace-reserved.js) and could never own a workspace.
+const aid = p => 'journey-' + p;
 const modelFor = p => p === 'gemini' ? 'gemini-3-flash' : p === 'codex' ? 'gpt-5.5' : p + '/journey';
 const jwt = 'fixture.' + Buffer.from(JSON.stringify({ exp: 4102444800 })).toString('base64url') + '.fixture';
 
@@ -87,20 +90,20 @@ test('customer journey: connect, select, tool, output, restart and repeat on all
   const fixture = SidecarFixture.create({ prefix: 'customer-journey-', timeoutMs: 20000, env });
   try {
     for (const p of providers) {
-      fs.mkdirSync(path.join(fixture.workspace, p), { recursive: true });
-      fs.writeFileSync(path.join(fixture.workspace, p, p + '-journey-proof.txt'), 'Fixture data, not a customer file.');
+      fs.mkdirSync(path.join(fixture.workspace, aid(p)), { recursive: true });
+      fs.writeFileSync(path.join(fixture.workspace, aid(p), p + '-journey-proof.txt'), 'Fixture data, not a customer file.');
     }
     fs.mkdirSync(path.join(fixture.workspace, '.secrets'), { recursive: true });
     fs.writeFileSync(path.join(fixture.workspace, '.secrets', 'credits.json'), JSON.stringify({ url: base + '/starnet', accountId: 'fixture', linkedAt: Date.now() }));
     fs.mkdirSync(path.join(fixture.workspace, 'codex'), { recursive: true });
     fs.writeFileSync(path.join(fixture.workspace, 'codex', 'tokens.json'), JSON.stringify({ access_token: jwt, refresh_token: 'fixture', token_type: 'Bearer' }));
     await fixture.start();
-    const agents = providers.map(provider => ({ agentId: provider, name: provider, system: 'Inspect the station then answer.', provider, model: modelFor(provider) }));
+    const agents = providers.map(provider => ({ agentId: aid(provider), name: provider, system: 'Inspect the station then answer.', provider, model: modelFor(provider) }));
     assert.equal((await fixture.json('POST', '/api/roster', { agents, updatedAt: Date.now() })).status, 200);
     await fixture.json('POST', '/api/cron/arm', { enabled: false });
     const jobs = {};
     for (const p of providers) {
-      const r = await fixture.json('POST', '/api/cron', { name: 'Journey ' + p, prompt: 'Inspect then answer', schedule: 'every 1h', agentId: p, provider: p, model: modelFor(p), runsLine: false });
+      const r = await fixture.json('POST', '/api/cron', { name: 'Journey ' + p, prompt: 'Inspect then answer', schedule: 'every 1h', agentId: aid(p), provider: p, model: modelFor(p), runsLine: false });
       assert.equal(r.status, 200, JSON.stringify(r.body)); jobs[p] = r.body.job.id;
     }
     for (let boot = 0; boot < 2; boot++) {
@@ -112,19 +115,19 @@ test('customer journey: connect, select, tool, output, restart and repeat on all
       }
       const roster = JSON.parse(fs.readFileSync(path.join(fixture.workspace, 'agent.roster.json'), 'utf8'));
       for (const p of providers) {
-        assert.ok(roster.agents.some(a => a.agentId === p && a.provider === p && a.model === modelFor(p)), 'saved provider/model survives restart');
+        assert.ok(roster.agents.some(a => a.agentId === aid(p) && a.provider === p && a.model === modelFor(p)), 'saved provider/model survives restart');
         for (const entry of ['sample', 'direct', 'routine']) {
           calls.length = 0;
           if (entry === 'sample') {
-            const plan = Pipeline.compileRoutingPlan({ props: [{ id: 'i', t: 'intake', x: 0, y: 0, w: 1, h: 1 }, { id: 'b', t: 'bay', x: 3, y: 0, w: 1, h: 1, agentId: p }, { id: 'o', t: 'outbox', x: 6, y: 0, w: 1, h: 1 }], belts: [1, 2, 4, 5].map(x => ({ x, y: 0, dir: 'E' })) });
+            const plan = Pipeline.compileRoutingPlan({ props: [{ id: 'i', t: 'intake', x: 0, y: 0, w: 1, h: 1 }, { id: 'b', t: 'bay', x: 3, y: 0, w: 1, h: 1, agentId: aid(p) }, { id: 'o', t: 'outbox', x: 6, y: 0, w: 1, h: 1 }], belts: [1, 2, 4, 5].map(x => ({ x, y: 0, dir: 'E' })) });
             for (const bay of plan.bays.concat(plan.dockBays)) bay.objects = ['computer', 'cabinet'];
             assert.equal((await fixture.json('POST', '/api/routing', plan)).body.ok, true);
             const r = await fixture.json('POST', '/api/routing/sample', {});
             assert.equal(r.body.ok, true, JSON.stringify(r.body));
-            assert.equal(r.body.delivered.agentId, p);
+            assert.equal(r.body.delivered.agentId, aid(p));
             assert.ok(JSON.stringify(r.body).includes('JOURNEY COMPLETE'), 'sample delivers final output');
           } else {
-            const body = entry === 'routine' ? { id: jobs[p] } : { agentId: p, provider: p, model: modelFor(p), internal: true, isTask: true, placed: ['computer', 'cabinet'], messages: [{ role: 'user', content: 'Inspect then answer' }] };
+            const body = entry === 'routine' ? { id: jobs[p] } : { agentId: aid(p), provider: p, model: modelFor(p), internal: true, isTask: true, placed: ['computer', 'cabinet'], messages: [{ role: 'user', content: 'Inspect then answer' }] };
             const r = await fixture.json('POST', entry === 'routine' ? '/api/cron/run' : '/api/run', body);
             assert.equal(r.status, 200, r.text);
             const events = r.text.split(/\r?\n/).filter(Boolean).map(s => JSON.parse(s));

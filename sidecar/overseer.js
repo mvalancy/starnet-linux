@@ -87,7 +87,10 @@ function makeOverseer(deps) {
     return update(s => { s.threads.push(row); return row; });
   }
   function freshReviews(workers) {
+    // A worker stopped BECAUSE its lead run was cancelled (subagents.js cancelChildren) gets no review turn: the
+    // Commander just pressed Stop on that conversation, and a fresh paid run reporting the stop would override it.
     const fresh = workers.filter(w => w.leadId === 'agent' && valid(w.parentStreamId) && (w.completedAt || w.status === 'stale')
+      && w.cancelledBy !== 'parent'
       && ['done', 'error', 'refused', 'interrupted', 'stale'].includes(w.status)
       && !state.reviews.some(r => r.id === w.runId + ':review'));
     return fresh.map(w => ({ id: w.runId + ':review',

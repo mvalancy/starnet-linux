@@ -1,0 +1,10 @@
+{
+  "id": "harrypotter",
+  "track": "type",
+  "dir": "north",
+  "job": "31e736ee-07e4-4031-90db-579985307839",
+  "result": "frames: 5\nhttps://api.pixellab.ai/mcp/images/31e736ee-07e4-4031-90db-579985307839/download?index=0",
+  "packed": true,
+  "lastRaw": "output/agent-animation-study/rollout-20px/full-motion/harrypotter/minimax/type-north/31e736ee-07e4-4031-90db-579985307839/4.png",
+  "frameCount": 5
+}

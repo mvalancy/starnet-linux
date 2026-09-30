@@ -405,7 +405,11 @@ function makeOpenAiCompat(deps) {
       inFlight++;
       let acc;
       try {
-        acc = await startRun({ runId: id, agentId, model: runModel, provider, system, messages, signal: ac.signal, onDelta: (dlt) => sseData(res, chatChunk({ id, model: modelField, created, delta: { content: dlt } })) });
+        acc = await startRun({ runId: id, agentId, model: runModel, provider, system, messages, signal: ac.signal, onDelta: (dlt) => sseData(res, chatChunk({ id, model: modelField, created, delta: { content: dlt } })),
+          // agent.waiting (the loop's heartbeat while the model shows nothing yet) becomes an SSE COMMENT line: every
+          // client ignores it, yet a slow first byte or a retry backoff no longer leaves the socket byte-silent for
+          // minutes. Phase + seconds only — no model name, no text, nothing a client could mistake for content.
+          onEvent: (name, p) => { if (name === 'agent.waiting' && p) sseComment(res, 'waiting ' + (/^(connect|first_byte|streaming|retry_backoff)$/.test(String(p.phase)) ? p.phase : 'other') + ' ' + Math.max(0, Math.round((Number(p.sinceMs) || 0) / 1000)) + 's'); } });
       } finally { inFlight--; }
       finished = true;
       const finishReason = finishReasonFor(acc.reason);

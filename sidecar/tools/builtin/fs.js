@@ -10,6 +10,7 @@
      root    : absolute path to .../workspaces
      limits  : { writeBytes=1<<20, readReturn=200_000 } */
 'use strict';
+const { note: failNote } = require('../../failopen');
 (function (root, factory) {
   const api = factory();
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -20,10 +21,13 @@
   const { parsePatch, hunkOldText, hunkNewText, addText } = require('./patchparse.js');
   const { fuzzyFindAndReplace } = require('./fuzzymatch.js');
   const crypto = require('node:crypto');
+  const { assertWorkspaceId } = require('../../workspace-reserved.js');
 
   function safeAgentId(id) {
     if (!/^[A-Za-z0-9_-]{1,40}$/.test(id || '')) throw new Error('bad agentId');
-    return id;
+    // An id equal to a station-owned directory (codex/, channels/, connectors/, plugins/ …) would make that
+    // credential/code directory this agent's private jail — refuse it (sidecar/workspace-reserved.js).
+    return assertWorkspaceId(id);
   }
   function kb(n) { return n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB'; }
   function emitDeliverable(ctx, aid, pathStr) {
@@ -132,11 +136,16 @@
     async function realpathOrSelf(p) {
       try { return await fsp.realpath(p); } catch (_) { return p; }
     }
+    async function realpathExisting(p) {
+      try { return await fsp.realpath(p); }
+      catch (e) { throw new Error('cannot resolve filesystem path (possibly a dangling symlink): ' + p + ': ' + ((e && e.message) || e)); }
+    }
     async function deepestExisting(abs, base) {
       let cur = abs;
       for (;;) {
         try { await fsp.lstat(cur); return cur; }
         catch (e) {
+          if (!e || e.code !== 'ENOENT') throw e;
           const parent = P.dirname(cur);
           if (!parent || parent === cur) return base;
           cur = parent;
@@ -178,9 +187,9 @@
         // Selecting a relative base is not authority: re-run the station grant and protected-file floor for
         // every resolved target, just as an explicit absolute path would.
         await pathTrust(abs, { scope: opts.scope === 'write' ? 'write' : 'read', agentId: agentId, ctx: opts.ctx });
-        const baseReal = await realpathOrSelf(base);
+        const baseReal = await realpathExisting(base);
         const existing = await deepestExisting(abs, base);
-        const existingReal = await realpathOrSelf(existing);
+        const existingReal = await realpathExisting(existing);
         if (!pathInside(existingReal, baseReal)) throw new Error('path escapes project root via symlink');
         await checkpointResolvedRoot(base, opts);
         return { base, abs };
@@ -188,9 +197,9 @@
       const base = await workspaceRoot(agentId);
       const abs = P.resolve(base, rel || '.');
       if (!pathInside(abs, base)) throw new Error('path escapes workspace');
-      const baseReal = await realpathOrSelf(base);
+      const baseReal = await realpathExisting(base);
       const existing = await deepestExisting(abs, base);
-      const existingReal = await realpathOrSelf(existing);
+      const existingReal = await realpathExisting(existing);
       if (!pathInside(existingReal, baseReal)) throw new Error('path escapes workspace via symlink');
       await checkpointResolvedRoot(base, opts);
       return { base, abs };
@@ -304,8 +313,8 @@
 
     const readTool = {
       name: 'fs.read', capability: 'cabinet', scope: 'read', requiresConsent: false, timeoutMs: 10000,
-      description: 'Read a file from the current project folder when this session is project-scoped, otherwise from your private workspace. Text files come back as text; for large text use offset and limit to page character ranges without rerunning the command that produced the file. Word (.docx), Excel (.xlsx) and Jupyter (.ipynb) files are extracted to readable text automatically; PNG/JPEG/GIF/WEBP images are shown to you as actual pixels so you can look at them directly.',
-      schema: { type: 'object', required: ['path'], properties: { path: { type: 'string' }, offset: { type: 'number' }, limit: { type: 'number' } } },
+      description: 'Read a file from the current project folder when this session is project-scoped, otherwise from your private workspace. Text files come back as text; for large text use offset and limit to page character ranges without rerunning the command that produced the file. For source code pass { "numbered": true }: every line is prefixed "<line number><TAB>" (cat -n style) so you can cite exact lines, and offset/limit then mean the 1-based START LINE and the NUMBER OF LINES (e.g. offset:120, limit:40). Without "numbered" (or with "raw": true) the text is returned exactly as stored. Word (.docx), Excel (.xlsx) and Jupyter (.ipynb) files are extracted to readable text automatically; PNG/JPEG/GIF/WEBP images are shown to you as actual pixels so you can look at them directly.',
+      schema: { type: 'object', required: ['path'], properties: { path: { type: 'string' }, offset: { type: 'number' }, limit: { type: 'number' }, numbered: { type: 'boolean' }, raw: { type: 'boolean' } } },
       run: async (args, ctx) => {
         const aid = (ctx && ctx.agentId) || 'agent';
         const { abs } = await resolveInside(aid, args.path, { scope: 'read', ctx });
@@ -346,6 +355,36 @@
         }
 
         const txt = raw.toString('utf8');
+        /* NUMBERED (2026-09-02, coding-tools lane). Line-cited reads are how a coding agent anchors an fs.edit or
+           a diagnostic ("main.js:214"). Opt-in, because ~25 test files and the output-parking read-back path
+           consume the plain default and a numbered default would change what they parse; `raw: true` is the
+           explicit spelling of the plain path. Line semantics for offset/limit here match the reference
+           harness's Read tool (1-based start line + line count). Line numbers are never clipped: a cap hit
+           mid-page ends the page on a whole line and the trailer says which line to continue from. */
+        if (args.numbered === true && args.raw !== true) {
+          const lines = txt.split('\n');
+          if (lines.length && lines[lines.length - 1] === '' && txt.length) lines.pop();   // a trailing newline is not an extra empty line
+          const totalLines = lines.length;
+          const startLine = Math.max(1, Math.floor(Number(args.offset) || 1));
+          const requestedLines = args.limit == null ? totalLines : Math.floor(Number(args.limit) || 0);
+          if (requestedLines <= 0) throw new Error('limit must be a positive number');
+          if (startLine > totalLines) {
+            return { content: '[offset ' + startLine + ' is past the end: ' + args.path + ' has ' + totalLines + ' line' + (totalLines === 1 ? '' : 's') + ']', summary: totalLines + ' lines; nothing at line ' + startLine };
+          }
+          const rows = [];
+          let chars = 0, endLine = startLine - 1, capped = false;
+          for (let i = startLine - 1; i < totalLines && rows.length < requestedLines; i++) {
+            const row = (i + 1) + '\t' + lines[i].replace(/\r$/, '');
+            if (rows.length && chars + row.length + 1 > READ_RETURN) { capped = true; break; }
+            rows.push(row); chars += row.length + 1; endLine = i + 1;
+          }
+          let out = rows.join('\n');
+          const more = endLine < totalLines;
+          if (more) out += '\n[showing lines ' + startLine + '-' + endLine + ' of ' + totalLines + (capped ? ' (output cap)' : '')
+            + '; next: fs.read {"path":' + JSON.stringify(String(args.path)) + ',"numbered":true,"offset":' + (endLine + 1) + ',"limit":' + Math.min(requestedLines, Math.max(1, endLine - startLine + 1)) + '}]';
+          else if (startLine > 1) out += '\n[showing lines ' + startLine + '-' + endLine + ' of ' + totalLines + '; end of file]';
+          return { content: out, summary: kb(Buffer.byteLength(txt)) + ' read; lines ' + startLine + '-' + endLine + ' of ' + totalLines };
+        }
         const offset = Math.min(txt.length, Math.max(0, Math.floor(Number(args.offset) || 0)));
         const requested = args.limit == null ? READ_RETURN : Math.floor(Number(args.limit) || 0);
         if (requested <= 0) throw new Error('limit must be a positive number');
@@ -415,21 +454,44 @@
       }
     };
 
+    /* READ-BEFORE-EDIT (2026-09-02, coding-tools lane). fs.edit used to accept a "find" the agent had never seen:
+       a guessed snippet against a file it never opened this run, or a file it read before someone else's
+       change. The stamp ledger already records every file this agent observed (fs.read / its own writes), so
+       an edit against a file with NO stamp is refused with the same machine-readable precondition the
+       stale-write guard uses — the loop tells the model exactly which tool satisfies it. Cheap: one Map lookup.
+       A file this agent WROTE (fs.write / fs.append / fs.patch / a prior fs.edit) is stamped too, so
+       create-then-edit never trips. */
+    function assertObserved(aid, abs, rel) {
+      if (readStamps.has(stampKey(aid, abs))) return;
+      const error = new Error('edit refused: you have not read ' + rel + ' in this run — fs.read it first so your "find" matches the current content exactly.');
+      error.precondition = { code: 'read_before_edit', requiredTool: 'fs.read', requiredState: 'current_file_observed' };
+      throw error;
+    }
+
     const editTool = {
       name: 'fs.edit', capability: 'cabinet', scope: 'write', requiresConsent: true, timeoutMs: 10000,
-      description: 'Edit a workspace file by exact text replacement: every occurrence of "find" becomes "replace". Use for small, exact changes; prefer fs.patch for multi-line source edits. Errors if "find" is absent — read the file first so your "find" matches exactly.',
-      schema: { type: 'object', required: ['path', 'find', 'replace'], properties: { path: { type: 'string' }, find: { type: 'string' }, replace: { type: 'string' } } },
+      description: 'Edit a workspace file by exact text replacement of "find" with "replace". "find" must match EXACTLY ONE place in the file — if it matches more than once the edit is refused and the count is reported; include more surrounding lines to make it unique, or pass { "replace_all": true } to change every occurrence, or { "expected_count": N } to assert exactly N replacements. Requires that you fs.read the file first (in this run). Prefer fs.patch for multi-line source edits.',
+      schema: { type: 'object', required: ['path', 'find', 'replace'], properties: { path: { type: 'string' }, find: { type: 'string' }, replace: { type: 'string' }, replace_all: { type: 'boolean' }, expected_count: { type: 'number' } } },
       run: async (args, ctx) => {
         const aid = (ctx && ctx.agentId) || 'agent';
         const { abs, base } = await resolveInside(aid, args.path, { scope: 'write', ctx });
         let initialBytes;
         try { initialBytes = await fsp.readFile(abs); }
         catch (e) { if (e && e.code === 'ENOENT') throw new Error('no such file: ' + args.path); throw e; }
+        assertObserved(aid, abs, args.path);
         const txt = initialBytes.toString('utf8');
         const find = String(args.find);
         if (!find) throw new Error('"find" must be a non-empty string');
         if (txt.indexOf(find) < 0) throw new Error('"find" text not found in ' + args.path + ' — read the file and match it exactly');
         const count = txt.split(find).length - 1;
+        /* UNIQUENESS. Replacing EVERY occurrence silently was the audit's top finding: a "find" like `return x;`
+           rewrote five functions when the model meant one, and the result line said "5 replacements" only after
+           the damage. Exactly-one-match keeps the historic path; more than one must be asked for explicitly. */
+        const replaceAll = args.replace_all === true;
+        const expectedCount = args.expected_count == null ? null : Math.floor(Number(args.expected_count));
+        if (expectedCount != null && (!(expectedCount >= 1) || !isFinite(expectedCount))) throw new Error('"expected_count" must be a positive integer');
+        if (expectedCount != null && count !== expectedCount) throw new Error('"find" matches ' + count + ' place' + (count === 1 ? '' : 's') + ' in ' + args.path + ' but expected_count is ' + expectedCount + ' — nothing was changed. Re-read the file and adjust "find" or expected_count.');
+        if (count > 1 && !replaceAll && expectedCount == null) throw new Error('"find" matches ' + count + ' places in ' + args.path + ' — nothing was changed. Include more surrounding text so "find" is unique to the ONE place you mean, or pass { "replace_all": true } to change all ' + count + ', or { "expected_count": ' + count + ' } to confirm that count.');
         const next = txt.split(find).join(String(args.replace));
         const bytes = Buffer.byteLength(next, 'utf8');
         if (bytes > WRITE_BYTES) throw new Error('file too large after edit (' + bytes + ' > ' + WRITE_BYTES + ' bytes)');
@@ -608,7 +670,73 @@
     // paging with an actionable next-offset hint; path-grouped ("densified") output above a few matches.
     // Jailed + bounded like every fs.* tool: skips hidden entries (rg default) + node_modules, oversized +
     // binary files, caps files scanned; redacts secrets out of every surfaced line (§5.6).
-    const SEARCH_MAX_FILE_BYTES = 512 * 1024, SEARCH_MAX_FILES = 4000, SEARCH_LINE_CHARS = 500, SEARCH_DENSIFY_MIN = 5;
+    // SEARCH_MAX_FILES 4000 -> 20000 (2026-09-02): with .gitignore pruning the walk no longer burns the cap on
+    // build output, and 4000 was under one mid-sized project's source count. Per-call override: `max_files`.
+    const SEARCH_MAX_FILE_BYTES = 512 * 1024, SEARCH_MAX_FILES = 20000, SEARCH_MAX_FILES_CEILING = 100000, SEARCH_LINE_CHARS = 500, SEARCH_DENSIFY_MIN = 5;
+    const SEARCH_MAX_MATCHES = 20000;   // rg path: stop draining after this many matching lines (JS path is bounded by files + time)
+
+    /* RIPGREP, WHEN THE MACHINE HAS IT (2026-09-02). The pure-JS walker stays the guaranteed path (bundle Node,
+       no system deps), but a developer box with `rg` on PATH gets ripgrep's speed and its .gitignore engine for
+       the same call, same output. Detection is injected: deps.rg = an explicit binary path, or false to force
+       the walker; otherwise, when a spawn is injected, ONE `rg --version` probe decides for the process
+       lifetime. No spawn (the route jail helper, focused tests) means no rg — the historic behaviour exactly.
+       Same jail: rg runs with cwd pinned to the resolved search dir, never follows symlinks (its default), skips
+       hidden + node_modules like the walker, and is KILLED at the same wall-clock budget. Any rg failure
+       (regex dialect it rejects, spawn error, exit 2) falls back to the walker — rg is an accelerator, never a
+       new failure mode. */
+    const spawnFn = typeof deps.spawn === 'function' ? deps.spawn : null;
+    let rgProbe = null;
+    function rgBinary() {
+      if (deps.rg === false || (!spawnFn)) return Promise.resolve(null);
+      if (typeof deps.rg === 'string' && deps.rg) return Promise.resolve(deps.rg);
+      if (rgProbe) return rgProbe;
+      rgProbe = new Promise((resolve) => {
+        let child;
+        try { child = spawnFn('rg', ['--version'], { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }); }
+        catch (_) { return resolve(null); }
+        let settled = false;
+        const done = (ok) => { if (!settled) { settled = true; resolve(ok ? 'rg' : null); } };
+        child.on('error', () => done(false));
+        child.on('close', (code) => done(code === 0));
+        if (child.stdout) child.stdout.on('data', () => {});
+        const t = setTimeout(() => { try { child.kill(); } catch (e) { failNote('fs.search.rg.probe.kill', e); } done(false); }, 3000);
+        if (t && typeof t.unref === 'function') t.unref();
+      });
+      return rgProbe;
+    }
+    // Run rg with cwd = absDir, drain stdout line by line into onLine, kill at the budget. Resolves
+    // { ok, code, timedOut, stopped } — ok=false means "fall back to the walker".
+    function runRg(bin, argv, absDir, onLine, budgetMs, signal) {
+      return new Promise((resolve) => {
+        let child;
+        try { child = spawnFn(bin, argv, { cwd: absDir, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }); }
+        catch (_) { return resolve({ ok: false }); }
+        let settled = false, timedOut = false, stopped = false, buf = '', stderr = '';
+        const finish = (r) => { if (!settled) { settled = true; clearTimeout(timer); resolve(r); } };
+        const stop = () => { stopped = true; try { child.kill(); } catch (e) { failNote('fs.search.rg.stop.kill', e); } };
+        const timer = setTimeout(() => { timedOut = true; try { child.kill(); } catch (e) { failNote('fs.search.rg.budget.kill', e); } }, budgetMs);
+        if (timer && typeof timer.unref === 'function') timer.unref();
+        if (signal) { try { signal.addEventListener('abort', stop, { once: true }); } catch (e) { failNote('fs.search.rg.abort.listen', e); } }
+        const feed = (chunk) => {
+          if (stopped || timedOut) return;
+          buf += chunk;
+          let nl;
+          while ((nl = buf.indexOf('\n')) >= 0) {
+            const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+            if (line && onLine(line) === false) { stop(); return; }
+          }
+        };
+        child.stdout.setEncoding('utf8'); child.stdout.on('data', feed);
+        child.stderr.setEncoding('utf8'); child.stderr.on('data', (s) => { if (stderr.length < 4000) stderr += s; });
+        child.on('error', () => finish({ ok: false }));
+        child.on('close', (code) => {
+          if (buf && !stopped && !timedOut) { const line = buf; buf = ''; onLine(line); }
+          // rg: 0 = matches, 1 = no matches, 2 = error (bad regex, unreadable root). A kill we ordered is fine.
+          const ok = timedOut || stopped || code === 0 || code === 1;
+          finish({ ok, code, timedOut, stopped, stderr });
+        });
+      });
+    }
     // Longest line handed to a MODEL-SUPPLIED regex, and the wall-clock ceiling for the whole content scan.
     const SEARCH_MATCH_CHARS = 2000, SEARCH_TIME_BUDGET_MS = 8000;
 
@@ -682,14 +810,95 @@
        ~/.ssh/id_rsa while fs.search happily grepped its CONTENTS and printed the matching line: the same
        jail, enforced on one tool and not its sibling. A link is cheap to check and rare, so only links pay
        the realpath (an ordinary file costs nothing extra); one that resolves outside is skipped entirely. */
-    async function collectFiles(absDir, prefix, acc, stats, baseReal) {
-      if (stats.files >= SEARCH_MAX_FILES) { stats.truncated = true; return; }
+    /* .GITIGNORE AWARENESS (2026-09-02, coding-tools lane). The walker read EVERY non-hidden file, so on a real
+       project `dist/`, `build/`, `coverage/`, `.venv`-style outputs and vendored trees ate the file cap and the
+       8s budget before the source was reached, and a search for a symbol came back "truncated" from a bundle.
+       Small matcher, no dependency: the rules git itself documents — `#` comments, `!` negation, a trailing `/`
+       means directories only, a pattern containing a slash (other than trailing) is anchored to ITS
+       .gitignore's directory, one without a slash matches a basename at any depth, `*` never crosses `/`,
+       `**` does, `?` is one char, `[...]` classes pass through. Last matching rule wins. Nested .gitignore
+       files are honoured for their own subtree. An ignored directory is pruned (never descended), which is
+       also what git does — a `!` cannot re-include inside an ignored parent. */
+    function gitignoreGlobToRe(glob) {
+      let re = '';
+      for (let i = 0; i < glob.length; i++) {
+        const c = glob[i];
+        if (c === '*') {
+          if (glob[i + 1] === '*') {
+            i++;
+            if (glob[i + 1] === '/') { re += '(?:.*/)?'; i++; }   // `**/` = zero or more directories
+            else re += '.*';                                        // trailing `/**` or a bare `**`
+          } else re += '[^/]*';
+        }
+        else if (c === '?') re += '[^/]';
+        else if (c === '[') {                                       // pass a character class through (git supports them)
+          const close = glob.indexOf(']', i + 1);
+          if (close < 0) { re += '\\['; continue; }
+          let body = glob.slice(i + 1, close);
+          if (body[0] === '!') body = '^' + body.slice(1);
+          re += '[' + body.replace(/\\/g, '\\\\') + ']'; i = close;
+        }
+        else if (c === '\\' && i + 1 < glob.length) { i++; re += glob[i].replace(/[\\^$.|+()[\]{}*?]/g, '\\$&'); }
+        else if ('\\^$.|+(){}'.indexOf(c) >= 0) re += '\\' + c;
+        else re += c;
+      }
+      return new RegExp('^' + re + '$');
+    }
+    function parseGitignore(text) {
+      const rules = [];
+      for (let raw of String(text == null ? '' : text).split(/\r?\n/)) {
+        if (!raw || raw[0] === '#') continue;
+        let line = raw.replace(/(?<!\\)\s+$/, '');                // trailing spaces are ignored unless escaped
+        if (!line) continue;
+        let negate = false;
+        if (line[0] === '!') { negate = true; line = line.slice(1); }
+        else if (line.indexOf('\\!') === 0 || line.indexOf('\\#') === 0) line = line.slice(1);
+        let dirOnly = false;
+        if (line.length > 1 && line[line.length - 1] === '/') { dirOnly = true; line = line.slice(0, -1); }
+        // `**/foo` == `foo` (a basename at any depth). `**/foo/bar` is NOT `foo/bar`: stripping it made the rule
+        // anchored to the .gitignore's directory; kept whole it is a path rule whose leading `**/` matches any depth.
+        if (line.indexOf('**/') === 0 && line.indexOf('/', 3) < 0) line = line.slice(3);
+        let anchored = line.indexOf('/') >= 0;
+        if (line[0] === '/') line = line.slice(1);
+        if (!line) continue;
+        rules.push({ re: gitignoreGlobToRe(line), negate, dirOnly, anchored });
+      }
+      return rules;
+    }
+    // stack entry: { baseRel, rules } — baseRel is the workspace-relative dir the .gitignore lives in ('' = root).
+    function gitignored(stack, rel, isDir) {
+      let ignored = false;
+      const name = rel.slice(rel.lastIndexOf('/') + 1);
+      for (const layer of stack) {
+        if (!layer.rules.length) continue;
+        const under = layer.baseRel ? rel.slice(layer.baseRel.length + 1) : rel;
+        for (const r of layer.rules) {
+          if (r.dirOnly && !isDir) continue;
+          if (r.anchored ? r.re.test(under) : r.re.test(name)) ignored = !r.negate;
+        }
+      }
+      return ignored;
+    }
+    async function gitignoreLayer(absDir, baseRel) {
+      let text = null;
+      try { text = await fsp.readFile(P.join(absDir, '.gitignore'), 'utf8'); } catch (_) { return null; }
+      const rules = parseGitignore(text);
+      return rules.length ? { baseRel, rules } : null;
+    }
+    async function collectFiles(absDir, prefix, acc, stats, baseReal, ignoreStack) {
+      const maxFiles = stats.maxFiles || SEARCH_MAX_FILES;
+      if (stats.files >= maxFiles) { stats.truncated = true; return; }
       let entries;
       try { entries = await fsp.readdir(absDir, { withFileTypes: true }); }
       catch (e) { if (e && e.code === 'ENOENT') return; throw e; }
       entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      let stack = ignoreStack || [];
+      if (stats.gitignore !== false) {
+        const layer = await gitignoreLayer(absDir, prefix);
+        if (layer) stack = stack.concat([layer]);
+      }
       for (const ent of entries) {
-        if (stats.files >= SEARCH_MAX_FILES) { stats.truncated = true; return; }
+        if (stats.files >= maxFiles) { stats.truncated = true; return; }
         if (ent.name.charAt(0) === '.') continue;                 // hidden (matches ripgrep's default)
         const rel = prefix ? (prefix + '/' + ent.name) : ent.name;
         const abs = P.join(absDir, ent.name);
@@ -697,12 +906,13 @@
         if (typeof ent.isSymbolicLink === 'function' && ent.isSymbolicLink()) {
           if (baseReal && !pathInside(await realpathOrSelf(abs), baseReal)) { stats.skippedLinks = (stats.skippedLinks || 0) + 1; continue; }
         }
-        if (ent.isDirectory()) { if (ent.name !== 'node_modules') await collectFiles(abs, rel, acc, stats, baseReal); continue; }
-        let st; try { st = await fsp.stat(abs); } catch (e) { continue; }
-        if (st.isDirectory && st.isDirectory()) {   // an in-jail symlinked DIRECTORY reads as a file in readdir
-          if (ent.name !== 'node_modules') await collectFiles(abs, rel, acc, stats, baseReal);
-          continue;
+        let isDir = ent.isDirectory(), st = null;
+        if (!isDir) {
+          try { st = await fsp.stat(abs); } catch (e) { continue; }
+          isDir = !!(st.isDirectory && st.isDirectory());          // an in-jail symlinked DIRECTORY reads as a file in readdir
         }
+        if (stack.length && gitignored(stack, rel, isDir)) { stats.ignored = (stats.ignored || 0) + 1; continue; }
+        if (isDir) { if (ent.name !== 'node_modules') await collectFiles(abs, rel, acc, stats, baseReal, stack); continue; }
         stats.files++; acc.push({ rel, abs, mtimeMs: st.mtimeMs || 0 });
       }
     }
@@ -715,14 +925,15 @@
 
     const searchTool = {
       name: 'fs.search', capability: 'cabinet', scope: 'read', requiresConsent: false, timeoutMs: 20000,
-      description: 'Search your workspace — use this instead of grep/find/ls. Two modes via "target":\n• target:"content" (default) — find TEXT inside files. Substring by default; { "regex": true } treats "query" as a regex, { "ignoreCase": true } ignores case. "file_glob" limits which files are searched (e.g. "*.md"); "context" adds N lines around each hit; "output_mode" is "content" (matching lines, default), "files_only" (just the file paths), or "count" (matches per file).\n• target:"files" — find FILES by glob ("query" like "*.md" or "report"); newest first.\nResults are paths relative to your workspace (ready for fs.read). Use "limit"/"offset" to page; a truncation hint tells you the next offset.',
+      description: 'Search your workspace — use this instead of grep/find/ls. Two modes via "target":\n• target:"content" (default) — find TEXT inside files. Substring by default; { "regex": true } treats "query" as a regex, { "ignoreCase": true } ignores case. "file_glob" limits which files are searched (e.g. "*.md"); "context" adds N lines around each hit; "output_mode" is "content" (matching lines, default), "files_only" (just the file paths), or "count" (matches per file).\n• target:"files" — find FILES by glob ("query" like "*.md" or "report"); newest first.\nResults are paths relative to your workspace (ready for fs.read). Use "limit"/"offset" to page; a truncation hint tells you the next offset. Hidden entries, node_modules and anything matched by .gitignore files are skipped (pass { "gitignore": false } to search ignored files too); "max_files" raises the scan cap for a big tree.',
       schema: { type: 'object', required: ['query'], properties: {
         query: { type: 'string' },
         target: { type: 'string', enum: ['content', 'files'] },
         path: { type: 'string' }, file_glob: { type: 'string' },
         output_mode: { type: 'string', enum: ['content', 'files_only', 'count'] },
         context: { type: 'number' }, regex: { type: 'boolean' }, ignoreCase: { type: 'boolean' },
-        limit: { type: 'number' }, offset: { type: 'number' }
+        limit: { type: 'number' }, offset: { type: 'number' },
+        gitignore: { type: 'boolean' }, max_files: { type: 'number' }
       } },
       run: async (args, ctx) => {
         args = args || {};
@@ -734,21 +945,59 @@
         const limit = Math.max(1, Math.min(1000, Number(args.limit) || 50));
         const offset = Math.max(0, Number(args.offset) || 0);
         const target = ({ grep: 'content', find: 'files' })[args.target] || args.target || 'content';
+        const cx = Math.max(0, Math.min(10, Number(args.context) || 0));
+        const maxFiles = Math.max(1, Math.min(SEARCH_MAX_FILES_CEILING, Math.floor(Number(args.max_files)) || SEARCH_MAX_FILES));
+        const stats = { files: 0, truncated: false, maxFiles, gitignore: args.gitignore !== false };
+        const signal = ctx && ctx.signal;
 
-        const all = [], stats = { files: 0, truncated: false };
-        await collectFiles(abs, startPrefix, all, stats, await realpathOrSelf(base));
+        // .gitignore layers ABOVE the start dir still bind (a `path` of "src/x" is inside the root's rules);
+        // the start dir's own file and everything below are picked up by collectFiles itself.
+        const ancestors = [];
+        if (stats.gitignore) {
+          const segs = startPrefix ? startPrefix.split('/') : [];
+          let dirAbs = base, dirRel = '';
+          for (let i = 0; i <= segs.length - 1; i++) {
+            const layer = await gitignoreLayer(dirAbs, dirRel);
+            if (layer) ancestors.push(layer);
+            dirRel = dirRel ? dirRel + '/' + segs[i] : segs[i];
+            dirAbs = P.join(dirAbs, segs[i]);
+          }
+        }
+        const baseReal = await realpathOrSelf(base);
+        async function walkAll() { const all = []; await collectFiles(abs, startPrefix, all, stats, baseReal, ancestors); return all; }
+        const rg = await rgBinary();
+        const rgCommon = ['--no-require-git', '--no-messages', '--max-filesize', String(SEARCH_MAX_FILE_BYTES), '-g', '!node_modules', '--sort', 'path'];
+        if (!stats.gitignore) rgCommon.push('--no-ignore');
+        const rgRel = (p) => { const n = String(p).replace(/\\/g, '/').replace(/^\.\//, ''); return startPrefix ? startPrefix + '/' + n : n; };
 
         // ---- target 'files': glob over names, newest first ----
         if (target === 'files') {
           const hasSlash = q.indexOf('/') >= 0;
           const re = globToRe((!hasSlash && q.charAt(0) !== '*') ? ('*' + q) : q, ic);   // bare name -> suffix match (rg --files -g *name)
-          const hits = all.filter(f => re.test(hasSlash ? f.rel : f.rel.split('/').pop()));
+          const nameOf = (rel) => hasSlash ? rel : rel.split('/').pop();
+          let hits = null;
+          if (rg) {
+            const rels = [];
+            const r = await runRg(rg, rgCommon.concat(['--files']), abs, (line) => { rels.push(line); if (rels.length >= maxFiles) { stats.truncated = true; return false; } }, SEARCH_TIME_BUDGET_MS, signal);
+            if (r.ok) {
+              stats.files = rels.length; stats.engine = 'rg';
+              if (r.timedOut) stats.truncated = true;
+              hits = [];
+              for (const p of rels) {
+                const rel = rgRel(p);
+                if (!re.test(nameOf(rel))) continue;
+                let st; try { st = await fsp.stat(P.join(base, rel)); } catch (_) { continue; }
+                hits.push({ rel, mtimeMs: st.mtimeMs || 0 });
+              }
+            }
+          }
+          if (!hits) { const all = await walkAll(); stats.engine = 'walk'; hits = all.filter(f => re.test(nameOf(f.rel))); }
           hits.sort((a, b) => (b.mtimeMs - a.mtimeMs) || (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));   // newest first; path tiebreak = determinism
           const total = hits.length, page = hits.slice(offset, offset + limit);
           if (!page.length) return { content: '(no files matching ' + q + ')', summary: '0 files' };
           const truncated = stats.truncated || total > offset + limit;
           return { content: page.map(f => f.rel).join('\n') + searchHint(truncated, offset, limit, total),
-                   summary: total + ' file' + (total === 1 ? '' : 's') + ' matched' + (truncated ? ' (showing ' + page.length + ')' : '') };
+                   summary: total + ' file' + (total === 1 ? '' : 's') + ' matched' + (truncated ? ' (showing ' + page.length + ')' : ''), engine: stats.engine };
         }
 
         // ---- target 'content': grep ----
@@ -774,30 +1023,78 @@
           if (!globPath && fg.charAt(0) !== '*') fg = '*' + fg;
           globRe = globToRe(fg, ic);
         }
-        const candidates = all.filter(f => !globRe || globRe.test(globPath ? f.rel : f.rel.split('/').pop()))
-          .sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));   // path order = deterministic, rg-like grouping
 
-        const fileHits = [];   // { rel, idxs:[lineIdx…], lines:[…] }
-        let totalMatches = 0;
-        /* Ceiling for the whole scan. The pattern floor above catches the exponential shapes; this bounds
-           everything merely SLOW (a polynomial pattern over a large tree), so fs.search can never be the
-           reason the station stops answering. A TIMER, not a clock read — the determinism law bans ambient
-           time in backend logic, and browser.js's waitForSettle already sets this precedent. It works here
-           because the check sits between files, with an `await fsp.readFile` in between, so the loop turns
-           and the timer can fire. A partial answer that SAYS it is partial beats a frozen process. */
-        let expired = false;
-        const budgetTimer = setTimeout(() => { expired = true; }, SEARCH_TIME_BUDGET_MS);
-        if (budgetTimer && typeof budgetTimer.unref === 'function') budgetTimer.unref();
-        let timedOut = false;
-        for (const f of candidates) {
-          if (expired) { timedOut = true; stats.truncated = true; break; }
-          let buf; try { buf = await fsp.readFile(f.abs); } catch (e) { continue; }
-          if (buf.length > SEARCH_MAX_FILE_BYTES || buf.indexOf(0) >= 0) continue;   // skip oversized / binary
-          const lines = buf.toString('utf8').split(/\r?\n/), idxs = [];
-          for (let i = 0; i < lines.length; i++) if (matcher(lines[i])) idxs.push(i);
-          if (idxs.length) { fileHits.push({ rel: f.rel, idxs, lines }); totalMatches += idxs.length; }
+        let fileHits = null;   // [{ rel, idxs:[lineIdx…], lines: string[] | { [idx]: text }, maxIdx }]
+        let totalMatches = 0, timedOut = false;
+
+        // ---- rg engine: one JSON stream, same jail, same budget, same shape ----
+        if (rg) {
+          const argv = rgCommon.concat(['--json']);
+          if (!args.regex) argv.push('-F');
+          if (ic) argv.push('-i');
+          if (cx) argv.push('-C', String(cx));
+          /* file_glob is NOT handed to rg as -g. rg matches -g relative to its cwd (the scoped `path`), so a path glob
+             meant something else once `path` was set, and an rg -g glob OVERRIDES ignore rules, so a glob could reach
+             .gitignored files the walker skips. Both engines now apply the same globRe in JS: a path glob against the
+             WORKSPACE-relative path (the base every result path uses), a name glob against the basename. */
+          argv.push('-e', q);
+          const byFile = new Map();   // rel -> hit
+          let searched = null;
+          const r = await runRg(rg, argv, abs, (line) => {
+            let msg; try { msg = JSON.parse(line); } catch (_) { return; }
+            const d = msg && msg.data;
+            if (!d) return;
+            if (msg.type === 'summary') { if (d.stats && typeof d.stats.searches === 'number') searched = d.stats.searches; return; }
+            if (msg.type !== 'match' && msg.type !== 'context') return;
+            if (!d.path || typeof d.path.text !== 'string' || !d.lines || typeof d.lines.text !== 'string') return;
+            const rel = rgRel(d.path.text), idx = Number(d.line_number) - 1;
+            if (!(idx >= 0)) return;
+            if (globRe && !globRe.test(globPath ? rel : rel.split('/').pop())) return;
+            let h = byFile.get(rel);
+            if (!h) { h = { rel, idxs: [], lines: {}, maxIdx: 0 }; byFile.set(rel, h); }
+            h.lines[idx] = d.lines.text.replace(/\r?\n$/, '');
+            if (idx > h.maxIdx) h.maxIdx = idx;
+            if (msg.type === 'match') {
+              h.idxs.push(idx); totalMatches++;
+              if (totalMatches >= SEARCH_MAX_MATCHES) { stats.truncated = true; return false; }
+            }
+          }, SEARCH_TIME_BUDGET_MS, signal);
+          if (r.ok) {
+            stats.engine = 'rg';
+            fileHits = Array.from(byFile.values());
+            for (const h of fileHits) h.idxs.sort((a, b) => a - b);
+            fileHits.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+            stats.files = searched != null ? searched : fileHits.length;
+            if (r.timedOut) { timedOut = true; stats.truncated = true; }
+          } else { totalMatches = 0; }   // rg refused (dialect / spawn) -> the walker answers instead
         }
-        clearTimeout(budgetTimer);
+
+        // ---- pure-JS walker (the guaranteed path) ----
+        if (!fileHits) {
+          stats.engine = 'walk';
+          const all = await walkAll();
+          const candidates = all.filter(f => !globRe || globRe.test(globPath ? f.rel : f.rel.split('/').pop()))
+            .sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));   // path order = deterministic, rg-like grouping
+          fileHits = [];
+          /* Ceiling for the whole scan. The pattern floor above catches the exponential shapes; this bounds
+             everything merely SLOW (a polynomial pattern over a large tree), so fs.search can never be the
+             reason the station stops answering. A TIMER, not a clock read — the determinism law bans ambient
+             time in backend logic, and browser.js's waitForSettle already sets this precedent. It works here
+             because the check sits between files, with an `await fsp.readFile` in between, so the loop turns
+             and the timer can fire. A partial answer that SAYS it is partial beats a frozen process. */
+          let expired = false;
+          const budgetTimer = setTimeout(() => { expired = true; }, SEARCH_TIME_BUDGET_MS);
+          if (budgetTimer && typeof budgetTimer.unref === 'function') budgetTimer.unref();
+          for (const f of candidates) {
+            if (expired) { timedOut = true; stats.truncated = true; break; }
+            let buf; try { buf = await fsp.readFile(f.abs); } catch (e) { continue; }
+            if (buf.length > SEARCH_MAX_FILE_BYTES || buf.indexOf(0) >= 0) continue;   // skip oversized / binary
+            const lines = buf.toString('utf8').split(/\r?\n/), idxs = [];
+            for (let i = 0; i < lines.length; i++) if (matcher(lines[i])) idxs.push(i);
+            if (idxs.length) { fileHits.push({ rel: f.rel, idxs, lines, maxIdx: lines.length - 1 }); totalMatches += idxs.length; }
+          }
+          clearTimeout(budgetTimer);
+        }
         if (timedOut) stats.timedOutNote = '\n\n[search stopped at the ' + Math.round(SEARCH_TIME_BUDGET_MS / 1000) +
           's budget — these are the matches found so far; narrow with file_glob or a more specific query]';
 
@@ -807,25 +1104,23 @@
           const total = fileHits.length, page = fileHits.slice(offset, offset + limit);
           const truncated = stats.truncated || total > offset + limit;
           return { content: page.map(h => h.rel + ': ' + h.idxs.length).join('\n') + searchHint(truncated, offset, limit, total, stats.timedOutNote),
-                   summary: totalMatches + ' match' + (totalMatches === 1 ? '' : 'es') + ' across ' + total + ' file(s)' };
+                   summary: totalMatches + ' match' + (totalMatches === 1 ? '' : 'es') + ' across ' + total + ' file(s)', engine: stats.engine };
         }
         if (omode === 'files_only') {
           if (!fileHits.length) return { content: '(no matches for ' + q + ')', summary: '0 files' };
           const total = fileHits.length, page = fileHits.slice(offset, offset + limit);
           const truncated = stats.truncated || total > offset + limit;
           return { content: page.map(h => h.rel).join('\n') + searchHint(truncated, offset, limit, total, stats.timedOutNote),
-                   summary: total + ' file' + (total === 1 ? '' : 's') + ' with matches' };
+                   summary: total + ' file' + (total === 1 ? '' : 's') + ' with matches', engine: stats.engine };
         }
 
         // content (default): page on the flat match list (file-ordered), render with optional context
         const flat = [];
         for (let fi = 0; fi < fileHits.length; fi++) for (const idx of fileHits[fi].idxs) flat.push({ fi, idx });
         const total = flat.length;
-        if (!total) return { content: '(no matches for ' + q + ')', summary: '0 matches in ' + stats.files + ' file(s) scanned' };
+        if (!total) return { content: '(no matches for ' + q + ')', summary: '0 matches in ' + stats.files + ' file(s) scanned', engine: stats.engine };
         const pageRefs = flat.slice(offset, offset + limit);
         const truncated = stats.truncated || total > offset + limit;
-        const cx = Math.max(0, Math.min(10, Number(args.context) || 0));
-
         let body;
         if (pageRefs.length < SEARCH_DENSIFY_MIN && cx === 0) {
           // few matches, no context: flat "path:line: text" rows (path on each line is convenient when small)
@@ -838,7 +1133,7 @@
             const fi = pageRefs[gi].fi, h = fileHits[fi], here = [];
             while (gi < pageRefs.length && pageRefs[gi].fi === fi) { here.push(pageRefs[gi].idx); gi++; }
             const matchSet = new Set(here), show = new Set();
-            for (const i of here) for (let k = Math.max(0, i - cx); k <= Math.min(h.lines.length - 1, i + cx); k++) show.add(k);
+            for (const i of here) for (let k = Math.max(0, i - cx); k <= Math.min(h.maxIdx, i + cx); k++) if (h.lines[k] !== undefined) show.add(k);
             const ordered = Array.from(show).sort((a, b) => a - b);
             lines.push(h.rel);
             let prev = -1;
@@ -851,13 +1146,13 @@
           body = lines.join('\n');
         }
         return { content: body + searchHint(truncated, offset, limit, total, stats.timedOutNote),
-                 summary: total + ' match' + (total === 1 ? '' : 'es') + ' in ' + fileHits.length + ' file(s)' + (truncated ? ' (showing ' + pageRefs.length + ')' : '') };
+                 summary: total + ' match' + (total === 1 ? '' : 'es') + ' in ' + fileHits.length + ' file(s)' + (truncated ? ' (showing ' + pageRefs.length + ')' : ''), engine: stats.engine };
       }
     };
 
     return {
       writeTool, readTool, listTool, appendTool, editTool, patchTool, searchTool,
-      _internals: { resolveInside, workspaceRoot, safeAgentId, walk, collectFiles, globToRe, pathInside, parsePatch, fuzzyFindAndReplace },
+      _internals: { resolveInside, workspaceRoot, safeAgentId, walk, collectFiles, globToRe, pathInside, parsePatch, fuzzyFindAndReplace, parseGitignore, gitignored, rgBinary },
       register(reg) { [writeTool, readTool, listTool, appendTool, editTool, patchTool, searchTool].forEach(t => reg.register(t)); return reg; }
     };
   }

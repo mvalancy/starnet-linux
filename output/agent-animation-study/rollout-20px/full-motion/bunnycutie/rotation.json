@@ -1,0 +1,7 @@
+{
+  "id": "bunnycutie",
+  "skin": "bunnycutie",
+  "targetStandingHeight": 19,
+  "characterId": "4c28ccfd-68b7-46ce-9bc0-db9d73d7563c",
+  "detail": "status: completed\nid: 4c28ccfd-68b7-46ce-9bc0-db9d73d7563c\nrotations:\n  south: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/4c28ccfd-68b7-46ce-9bc0-db9d73d7563c/rotations/south.png?t=1\n  east: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/4c28ccfd-68b7-46ce-9bc0-db9d73d7563c/rotations/east.png?t=1\n  north: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/4c28ccfd-68b7-46ce-9bc0-db9d73d7563c/rotations/north.png?t=1\n  west: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/4c28ccfd-68b7-46ce-9bc0-db9d73d7563c/rotations/west.png?t=1\n  south-east: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/4c28ccfd-68b7-46ce-9bc0-db9d73d7563c/rotations/south-east.png?t=1\n  north-east: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/4c28ccfd-68b7-46ce-9bc0-db9d73d7563c/rotations/north-east.png?t=1\n  north-west: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/4c28ccfd-68b7-46ce-9bc0-db9d73d7563c/rotations/north-west.png?t=1\n  south-west: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/4c28ccfd-68b7-46ce-9bc0-db9d73d7563c/rotations/south-west.png?t=1\n"
+}

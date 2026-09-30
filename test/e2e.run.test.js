@@ -255,8 +255,27 @@ function boot(port, env, attemptsLeft) {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'X-StarNet-Token': token, Origin: B },
         body: JSON.stringify({ key: 'sk-or-v1-e2e-fake', model: 'test/model', agentId: 'code-e2e', isTask: true, messages: [{ role: 'user', content: 'CODEMODE compose a read' }] })
       });
-      const raw = await r.text();
-      const evs = raw.split('\n').map(l => l.trim()).filter(Boolean).map(l => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(Boolean);
+      // code.run is consent-gated (2026-09-23 security stopgap): stream the run and approve its prompt once,
+      // over the SAME POST /api/consent the browser's consent card uses.
+      const evs = [];
+      {
+        const reader = r.body.getReader(); const dec = new TextDecoder(); let buf = '', runId = '';
+        while (true) {
+          const { value, done } = await reader.read(); if (done) break;
+          buf += dec.decode(value, { stream: true }); let nl;
+          while ((nl = buf.indexOf('\n')) >= 0) {
+            const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1); if (!line) continue;
+            let ev = null; try { ev = JSON.parse(line); } catch (_) { continue; }
+            evs.push(ev);
+            if (ev.name === 'agent.run.start') runId = ev.payload.runId;
+            if (ev.name === 'permission.prompt') {
+              fetch(B + '/api/consent', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-StarNet-Token': token, Origin: B },
+                body: JSON.stringify({ runId, promptId: ev.payload.promptId, decision: 'once' }) }).catch(() => {});
+            }
+          }
+        }
+      }
+      A.ok(evs.some(e => e.name === 'permission.prompt' && ['code.run', 'code_run'].indexOf(e.payload.tool) >= 0),'code.run asked the Commander before running model code');
       const called = evs.filter(e => e.name === 'agent.tool_call').map(e => e.payload.name);
       A.ok(called.indexOf('code_run') >= 0, 'real sidecar executed model-facing code.run through its provider-safe wire name');
       A.ok(called.indexOf('tool.search') >= 0, 'the child nested read re-entered parent tool telemetry');

@@ -1,0 +1,10 @@
+{
+  "id": "gothgirl",
+  "track": "sit",
+  "dir": "south",
+  "job": "3b10e935-b7fc-4744-92e3-eb0c5f7d68e7",
+  "result": "frames: 5\nhttps://api.pixellab.ai/mcp/images/3b10e935-b7fc-4744-92e3-eb0c5f7d68e7/download?index=0",
+  "packed": true,
+  "lastRaw": "output/agent-animation-study/rollout-20px/full-motion/gothgirl/minimax/sit-south/3b10e935-b7fc-4744-92e3-eb0c5f7d68e7/4.png",
+  "frameCount": 5
+}

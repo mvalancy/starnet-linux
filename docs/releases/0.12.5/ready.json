@@ -1,0 +1,80 @@
+{
+  "ready": true,
+  "reasons": [],
+  "failing": [],
+  "checks": [
+    {
+      "id": "ledger",
+      "label": "Ledger open P0/P1",
+      "ok": true,
+      "reason": "no open P0/P1 findings",
+      "receipt": {
+        "artifact": "qa/findings/ (via ledger.mjs)",
+        "stamp": "",
+        "value": "0 P0 · 0 P1 · 0 P2"
+      }
+    },
+    {
+      "id": "bugs",
+      "label": "Bug register open P0/P1",
+      "ok": true,
+      "reason": "no open/claimed P0/P1 bugs",
+      "receipt": {
+        "artifact": "qa/bugs/ (via bugs.mjs)",
+        "stamp": "",
+        "value": "0 P0 · 0 P1 · 10 P2"
+      }
+    },
+    {
+      "id": "guardian",
+      "label": "Green Guardian last cycle",
+      "ok": true,
+      "reason": "GREEN, 36m old, on current trunk (cde296a4)",
+      "receipt": {
+        "artifact": "qa/guardian-last-cycle.json",
+        "stamp": "2026-09-28T00:33:10.538Z",
+        "value": "GREEN · ran[test-fast,http-e2e,saboteur,shoot,golden,audit,journeys] · @cde296a4"
+      }
+    },
+    {
+      "id": "journeys",
+      "label": "Journey corps last run",
+      "ok": true,
+      "reason": "PASS, 36m old",
+      "receipt": {
+        "artifact": "qa/journeys-last-run.json",
+        "stamp": "2026-09-28T00:33:10.411Z",
+        "value": "PASS · 139/139 assertions"
+      }
+    },
+    {
+      "id": "beginner",
+      "label": "Beginner Run last result",
+      "ok": true,
+      "reason": "PASS, 32m old",
+      "receipt": {
+        "artifact": "qa/beginner-last-run.json",
+        "stamp": "2026-09-28T00:36:45.069Z",
+        "value": "PASS · ui-only · 40836ms"
+      }
+    },
+    {
+      "id": "installed",
+      "label": "Installed-exe smoke",
+      "ok": true,
+      "reason": "GREEN, 3m old",
+      "receipt": {
+        "artifact": "[object Object]",
+        "stamp": "2026-09-28T01:05:53.727Z",
+        "value": "GREEN · v0.12.5 · @cde296a4 · reproducible-source · desktop"
+      }
+    }
+  ],
+  "generatedAt": "2026-09-28T01:08:57.152Z",
+  "trunk": {
+    "branch": "cde296a42e1d11cccc0b244afb8943cfe921901c",
+    "head": "cde296a42e1d11cccc0b244afb8943cfe921901c",
+    "guardianDrift": 0,
+    "driftError": null
+  }
+}

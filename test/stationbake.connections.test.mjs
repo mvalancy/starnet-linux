@@ -2,7 +2,7 @@
    The reference changes only that lip back to its previous fill; fixtures never
    touch the app, sidecar or saved station. Wall dimensions/art stay unchanged. */
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -20,11 +20,26 @@ const freePort = () => new Promise((done, reject) => {
     const port = server.address().port; server.close(error => error ? reject(error) : done(port));
   });
 });
-const stop = child => new Promise(done => {
-  if (!child || child.exitCode != null) { done(); return; }
-  const timer = setTimeout(done, 3000); child.once('exit', () => { clearTimeout(timer); done(); });
-  try { child.kill('SIGKILL'); } catch { clearTimeout(timer); done(); }
-});
+const stop = async child => {
+  if (!child?.pid) return;
+  const exited = () => child.exitCode != null || child.signalCode != null;
+  const waitForExit = () => new Promise(done => {
+    if (exited()) { done(true); return; }
+    const finish = () => { clearTimeout(timer); child.removeListener('exit', finish); done(exited()); };
+    const timer = setTimeout(finish, 3000);
+    child.once('exit', finish);
+  });
+  // Browser.close can disconnect CDP before Chrome releases its children and
+  // profile handles. Give that graceful shutdown time to finish first.
+  if (await waitForExit()) return;
+  if (process.platform === 'win32') {
+    const result = spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+      windowsHide: true, stdio: 'ignore', timeout: 5000
+    });
+    if (result.error) throw result.error;
+  } else child.kill('SIGKILL');
+  assert.ok(await waitForExit(), 'test browser exits before profile removal');
+};
 function probe(current, legacy) {
   let checks = 0; const failures = [], changes = {};
   const check = (ok, name) => { checks++; if (!ok) failures.push(name); };
@@ -145,15 +160,20 @@ try {
 } catch (error) { failed = true; console.error(error.stack || error); }
 finally {
   // Let Chrome close its child processes and profile handles before the forced
-  // parent-process fallback; killing only the parent can leave Windows logs open.
+  // process-tree fallback; killing only the parent can leave Windows logs open.
   try { if (cdp) await Promise.race([cdp.send('Browser.close'), sleep(2000)]); }
   catch { console.warn('stationbake.connections: browser close interrupted; using process cleanup'); }
   try { cdp?.ws.close(); } catch {} await stop(chrome);
   if (profile) {
     const rel = relative(resolve(tmpdir()), resolve(profile));
     assert.ok(rel && !rel.startsWith('..') && !isAbsolute(rel) && rel.startsWith('starnet-connection-render-'), 'cleanup stays inside unique test temp directory');
-    for (let attempt = 0; attempt < 10; attempt++) try { rmSync(profile, { recursive: true, force: true }); break; }
-    catch (error) { if (attempt === 9) throw error; await sleep(200); }
+    // Windows may release child-process file handles shortly after parent exit.
+    // Retry only transient deletion errors, and still fail if cleanup stays locked.
+    for (let attempt = 0; attempt < 50; attempt++) try { rmSync(profile, { recursive: true, force: true }); break; }
+    catch (error) {
+      if (!['EBUSY', 'EPERM', 'ENOTEMPTY'].includes(error.code) || attempt === 49) throw error;
+      await sleep(200);
+    }
   }
 }
 process.exit(failed ? 1 : 0);

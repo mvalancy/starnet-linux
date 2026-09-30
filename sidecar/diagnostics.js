@@ -118,9 +118,9 @@
            A configured proxy is the highest-value invisible cause, because it fails ASYMMETRICALLY and that
            asymmetry looks like a broken app: WebView2 honors the system proxy, so signing into ChatGPT works
            and the whole UI works, while the sidecar's outbound fetch does NOT route through it and dies.
-           MEASURED on node v22.23: `require('undici')` is MODULE_NOT_FOUND, `node:undici` is not a builtin (so
-           ProxyAgent is unreachable in a bundled build that ships no node_modules), and setting HTTPS_PROXY to a
-           dead address still let fetch reach the network — i.e. the proxy env vars are IGNORED outright.
+           MEASURED on node v22.23: setting HTTPS_PROXY to a dead address still let fetch reach the network — i.e.
+           the proxy env vars are IGNORED outright. (undici IS now a staged runtime dependency — web.js pins DNS
+           with it since 2026-09-22 — but no ProxyAgent is wired, so proxies are still not honoured.)
            Shape-only + host-only by construction; see proxySnapshot() in index.js, which strips credentials
            BEFORE this ever sees the value. `configured` false means no proxy env var was set. */
         proxy: s.proxy && typeof s.proxy === 'object' ? {

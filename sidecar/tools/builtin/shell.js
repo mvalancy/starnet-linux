@@ -25,6 +25,8 @@
   'use strict';
 
   const AID_RE = /^[A-Za-z0-9_-]{1,40}$/;
+  // foreground receipts for the boot orphan sweep (procledger.js trackChild); inert when no ledger is injected
+  const trackChild = (typeof require === 'function') ? require('../../procledger.js').trackChild : function () { return { exited: function () {}, done: function () {} }; };
   function safeAgentId(id) { if (!AID_RE.test(id || '')) throw new Error('bad agentId'); return id; }
   function clip(s, n) { s = String(s == null ? '' : s); n = n || 200; return s.length > n ? s.slice(0, n) + '…' : s; }
   function clamp(n, lo, hi) { n = Number(n); if (!isFinite(n)) return lo; return Math.max(lo, Math.min(hi, n)); }
@@ -340,7 +342,45 @@
   const NATIVE_INPUT_RE = /\b(?:SetCursorPos|mouse_event|SendInput|keybd_event|ClipCursor|BlockInput|SetCapture|SetWindowsHookEx|RegisterHotKey|RegisterRawInputDevices|SetForegroundWindow|SwitchToThisWindow|AttachThreadInput|SetWindowPos|SetSystemCursor|SendKeys(?:\.SendWait)?|pyautogui|pynput|robotjs|nut\.js|xdotool|ydotool|xte|evemu|uinput|CGEventPost|CGWarpMouseCursorPosition|XTestFake|XGrabPointer|XGrabKeyboard|XWarpPointer)\b|\/dev\/uinput/i;
   const USER_SESSION_RE = /\b(?:LockWorkStation|ExitWindowsEx|InitiateSystemShutdown|SetSuspendState|ChangeDisplaySettings|SetDisplayConfig|SetMonitorBrightness|WmiMonitorBrightnessMethods|SystemParametersInfo|SetClipboardData|OpenClipboard|Set-Clipboard|pbcopy|xclip|xsel|DisplaySwitch|xrandr|xinput|xset|chvt|loginctl|ddcutil|pactl|amixer|osascript)\b/i;
   const OPAQUE_LAUNCH_RE = /\b(?:Invoke-Expression|iex|Invoke-Command|DownloadString|FromBase64String|Reflection\.Assembly|ShellExecute|os\.startfile|Process\.Start)\b/i;
-  const GUI_RUNTIME_RE = /\b(?:electron|nwjs|cargo\s+run|dotnet\s+run|java\s+-jar|rundll32|wscript|cscript|mshta|notepad|wordpad|mspaint|calc|write)\b/i;
+  // GUI/native runtimes are judged as PROGRAMS, never as words (issue #50: a `// ...before each write` comment and
+  // `process.stdout.write()` both used to refuse a plain Node script). `write`/`calc` are also ordinary English and
+  // identifiers, so they count only as a command head or an explicit launch; the distinctive names count anywhere a
+  // command token or a quoted launch string starts with them.
+  const GUI_PROGRAMS = new Set(['electron', 'nw', 'nwjs', 'rundll32', 'wscript', 'cscript', 'mshta', 'notepad', 'wordpad', 'mspaint', 'calc', 'write']);
+  const GUI_AMBIGUOUS = new Set(['calc', 'write', 'nw']);
+  const GUI_PAIR_RE = /^(?:cargo(?:\.exe)?\s+run|dotnet(?:\.exe)?\s+run|javaw?(?:\.exe)?\s+-jar)(?:\s|$)/i;
+  const GUI_DISTINCT = 'electron|nwjs|rundll32|wscript|cscript|mshta|notepad|wordpad|mspaint';
+  // a quoted string whose first word is the program: spawn('notepad'), execSync(`electron .`), ["mshta", ...], 'C:\\x\\notepad.exe'
+  const GUI_CODE_STRING_RE = new RegExp('["\'`]\\s*(?:[^"\'`\\s]*[\\\\/])?(?:(?:' + GUI_DISTINCT + ')(?:\\.exe)?|(?:calc|write)\\.exe)(?=["\'`\\s])' +
+    '|["\'`]\\s*(?:cargo(?:\\.exe)?\\s+run|dotnet(?:\\.exe)?\\s+run|javaw?(?:\\.exe)?\\s+-jar)\\b', 'i');
+  // the ambiguous names only as the direct target of a process-launch call: os.system("calc"), spawn('write', ...)
+  const GUI_CODE_CALL_RE = /\b(?:spawn|spawnSync|exec|execSync|execFile|execFileSync|execa|execaSync|execCommand|system|popen|Popen|call|check_call|check_output|run|Command::new|Command|Start-Process)\s*\(?\s*\[?\s*["'`](?:[^"'`\s]*[\\/])?(?:calc|write)(?:\.exe)?["'`\s]/i;
+  const INERT_HEADS = new Set(['echo', 'rem', 'printf', 'write-host', 'write-output', 'write-verbose', 'write-information', 'type', 'cat', 'more', 'less', 'grep', 'rg', 'findstr', 'select-string', 'git']);
+  const INLINE_EVAL_HEAD_RE = /^(?:node|python\d*|py|ruby|php|bun|deno|perl)(?:\.exe)?$/i;
+  const INLINE_EVAL_FLAG_RE = /^(?:-e|-c|-p|-r|--eval|--print|eval)$/i;
+  function bareProgram(value) { return exeName(String(value == null ? '' : value).trim().split(/\s+/)[0]).replace(/\.(?:exe|com|cmd|bat)$/i, ''); }
+  function guiRuntimeInCommand(text, dialect) {
+    for (const head of commandHeads(text, dialect)) {
+      const tokens = headTokens(head);
+      if (!tokens.length) continue;
+      const verb = bareProgram(tokens[0].value);
+      if (INERT_HEADS.has(verb)) continue;
+      if (GUI_PROGRAMS.has(verb)) return true;
+      const values = tokens.map(t => String(t.value));
+      if (GUI_PAIR_RE.test(values.join(' '))) return true;
+      // launchers and wrappers put the real program later: `npx electron .`, `cross-env X=1 electron .`,
+      // `concurrently "vite" "electron ."`, `wait-on :3000 && cargo run`
+      for (let i = 1; i < values.length; i++) {
+        const prog = bareProgram(values[i]);
+        if (GUI_PROGRAMS.has(prog) && !GUI_AMBIGUOUS.has(prog)) return true;
+        if (GUI_PAIR_RE.test(values[i]) || GUI_PAIR_RE.test(values.slice(i).join(' '))) return true;
+      }
+      // inline interpreter code (`node -e "...exec('notepad')"`) is code, not a list of arguments
+      if (INLINE_EVAL_HEAD_RE.test(verb) && tokens.slice(1).some(t => INLINE_EVAL_FLAG_RE.test(t.value)) && guiRuntimeInCode(head.text)) return true;
+    }
+    return false;
+  }
+  function guiRuntimeInCode(text) { return GUI_CODE_STRING_RE.test(text) || GUI_CODE_CALL_RE.test(text); }
   const LOCAL_PROGRAM_RE = /^(?:"|')?(?:(?:\.\\|\.\/)[^\s"']+|[^\s"']+\.exe)(?:"|'|\s|$)/i;
   const CODE_FILE_RE = /\.(?:[cm]?js|ts|tsx|jsx|ps1|py|rb|php|sh|bash|cmd|bat|rs|cs|c|cc|cpp)$/i;
   const SCAN_SKIP_RE = /^(?:node_modules|\.git|dist|build|coverage|\.cache|\.vite|target)$/i;
@@ -358,11 +398,23 @@
     if ((s[0] === '"' && s[s.length - 1] === '"') || (s[0] === "'" && s[s.length - 1] === "'")) return s.slice(1, -1);
     return s;
   }
-  function commandSources(cmd, opts) {
+  // Each source records what it IS: `shell` text (the command, npm scripts, .cmd/.bat/.sh/.ps1 files) is judged
+  // by the programs its command heads launch; `code` text (a referenced .mjs/.py/...) is judged only by launch
+  // strings inside it. A word in a code comment is not a process launch (issue #50: "// ...before each write").
+  function sourceKindOf(rel) {
+    if (/\.(?:cmd|bat)$/i.test(rel)) return { kind: 'shell', dialect: 'cmd' };
+    if (/\.ps1$/i.test(rel)) return { kind: 'shell', dialect: 'powershell' };
+    if (/\.(?:sh|bash)$/i.test(rel)) return { kind: 'shell', dialect: 'posix' };
+    return { kind: 'code', dialect: null };
+  }
+  function commandSources(cmd, opts) { return commandSourceEntries(cmd, opts).map(e => e.text); }
+  function commandSourceEntries(cmd, opts) {
     opts = opts || {};
     const fs = opts.fs, P = opts.pathMod, cwd = opts.cwd, dialect = opts.dialect;
-    const queue = [{ text: String(cmd || ''), baseDir: cwd }], out = [], seen = new Set(), packageCache = new Map();
-    function enqueue(text, baseDir) { if (text != null && String(text)) queue.push({ text: String(text), baseDir }); }
+    const queue = [{ text: String(cmd || ''), baseDir: cwd, kind: 'shell', dialect: dialect }], out = [], seen = new Set(), packageCache = new Map();
+    function enqueue(text, baseDir, kind, srcDialect) {
+      if (text != null && String(text)) queue.push({ text: String(text), baseDir, kind: kind || 'shell', dialect: srcDialect || dialect });
+    }
     function packageAt(baseDir) {
       const projectRoot = projectScanRoot(baseDir, fs, P);
       const key = String(projectRoot || '');
@@ -378,7 +430,7 @@
       const text = String(entry.text || ''), baseDir = entry.baseDir || cwd;
       const seenKey = String(baseDir || '') + '\0' + text;
       if (!text || seen.has(seenKey)) continue;
-      seen.add(seenKey); out.push(text);
+      seen.add(seenKey); out.push({ text: text, kind: entry.kind || 'shell', dialect: entry.dialect || dialect });
       for (const parsedHead of commandHeads(text, dialect)) {
         const head = (parsedHead && parsedHead.text != null ? parsedHead.text : String(parsedHead || '')).replace(/^\s*@/, '');
         let m = head.match(/^(?:npm|npm\.cmd)\s+(?:--[A-Za-z0-9_-]+(?:=[^\s]+)?\s+)*(?:run\s+)?([A-Za-z0-9:_-]+)\b/i);
@@ -408,7 +460,7 @@
           // nested scan silently goes blind to the referenced script (CI-linux gate escape, 2026-07-20).
           // Retry with separators normalized so the isolation floor sees the same files on every host.
           if (!src && rel.indexOf('\\') >= 0) src = readSmall(fs, P.resolve(baseDir, rel.replace(/\\/g, '/')), 2 << 20);
-          if (src) enqueue(src, baseDir);
+          if (src) { const k = sourceKindOf(rel); enqueue(src, baseDir, k.kind, k.dialect); }
         }
       }
     }
@@ -454,7 +506,8 @@
     if (heads.some(h => BROWSER_NAMES.has(exeName((headTokens(h)[0] || {}).value)))) {
       return 'launches a browser outside StarNet\'s synthetic-input CDP sandbox — use browser.test_navigate/browser.test_input';
     }
-    const sources = commandSources(c, opts);
+    const entries = commandSourceEntries(c, opts);
+    const sources = entries.map(e => e.text);
     const expanded = sources.join('\n');
     const activeHead = heads.some(h => {
       const text = canonicalHead(h);
@@ -465,7 +518,7 @@
     }
     if (sources.some(s => /(?:^|\s)--open(?:[=\s]|$)/i.test(s))) return 'opens a framework/browser window on the user\'s screen — keep dev servers headless';
     if (BROWSER_AUTOMATION_RE.test(expanded)) return 'runs browser automation outside StarNet\'s owned pointer-lock emulator — use browser.test_*';
-    if (GUI_RUNTIME_RE.test(expanded) || heads.some(h => LOCAL_PROGRAM_RE.test(h && h.text != null ? h.text : String(h || '')))) return 'launches a GUI/native runtime on the user\'s interactive desktop';
+    if (entries.some(e => e.kind === 'code' ? guiRuntimeInCode(e.text) : guiRuntimeInCommand(e.text, e.dialect)) || heads.some(h => LOCAL_PROGRAM_RE.test(h && h.text != null ? h.text : String(h || '')))) return 'launches a GUI/native runtime on the user\'s interactive desktop';
     return null;
   }
 
@@ -547,8 +600,15 @@
      exit code (captured BEFORE the marker so the appended echo can't mask it), parse it back, strip it from the
      shown output, and persist the cwd PER AGENT — clamped to the fs jail so it can never drift outside. */
   const MARK_A = '__SK_CWD__', MARK_EC = '__SK_EC__', MARK_END = '__SK_END__';
+  /* WINDOWS: THE CARET IS LOAD-BEARING (h1 F5, 2026-09-22). cmd.exe expands %VAR% for the WHOLE line when it PARSES it
+     — before the user's command runs — so the original `call echo …%CD%…%ERRORLEVEL%` printed the PRE-command cwd and
+     errorlevel: every Windows shell.exec reported [exit 0] even when the command failed, and a `cd` never persisted
+     (bug since e72ee0b00, 2026-06-23). `%^ERRORLEVEL%` survives the parse-time pass (no variable is named ^ERRORLEVEL),
+     the caret is then consumed, and `call` performs a SECOND expansion at run time — after the command finished.
+     Proven with Node's own spawn mode (shell:true -> cmd.exe /d /s /c "…"): `cmd /c exit 3 & call echo %^ERRORLEVEL%`
+     prints 3 and `cd sub & call echo %^CD%` prints …\sub. Output format unchanged, so parseMarker is untouched. */
   function buildMarkedCmd(cmd, isWin) {
-    if (isWin) return cmd + ' & call echo ' + MARK_A + '%CD%' + MARK_EC + '%ERRORLEVEL%' + MARK_END;   // `call echo` re-expands %ERRORLEVEL% at runtime
+    if (isWin) return cmd + ' & call echo ' + MARK_A + '%^CD%' + MARK_EC + '%^ERRORLEVEL%' + MARK_END;
     return cmd + '\n__sk_ec=$?; printf "\\n' + MARK_A + '%s' + MARK_EC + '%s' + MARK_END + '" "$(pwd)" "$__sk_ec"';
   }
   function parseMarker(out) {
@@ -674,8 +734,11 @@
   /* runCommand — the shared execution primitive: spawn `cmd` in `cwd` (shell:true), capture combined stdout/stderr
      up to maxBytes, enforce the per-call timeout + abort signal by KILLING the child tree, and resolve a plain
      result. Never rejects on a non-zero exit (that is a RESULT); rejects ONLY if the process can't be started.
-     opts = { spawn, cmd, cwd, timeoutMs, maxBytes, signal?, clock?, isWin? }
-       -> Promise<{ exitCode:int, out:string, ms:int, truncated:bool, timedOut:bool, aborted:bool }> */
+     opts = { spawn, cmd, cwd, timeoutMs, maxBytes, signal?, clock?, isWin?, ledger?, ledgerCmd? }
+       -> Promise<{ exitCode:int, out:string, ms:int, truncated:bool, timedOut:bool, aborted:bool }>
+     opts.ledger (procledger.js): the child is recorded for the NEXT boot's orphan sweep while it runs and released
+     when it is over — a sidecar crash mid-command no longer leaves an orphan nothing knows about. ledgerCmd is the
+     REDACTED command line to store (the plaintext may carry a secret). */
   function runCommand(opts) {
     const spawn = opts.spawn, cmd = opts.cmd, cwd = opts.cwd;
     const timeoutMs = opts.timeoutMs, maxBytes = opts.maxBytes || 64000;
@@ -692,6 +755,8 @@
       if (opts.env) spawnOpts.env = opts.env;
       try { child = spawn(cmd, spawnOpts); }
       catch (e) { return reject(new Error('could not start shell: ' + ((e && e.message) || e))); }
+      const receipt = trackChild(opts.ledger || null, child && child.pid, { cmd: opts.ledgerCmd != null ? opts.ledgerCmd : '', kind: 'shell.fg', pinAfterMs: opts.ledgerPinAfterMs, exitStampMs: opts.ledgerExitStampMs });
+      if (typeof child.on === 'function') child.on('exit', function () { receipt.exited(); });
       const t0 = now();
       let out = '', fullOut = '', total = 0, truncated = false, settled = false, timedOut = false, aborted = false;
       const append = function (text) {
@@ -718,11 +783,13 @@
         if (settled) return; settled = true;
         clearTimeout(timer);
         if (sig) { try { sig.removeEventListener('abort', onAbort); } catch (_) {} }
+        receipt.done();
         // Stripped HERE, at the single exit of the shared primitive, so shell.exec and the background tail
         // (shellbg.js reads r.out) are both covered by one strip that cannot drift into two.
         resolve({ exitCode: (typeof code === 'number') ? code : -1, out: stripAnsi(out), fullOut: stripAnsi(fullOut), ms: Math.max(0, now() - t0), truncated: truncated, timedOut: timedOut, aborted: aborted });
       }
-      child.on('error', function (e) { if (settled) return; settled = true; clearTimeout(timer); if (sig) { try { sig.removeEventListener('abort', onAbort); } catch (_) {} } reject(new Error('shell error: ' + ((e && e.message) || e))); });
+      // a spawn failure (no PID) is the only 'error' that ends the command; it has no receipt to keep either way
+      child.on('error', function (e) { if (settled) return; settled = true; clearTimeout(timer); if (sig) { try { sig.removeEventListener('abort', onAbort); } catch (_) {} } receipt.done(); reject(new Error('shell error: ' + ((e && e.message) || e))); });
       child.on('close', function (code) { finish(timedOut || aborted ? null : code); });
     });
   }
@@ -738,6 +805,9 @@
     const environment = deps.environment || null;
     const spawn = deps.spawn, fs = deps.fs || null, P = deps.pathMod || (typeof require === 'function' ? require('node:path') : null), ROOT = deps.root || '';
     const bg = deps.bg || null;   // H2.2: the singleton background-process manager (shellbg.js); null -> bg disabled
+    // procledger.js: foreground children are receipted while they run (the environment path does the same in
+    // environment.js runProcess — that is the production route; this covers the direct runCommand route)
+    const ledger = (deps.ledger && typeof deps.ledger.record === 'function') ? deps.ledger : null;
     if (!environment && (typeof spawn !== 'function' || !fs || !P || !ROOT)) throw new Error('shell.js requires { spawn, fs, pathMod, root } or { environment }');
     const redact = typeof deps.redact === 'function' ? deps.redact : (s) => s;
     const now = (deps.clock && typeof deps.clock.now === 'function') ? deps.clock.now : () => 0;
@@ -745,7 +815,12 @@
     const L = deps.limits || {};
     const MAX_BYTES = L.maxBytes || 64000;
     const DEFAULT_MS = L.defaultTimeoutMs || 30000;
-    const MAX_MS = L.maxTimeoutMs || 120000;
+    /* MAX 120s -> 600s (2026-09-02, coding-tools lane). A test suite, a build, or an install routinely runs
+       longer than two minutes; at 120s the agent's only options were a KILLED result or background:true plus a
+       polling loop through shell.bg.read. Ten minutes matches environment.execute's own ceiling (600000) and
+       the reference harness. Still bounded by config (limits.maxTimeoutMs), still killed at the deadline, and
+       the registry backstop below stays ABOVE it so the child-kill always runs first. */
+    const MAX_MS = L.maxTimeoutMs || 600000;
     const sessions = new Map();   // H2.1: unscoped aid or run-scoped project key -> { cwd }
 
     const execTool = {
@@ -761,10 +836,10 @@
         + 'Your working directory PERSISTS across calls (a `cd` carries over). Absolute and `..` paths are '
         + 'refused in cmd — pass cwd to run from a specific existing folder. Commands that would change the '
         + 'user\'s machine or screen are refused in restricted modes; Full Power may run any host command the '
-        + 'current OS user can run. Optional timeoutMs (default 30s, max 120s). background:true returns a handle '
+        + 'current OS user can run. Optional timeoutMs (default 30s, max 10 min; timeout_ms is accepted too). background:true returns a handle '
         + 'immediately for long-running processes (dev servers) — check shell.bg.status, read its log with '
         + 'shell.bg.read, answer its prompts with shell.bg.write, stop it with shell.bg.kill.',
-      schema: { type: 'object', required: ['cmd'], properties: { cmd: { type: 'string' }, cwd: { type: 'string' }, timeoutMs: { type: 'number' }, background: { type: 'boolean' } } },
+      schema: { type: 'object', required: ['cmd'], properties: { cmd: { type: 'string' }, cwd: { type: 'string' }, timeoutMs: { type: 'number' }, timeout_ms: { type: 'number' }, background: { type: 'boolean' } } },
       run: function (args, ctx) {
         ctx = ctx || {};
         // Host-minted at Telegram ingress: this is the paired Commander at the physical desktop, not a prompt
@@ -825,12 +900,20 @@
           return { content: content, summary: r.ok ? ('bg started ' + r.bgId) : 'bg refused' };
           });
         });
-        const timeoutMs = clamp((args && args.timeoutMs) || DEFAULT_MS, 1000, MAX_MS);
+        const requestedMs = args && (args.timeoutMs || args.timeout_ms);
+        const timeoutMs = clamp(requestedMs || DEFAULT_MS, 1000, MAX_MS);
+        /* A CLAMP IS NEVER SILENT (h1 audit 2026-09-22): a model that asked for 30 min and silently got 10 reads the
+           kill as its own mistake. The first line of the result names both numbers. It rides the TOP of the content
+           so the `[exit N]` receipt stays the last line (the cron script gate parses it). */
+        const clampNote = (requestedMs != null && isFinite(Number(requestedMs)) && Number(requestedMs) !== timeoutMs)
+          ? '[timeout: requested ' + Number(requestedMs) + 'ms is ' + (Number(requestedMs) > timeoutMs ? 'above the ' + MAX_MS + 'ms ceiling' : 'below the 1000ms minimum')
+            + ' — this command ran with an effective timeout of ' + timeoutMs + 'ms]\n'
+          : '';
         const markerIsWin = environment && environmentBackendId !== 'local' ? false : isWin;
         const run = checkpoint.then(function () {
           return environment && typeof environment.execute === 'function'
-            ? environment.execute({ agentId: aid, cmd: buildMarkedCmd(cmd, markerIsWin), cwd: cwd, timeoutMs: timeoutMs, maxBytes: MAX_BYTES, signal: ctx.signal, clock: { now: now }, surface: ctx.surface })
-            : runCommand({ spawn: spawn, cmd: buildMarkedCmd(cmd, isWin), cwd: cwd, timeoutMs: timeoutMs, maxBytes: MAX_BYTES, signal: ctx.signal, clock: { now: now }, isWin: isWin });
+            ? environment.execute({ agentId: aid, cmd: buildMarkedCmd(cmd, markerIsWin), cwd: cwd, timeoutMs: timeoutMs, maxBytes: MAX_BYTES, signal: ctx.signal, clock: { now: now }, surface: ctx.surface, ledgerCmd: redact(cmd) })
+            : runCommand({ spawn: spawn, cmd: buildMarkedCmd(cmd, isWin), cwd: cwd, timeoutMs: timeoutMs, maxBytes: MAX_BYTES, signal: ctx.signal, clock: { now: now }, isWin: isWin, ledger: ledger, ledgerCmd: ledger ? redact(cmd) : '' });
         });
         return run.then(function (res) {
           // recover the final cwd + the REAL exit code from the marker; persist the cwd only if it stayed in-jail.
@@ -845,9 +928,9 @@
           const exitCode = (pm.ec != null && !res.timedOut && !res.aborted) ? pm.ec : res.exitCode;
           const note = res.timedOut ? ' — KILLED (timed out after ' + timeoutMs + 'ms)' : res.aborted ? ' — KILLED (aborted)' : '';
           const body = redact((res.truncated ? preview.cleanOut : pm.cleanOut) || '(no output)');
-          const content = body + '\n[exit ' + exitCode + (res.truncated ? ', output truncated to ' + Math.round(MAX_BYTES / 1000) + 'KB' : '') + note + ']';
+          const content = clampNote + body + '\n[exit ' + exitCode + (res.truncated ? ', output truncated to ' + Math.round(MAX_BYTES / 1000) + 'KB' : '') + note + ']';
           const fullContent = res.truncated
-            ? redact(pm.cleanOut || '(no output)') + '\n[exit ' + exitCode + note + ']'
+            ? clampNote + redact(pm.cleanOut || '(no output)') + '\n[exit ' + exitCode + note + ']'
             : undefined;
           try {
             if (typeof ctx.emit === 'function') ctx.emit('shell.exec', {
@@ -855,6 +938,23 @@
               cmdSummary: redact(clip(cmd)), cwd: aid, exitCode: exitCode, ms: res.ms, truncated: res.truncated
             });
           } catch (_) {}
+          /* A KILLED COMMAND IS AN ERROR, NOT A RESULT (h1 audit 2026-09-22). A timed-out command used to come back
+             ok=true with summary "exit -1 (2288ms)" — the words "timed out" lived only in the body, so the tool card,
+             the telemetry and the recovery policy all read a successful call. The tool contract is "THROW on error"
+             (tool.js): the registry turns this into an isError result whose summary names the cause. The partial
+             output and the `[exit -1 — KILLED …]` receipt are kept verbatim. A plain non-zero exit stays a RESULT. */
+          if (res.timedOut || res.aborted) {
+            const head = (res.timedOut
+              ? 'TIMEOUT: the command did not finish within its ' + timeoutMs + 'ms timeout, so the host KILLED it (the whole process tree).'
+              : 'CANCELLED: the command was stopped before it finished, so the host KILLED it (the whole process tree).')
+              + ' It did not complete — anything it was doing may be only partly done.'
+              + (res.timedOut ? ' For a longer job raise timeoutMs (max ' + MAX_MS + 'ms) or start it with background:true.' : '')
+              + ' Output captured before the kill:\n';
+            const killed = new Error(head + content);
+            killed.toolSummary = res.timedOut ? 'timeout' : 'cancelled';
+            if (fullContent) killed.fullContent = head + fullContent;
+            throw killed;
+          }
           return { content: content, fullContent: fullContent, summary: 'exit ' + exitCode + ' (' + res.ms + 'ms)' + (res.truncated ? ', truncated' : '') };
         });
       }
@@ -875,12 +975,75 @@
           const v = await Promise.resolve(source ? source.statusBackground(aid, id) : bg.status(aid, id));
           if (!v) return { content: 'No background process "' + id + '".', summary: 'not found' };
           const saved = v.outputSpillVerified ? '\n[full output: ' + v.outputBytes + ' bytes durably appended to ' + v.outputPath + ']' : (v.outputSpillError ? '\n[full-output spill failed: ' + v.outputSpillError + ']' : '');
-          const state = v.running ? 'RUNNING' : v.lost ? 'LOST — ' + (v.remoteBoundary || 'remote process identity is unconfirmed') : 'exited ' + v.exitCode + (v.killed ? ' (killed)' : '');
+          const state = v.running ? 'RUNNING' + killNote(v) : v.lost ? 'LOST — ' + (v.remoteBoundary || 'remote process identity is unconfirmed') : 'exited ' + v.exitCode + (v.killed ? ' (killed)' : '') + killNote(v);
           return { content: '[' + v.bgId + '] ' + state + ' · ' + v.ms + 'ms · ' + v.cmd + saved + '\n--- output tail ---\n' + redact(v.tail || '(none)'), summary: v.running ? 'running' : v.lost ? 'lost' : 'exited ' + v.exitCode };
         }
         const list = await Promise.resolve(source ? source.statusBackground(aid) : bg.status(aid)) || [];
         if (!list.length) return { content: 'No background processes.', summary: '0' };
-        return { content: list.map(function (v) { return '[' + v.bgId + '] ' + (v.running ? 'RUNNING' : v.lost ? 'LOST (identity mismatch)' : 'exited ' + v.exitCode) + ' · ' + v.cmd; }).join('\n'), summary: list.length + ' process(es)' };
+        return { content: list.map(function (v) { return '[' + v.bgId + '] ' + (v.running ? 'RUNNING' : v.lost ? 'LOST (identity mismatch)' : 'exited ' + v.exitCode) + killNote(v) + ' · ' + v.cmd; }).join('\n'), summary: list.length + ' process(es)' };
+      }
+    };
+    // A kill is reported only as far as it was proven (shellbg.js killState): never "(killed)" for a tree that
+    // may still be running.
+    function killNote(v) {
+      if (!v || !v.killState || v.killState === 'verified') return '';
+      if (v.killState === 'pending') return ' (kill in progress — not yet confirmed)';
+      if (v.killState === 'incomplete') return ' (kill INCOMPLETE — still running: PID ' + (v.survivors || []).join(', ') + ')';
+      return ' (kill sent but NOT confirmed)';
+    }
+
+    /* F4 — WAIT. Learning that a background job finished used to mean polling shell.bg.status turn after paid turn.
+       This blocks (bounded) until the process exits. A timeout is an ANSWER — "still running" — not an error: the
+       process keeps going and the agent decides what to do next. */
+    const MAX_WAIT_MS = 600000;
+    const bgWaitTool = {
+      // impact 'none': it only observes a process this agent already owns (like shell.bg.status/kill), so the
+      // run-authority layer must not fail it closed as an unknown external effect
+      name: 'shell.bg.wait', capability: 'workbench', impact: 'none', scope: 'read', requiresConsent: false,
+      timeoutMs: MAX_WAIT_MS + 10000,   // registry backstop above our own bounded wait
+      description: 'Wait for one of your background processes to exit, up to timeoutMs (default 30s, max 10 min). '
+        + 'Returns as soon as it exits, with its exit code and output tail. If it is still running when the timeout '
+        + 'passes it says so — that is not an error, the process keeps running.',
+      schema: { type: 'object', required: ['id'], properties: { id: { type: 'string' }, timeoutMs: { type: 'number' }, timeout_ms: { type: 'number' } } },
+      run: async function (args, ctx) {
+        ctx = ctx || {};
+        const aid = safeAgentId(ctx.agentId || 'agent');
+        const id = args && args.id ? String(args.id) : '';
+        const requested = args && (args.timeoutMs != null ? args.timeoutMs : args.timeout_ms);
+        const timeoutMs = clamp(requested == null ? 30000 : requested, 0, MAX_WAIT_MS);
+        const opts = { timeoutMs: timeoutMs, signal: ctx.signal };
+        let r = null;
+        if (environment && typeof environment.waitBackground === 'function') r = await Promise.resolve(environment.waitBackground(aid, id, opts));
+        else if (!environment && bg && typeof bg.wait === 'function') r = await Promise.resolve(bg.wait(aid, id, opts));
+        if (r == null) {
+          // a backend without an event-driven wait (ssh): poll its status on a slow, bounded cadence
+          const source = environment && typeof environment.statusBackground === 'function' ? environment : null;
+          if (!source && !bg) return { content: 'Background processes are not available in this build.', summary: 'unavailable' };
+          const t0 = now();
+          // timeoutMs 0 = check once, never sleep; the last step is trimmed so the wait never overshoots its budget
+          const step = 1000, rounds = Math.ceil(timeoutMs / step);
+          let v = await Promise.resolve(source ? source.statusBackground(aid, id) : bg.status(aid, id));
+          for (let i = 0; v && v.running && i < rounds && !(ctx.signal && ctx.signal.aborted); i++) {
+            const ms = Math.min(step, timeoutMs - i * step);
+            await new Promise(function (res) { setTimeout(res, ms); });
+            v = await Promise.resolve(source ? source.statusBackground(aid, id) : bg.status(aid, id));
+          }
+          r = v ? Object.assign({ ok: true, state: v.running ? ((ctx.signal && ctx.signal.aborted) ? 'cancelled' : 'running') : 'exited', waitedMs: Math.max(0, now() - t0) }, v) : { ok: false, error: 'no such background process' };
+        }
+        if (!r.ok) return { content: 'Could not wait: ' + (r.error || 'no such background process') + (id ? ' ("' + id + '")' : ''), summary: 'not found' };
+        const waited = Number(r.waitedMs) || 0;
+        const tail = '\n--- output tail ---\n' + redact(r.tail || '(none)');
+        if (r.state === 'exited') {
+          return { content: '[' + r.bgId + '] exited ' + r.exitCode + (r.killed ? ' (killed)' : '') + killNote(r) + ' · after waiting ' + waited + 'ms · ' + r.cmd + tail, summary: 'exited ' + r.exitCode };
+        }
+        if (r.state === 'cancelled') {
+          return { content: '[' + r.bgId + '] still RUNNING — the wait was cancelled after ' + waited + 'ms · ' + r.cmd + tail, summary: 'wait cancelled' };
+        }
+        return {
+          content: '[' + r.bgId + '] still RUNNING after waiting ' + waited + 'ms (the ' + timeoutMs + 'ms wait timed out — not an error; the process keeps running). '
+            + 'Wait again, read its log with shell.bg.read, or stop it with shell.bg.kill. · ' + r.cmd + tail,
+          summary: 'still running'
+        };
       }
     };
     /* H2.3 — READ PAST THE TAIL. shell.bg.status returns the last ~2000 characters, which is fine for "is it
@@ -967,9 +1130,15 @@
       }
     };
 
+    /* The registry's 30s default backstop used to cut off the Windows verify path (snapshot + taskkill + confirm +
+       second pass can legitimately take over a minute), turning a kill that was still gathering proof into a bare
+       timeout. Sized from the bg manager's own worst case (shellbg.killBudgetMs) plus headroom. */
+    const BG_KILL_BUDGET_MS = (bg && Number(bg.killBudgetMs) > 0) ? Number(bg.killBudgetMs)
+      : ((typeof require === 'function') ? require('../../shellbg.js').killBudgetMs() : 76500);
     const bgKillTool = {
       name: 'shell.bg.kill', capability: 'workbench', scope: 'write', requiresConsent: false,
-      description: 'Stop one of your background processes by id (from shell.bg.status). Kills the whole process tree.',
+      timeoutMs: BG_KILL_BUDGET_MS + 10000,
+      description: 'Stop one of your background processes by id (from shell.bg.status). Kills the whole process tree and confirms it is gone.',
       schema: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
       run: async function (args, ctx) {
         const aid = safeAgentId((ctx && ctx.agentId) || 'agent');
@@ -977,14 +1146,37 @@
         if (!source && !bg) return { content: 'Background processes are not available in this build.', summary: 'unavailable' };
         const id = args && args.id ? String(args.id) : '';
         const r = await Promise.resolve(source ? source.killBackground(aid, id) : bg.kill(aid, id));
-        return { content: r.ok ? (r.alreadyExited ? 'Process ' + id + ' had already exited.' : 'Killed background process ' + id + '.') : ('Could not kill: ' + r.error), summary: r.ok ? 'killed' : 'not killed' };
+        /* F3 — a kill is reported only as far as it was PROVEN. A tree that is confirmed still running is a failed
+           action (thrown -> an error result naming the survivors); a kill whose outcome could not be read back says
+           exactly that instead of "Killed". Remote backends that report plain ok keep their old wording. */
+        if (r && r.incomplete) {
+          const err = new Error('Kill INCOMPLETE for background process ' + id + ': ' + (r.error || 'processes are still running')
+            + '. Surviving PID(s): ' + (r.survivors || []).join(', ') + '. Its receipt is kept so the next StarNet start reaps them.');
+          err.toolSummary = 'kill incomplete';
+          throw err;
+        }
+        if (r && r.unverified) {
+          return { content: 'Kill sent to background process ' + id + ' but NOT confirmed: ' + (r.error || 'the process tree could not be read back')
+            + (r.rootExited ? ' (its main process did exit).' : '.'), summary: 'kill unconfirmed' };
+        }
+        /* 'verified' is proof about HOST processes. On a docker/ssh backend the host-side record is the docker exec /
+           ssh client, so a verified verdict says nothing about the job inside the container or on the remote host. */
+        const backendId = environment
+          ? (typeof environment.backendIdFor === 'function' ? environment.backendIdFor(aid) : environment.backendId)
+          : null;
+        const remote = !!(environment && backendId && backendId !== 'local');
+        const proven = remote
+          ? ' — the kill was sent through the ' + backendId + ' backend, but the process tree inside it could not be confirmed gone (unverified).'
+          : (r && r.verified ? ' — the whole process tree (' + (r.killedPids || []).length + ' process(es)) is confirmed gone.' : '.');
+        if (r && r.ok && !r.alreadyExited && remote) return { content: 'Kill sent to background process ' + id + proven, summary: 'kill unconfirmed' };
+        return { content: r.ok ? (r.alreadyExited ? 'Process ' + id + ' had already exited.' : 'Killed background process ' + id + proven) : ('Could not kill: ' + r.error), summary: r.ok ? 'killed' : 'not killed' };
       }
     };
 
     return {
-      execTool: execTool, bgStatusTool: bgStatusTool, bgReadTool: bgReadTool, bgWriteTool: bgWriteTool, bgKillTool: bgKillTool,
+      execTool: execTool, bgStatusTool: bgStatusTool, bgReadTool: bgReadTool, bgWriteTool: bgWriteTool, bgKillTool: bgKillTool, bgWaitTool: bgWaitTool,
       _internals: { escapesWorkspace: escapesWorkspace, opensVisibleWindow: opensVisibleWindow, inputIsolationRisk: inputIsolationRisk, commandSafetyRisk: commandSafetyRisk, workspaceCapturesInput: workspaceCapturesInput, projectScanRoot: projectScanRoot, breaksMachineState: breaksMachineState, exposesNetwork: exposesNetwork, killTree: killTree, safeAgentId: safeAgentId, normalizeWinCwd: normalizeWinCwd, resolveShellCwd: resolveShellCwd, unrestrictedHost: unrestrictedHost },
-      register: function (reg) { reg.register(execTool); reg.register(bgStatusTool); reg.register(bgReadTool); reg.register(bgWriteTool); reg.register(bgKillTool); return reg; }
+      register: function (reg) { reg.register(execTool); reg.register(bgStatusTool); reg.register(bgReadTool); reg.register(bgWriteTool); reg.register(bgKillTool); reg.register(bgWaitTool); return reg; }
     };
   }
 

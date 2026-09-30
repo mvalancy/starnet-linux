@@ -1,0 +1,10 @@
+{
+  "id": "reptilian",
+  "track": "type",
+  "dir": "north",
+  "job": "6d7d2205-cd1f-41fe-b110-5665d526ae39",
+  "result": "frames: 5\nhttps://api.pixellab.ai/mcp/images/6d7d2205-cd1f-41fe-b110-5665d526ae39/download?index=0",
+  "packed": true,
+  "lastRaw": "output/agent-animation-study/rollout-20px/full-motion/reptilian/minimax/type-north/6d7d2205-cd1f-41fe-b110-5665d526ae39/4.png",
+  "frameCount": 5
+}

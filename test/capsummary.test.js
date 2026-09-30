@@ -115,5 +115,15 @@ const resolvedTools = (capIds, tools) => ({
   const conn = summarizeCapabilities({ grants: [], tools: ['mcp__github__list_issues'] }, { surface: 'interactive' });
   A.ok(/live MCP connector tools/.test(conn), 'dynamic MCP connector tools are acknowledged instead of hidden');
 
+  // studio with image generation certainly unavailable (deferred: no image connection) but image_analyze live:
+  // claim only what survives -- never "generate" -- and still acknowledge analysis.
+  const studioGrant = { grants: [{ capId: 'studio' }], tools: ['image_analyze'] };
+  const analyzeOnly = summarizeCapabilities(studioGrant, { surface: 'interactive' });
+  A.ok(!/generate and analyze images/.test(analyzeOnly), 'no image-generation claim when image_generate is not in the run tools');
+  A.ok(/analyze images/.test(analyzeOnly), 'image analysis is still claimed when image_analyze survives');
+  const both = summarizeCapabilities({ grants: [{ capId: 'studio' }], tools: ['image_generate', 'image_analyze'] }, { surface: 'interactive' });
+  A.ok(/generate and analyze images/.test(both), 'the full studio claim stands when image_generate is live');
+  const neither = summarizeCapabilities({ grants: [{ capId: 'studio' }], tools: ['fs.read'] }, { surface: 'interactive' });
+  A.ok(!/images/.test(neither.split('You do NOT have')[0]), 'no image claim at all when neither studio tool survives');
   A.report('capsummary.test');
 })();

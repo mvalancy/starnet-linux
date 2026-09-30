@@ -20,6 +20,21 @@ A.ok(csp.length > 0 && csp !== 'null', 'Tauri CSP is configured');
 A.ok(/default-src 'self'/.test(csp), 'CSP defaults to self');
 A.ok(/connect-src[^;]*http:\/\/127\.0\.0\.1:\*/.test(csp), 'CSP permits the packaged sidecar bridge');
 A.ok(!/connect-src[^;]*localhost:\*/.test(csp), 'CSP does not include broad localhost connect access');
+// 2026-09-25: no inline script. The shipped frontend has zero inline <script> blocks and zero inline on*= handlers;
+// Tauri also hashes every bundled .js into script-src, which already made 'unsafe-inline' inert in WebView2.
+A.ok(!/script-src[^;]*'unsafe-inline'/.test(csp), "script-src does not allow 'unsafe-inline'");
+A.ok(!/'unsafe-eval'/.test(csp), "CSP never allows 'unsafe-eval'");
+// 127.0.0.1:* is a compile-time placeholder: main() pins it to this launch's sidecar port before the app is built.
+const mainRsCsp = fs.readFileSync(path.join(__dirname, '../src-tauri/src/main.rs'), 'utf8');
+A.ok(/let sidecar_port = free_port\(\);\s*\n\s*pin_config_csp\(&mut context\.config_mut\(\)\.app\.security\.csp, sidecar_port\);/.test(mainRsCsp),
+  'main() pins the CSP loopback source to the sidecar port before building the app');
+A.ok(/let port = sidecar_port;/.test(mainRsCsp) && (mainRsCsp.match(/= free_port\(\)/g) || []).length === 1,
+  'setup() spawns the sidecar on that SAME pinned port (one free_port call)');
+A.ok(/fn open_external_url\(state: State<AppState>, url: String\)[\s\S]{0,400}url_carries_api_token\(trimmed, &state\.api_token\)/.test(mainRsCsp),
+  'open_external_url refuses any URL carrying the master API token');
+const indexHtml = fs.readFileSync(path.join(__dirname, '../frontend/index.html'), 'utf8');
+A.eq((indexHtml.match(/<script\b(?![^>]*\bsrc=)[^>]*>\s*\S/gi) || []).length, 0, 'index.html has no inline <script> block');
+A.eq((indexHtml.match(/<[a-z][^>]*\son[a-z]+\s*=/gi) || []).length, 0, 'index.html has no inline on*= event handler');
 A.ok(/object-src 'none'/.test(csp), 'CSP disables plugin/object loads');
 A.ok(/frame-ancestors 'none'/.test(csp), 'CSP blocks framing');
 A.ok(/base-uri 'none'/.test(csp), 'CSP blocks base tag rewriting');
@@ -46,5 +61,21 @@ A.ok(/fn harness_clear_key\(state: State<AppState>\)[\s\S]*?harness_store_key\(S
   'OpenRouter FORGET uses the transactional provider-key path instead of swallowing keychain deletion failure');
 A.ok(!/starnet_open_workshop_file/.test(mainRs), 'webview IPC exposes no workshop file launcher');
 A.ok(!/starnet_open_user_directory/.test(mainRs), 'webview IPC exposes no directory launcher');
+
+// 2026-09-23 audit: the token-bearing main window must never show a foreign page. Init scripts re-run on every
+// top-level navigation and the native drag-drop handler is disabled, so a dragged-in link used to load inside
+// the frameless window and receive __STARNET_API_TOKEN__. (Behaviour is unit-tested in main.rs
+// navigation_guard_tests via `cargo test --bin skynet-desktop navigation_guard`.)
+A.ok(/\.on_navigation\(\|url\| is_app_navigation\(url\)\)/.test(mainRs), 'the main window refuses navigation outside the bundled app origin');
+// The guard + origin-gated token must live in the ONE builder shared by startup and WebView2 crash recovery,
+// or a rebuilt window carries the token with no navigation guard.
+A.ok(/fn build_main_window\([\s\S]{0,1500}?webview_init_script\([\s\S]{0,2500}?\.on_navigation\(\|url\| is_app_navigation\(url\)\)/.test(mainRs),
+  'startup and crash-rebuilt windows share one builder carrying the navigation guard');
+A.ok(/fn webview_init_script\([\s\S]{0,800}?if\(location\.protocol==='tauri:'/.test(mainRs), 'the shared init script is the origin-gated one');
+A.eq((mainRs.match(/WebviewWindowBuilder::new\(/g) || []).length, 1, 'exactly one main-window builder exists');
+A.ok(/fn is_app_navigation\(url: &tauri::Url\) -> bool \{[\s\S]*?"tauri" => true,[\s\S]*?url\.host_str\(\) == Some\("tauri\.localhost"\)[\s\S]*?_ => false,/.test(mainRs),
+  'the navigation allow-list is exactly the tauri scheme or the tauri.localhost host');
+A.ok(/let init = format!\(\s*"if\(location\.protocol==='tauri:'\|\|location\.hostname==='tauri\.localhost'\)\{\{window\.__STARNET_API__=/.test(mainRs),
+  'the API token is injected only into the bundled app origin (second layer behind on_navigation)');
 
 A.report('tauri.hardening.test');

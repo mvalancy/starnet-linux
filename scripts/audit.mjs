@@ -38,6 +38,17 @@ const WIN = process.env.SKYNET_SHOT_SIZE || '1440,900';
 const KEEP = process.argv.includes('--keep');
 const SCRATCH = join(OUT_DIR, '_seed-workspace');
 const PROFILE = join(OUT_DIR, '_profile');
+// A FRESH BROWSER PER RUN (2026-09-23). The seed workspace was re-materialized every run but the Chrome
+// profile was not: its localStorage kept the previous run's `starnet.save`, and because the audit closes
+// Chrome before the last autosave is acknowledged, that save is `_saveDirty`. cloudsave.reconcile() rightly
+// treats a dirty cache as unsent offline edits and pushes it OVER the fresh seed, so every Guardian hour
+// inherited the last hour's placed dish until prop-place had nowhere left to click ("had 4"). Wipe it, and
+// fail loudly if a locked profile can't be wiped — inheriting stale state silently is the bug.
+function freshProfile(dir) {
+  rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 250 });
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
 const REUSE_EXISTING = /^(1|true|yes|on)$/i.test(String(process.env.SKYNET_AUDIT_REUSE || '').trim());
 const LIVE_PROVIDER = /^(1|true|yes|on)$/i.test(String(process.env.SKYNET_AUDIT_LIVE_PROVIDER || '').trim());
 
@@ -521,7 +532,7 @@ async function runApprovalScenario() {
     // defused by the content-aware mock above).
     side = bootSeededSidecar({ port: APORT, scratchDir: ASCRATCH, fullAccess: false, env: { SKYNET_QUEST_REFRESH: '0', SKYNET_SCOUT: '0' } });
     if (!(await waitUp(AURL))) throw new Error('approval sidecar failed to come up on :' + APORT);
-    ({ proc } = launchChrome({ cdpPort: ACDP, win: WIN, profileDir: APROFILE }));
+    ({ proc } = launchChrome({ cdpPort: ACDP, win: WIN, profileDir: freshProfile(APROFILE) }));
     cdp = await connectCDP(ACDP);
     const diag = collectDiagnostics(cdp);
     await cdp.send('Page.enable'); await cdp.send('Runtime.enable');
@@ -630,7 +641,7 @@ async function main() {
     console.log('sidecar: ready');
   }
 
-  const { proc, chrome } = launchChrome({ cdpPort: CDP_PORT, win: WIN, profileDir: PROFILE });
+  const { proc, chrome } = launchChrome({ cdpPort: CDP_PORT, win: WIN, profileDir: freshProfile(PROFILE) });
   proc.on('error', (e) => { console.error('chrome spawn error', e); process.exit(1); });
   console.log(`chrome: ${chrome}\ntarget: ${APP_URL}`);
 

@@ -152,10 +152,30 @@
   // whole adapter ladder again: OpenRouter's 3 attempts multiplied by the loop's 5 attempts into 15 identical
   // requests and ~24s of silent "working" against an immediately-broken API. Mid-stream failures never carry
   // this marker, so the loop keeps its separate recovery ladder for a stream that actually started.
-  function markPreStreamRetriesExhausted(error) {
+  //
+  // 2026-09-22 (Hermes audit): "surface the failure" turned a 4x503 blip into a dead single-provider run 1.6s in.
+  // The marker now also says HOW MUCH of the ladder the adapter spent — `meta.attempts` requests and
+  // `meta.waitedMs` of backoff — and the loop (recovery-policy preStreamSpend) counts exactly that against its
+  // own rungs and patience, then continues the ladder for transient classes. Continuation, not multiplication.
+  function markPreStreamRetriesExhausted(error, meta) {
     const e = (error && typeof error === 'object') ? error : new Error(String(error || 'provider request failed'));
-    try { e.preStreamRetriesExhausted = true; } catch (_) {}
+    try {
+      e.preStreamRetriesExhausted = true;
+      if (meta && Number(meta.attempts) >= 1) e.preStreamAttempts = Math.floor(Number(meta.attempts));
+      if (meta && Number(meta.waitedMs) >= 0) e.preStreamWaitMs = Math.floor(Number(meta.waitedMs));
+    } catch (_) {}
     return e;
+  }
+  /* How many pre-stream retries THIS request may make. Adapters default to their own ladder (RETRY_DELAYS); the
+     loop sends req.preStreamRetries = 0 once its ladder owns the turn's pacing, so every rung it sleeps is exactly
+     ONE request instead of one request plus the adapter's two quick re-sends. A request can only LOWER the
+     adapter's budget, never raise it. */
+  function preStreamRetries(req, dflt) {
+    const d = Math.max(0, Math.floor(Number(dflt) || 0));
+    const raw = req && req.preStreamRetries;
+    if (raw == null || raw === '') return d;
+    const n = Number(raw);
+    return (isFinite(n) && n >= 0) ? Math.min(d, Math.floor(n)) : d;
   }
   function abortableDelay(ms, signal) {
     return new Promise((resolve, reject) => {
@@ -232,7 +252,7 @@
   }
 
   const timeouts = { envInt, connectMs, idleMs, connectSignal, connectGuard, idleGuardedReader, timeoutError, makeAbortError };
-  const runtime = { isAbort, abortableDelay, markPreStreamRetriesExhausted };
+  const runtime = { isAbort, abortableDelay, markPreStreamRetriesExhausted, preStreamRetries };
 
   function recoveredToolContent(callId, content) {
     let body;
@@ -253,10 +273,21 @@
          · orphaned/duplicate results become plainly labeled user text, preserving their information;
          · unanswered calls receive a synthetic tool result before the next conversational message;
          · missing/duplicate ids inside one assistant batch are deterministically minted.
-       A well-formed transcript returns by identity so its request bytes remain unchanged. */
+       A well-formed transcript returns by identity so its request bytes remain unchanged.
+
+       A CALL THAT HAS A REAL RESULT IS NEVER LABELLED "interrupted" (2026-09-22, Hermes audit Step 2). Two
+       malformed shapes used to do exactly that — an invitation to REPEAT a write that already happened:
+         · a legacy batch that reused one id twice: the second call was re-minted, and its real result (the
+           second result carrying the reused id) became "recovered" text while the minted call got the stub.
+           The re-minted id now remembers the id it replaced, so that second result pairs with it;
+         · a real result stranded AFTER an intervening message (an injected note, a user line persisted ahead
+           of a late result): it is hoisted up beside its call, ahead of that message. The lookahead never
+           crosses the next assistant message — a later result carrying the same id belongs to a later call. */
     if (!Array.isArray(messages) || !messages.length) return messages;
     const out = [];
     const open = new Map();       // call id -> true, insertion order preserves the assistant's call order
+    const aliases = new Map();    // id reused inside the open batch -> minted ids standing in for its repeats
+    const consumed = new Set();   // indexes of results already hoisted beside their call
     let changed = false;
     let minted = 0;
 
@@ -265,39 +296,67 @@
       do { id = 'call_local_' + (++minted); } while (open.has(id));
       return id;
     }
-    function closeInterrupted() {
+    // The open call a result answers: its own id, else a minted stand-in for a repeat of that id.
+    function openTarget(callId) {
+      if (!callId) return '';
+      if (open.has(callId)) return callId;
+      const alt = aliases.get(callId);
+      if (alt) for (const id of alt) if (open.has(id)) return id;
+      return '';
+    }
+    function pushResult(msg, target) {
+      if (msg.tool_call_id === target && msg.call_id == null) out.push(msg);
+      else {
+        const normalized = Object.assign({}, msg, { tool_call_id: target });
+        delete normalized.call_id;
+        out.push(normalized);
+        changed = true;
+      }
+      open.delete(target);
+    }
+    // Results for the open batch that sit past `at` but before the next assistant turn.
+    function hoistStranded(at) {
+      for (let j = at + 1; j < messages.length && open.size; j++) {
+        const m = messages[j];
+        if (m && typeof m === 'object' && m.role === 'assistant') break;
+        if (consumed.has(j) || !m || typeof m !== 'object' || m.role !== 'tool') continue;
+        const target = openTarget(String(m.tool_call_id || m.call_id || ''));
+        if (!target) continue;
+        consumed.add(j);
+        pushResult(m, target);
+        changed = true;
+      }
+    }
+    function closeInterrupted(at) {
       if (!open.size) return;
+      if (at < messages.length && !(messages[at] && messages[at].role === 'assistant')) hoistStranded(at);
       for (const callId of open.keys()) {
         out.push({
           role: 'tool',
           tool_call_id: callId,
           content: '[interrupted — this call produced no recorded result. Reissue it if it is still needed.]'
         });
+        changed = true;
       }
       open.clear();
-      changed = true;
+      aliases.clear();
     }
 
-    for (const msg of messages) {
+    for (let i = 0; i < messages.length; i++) {
+      if (consumed.has(i)) continue;   // already hoisted beside its call
+      const msg = messages[i];
       if (!msg || typeof msg !== 'object') {
-        closeInterrupted();
+        closeInterrupted(i);
         out.push(msg);
         continue;
       }
       if (msg.role === 'tool') {
         const callId = String(msg.tool_call_id || msg.call_id || '');
-        if (callId && open.has(callId)) {
-          if (msg.tool_call_id === callId && msg.call_id == null) out.push(msg);
-          else {
-            const normalized = Object.assign({}, msg, { tool_call_id: callId });
-            delete normalized.call_id;
-            out.push(normalized);
-            changed = true;
-          }
-          open.delete(callId);
-        } else {
+        const target = openTarget(callId);
+        if (target) pushResult(msg, target);
+        else {
           // A user message cannot split an outstanding assistant tool-call batch, so close it first.
-          closeInterrupted();
+          closeInterrupted(i);
           out.push({ role: 'user', content: recoveredToolContent(callId, msg.content) });
           changed = true;
         }
@@ -305,7 +364,8 @@
       }
 
       // Chat Completions requires every result directly after its assistant call batch.
-      closeInterrupted();
+      closeInterrupted(i);
+      aliases.clear();
       if (msg.role === 'assistant' && Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
         let calls = msg.tool_calls;
         let callsChanged = false;
@@ -313,7 +373,9 @@
           if (!tc || typeof tc !== 'object') return tc;
           let callId = String(tc.id || (tc.function && tc.function.call_id) || '');
           if (!callId || open.has(callId)) {
+            const reused = callId;
             callId = mintId();
+            if (reused) { if (!aliases.has(reused)) aliases.set(reused, []); aliases.get(reused).push(callId); }
             callsChanged = true;
           }
           open.set(callId, true);
@@ -327,8 +389,91 @@
         } else out.push(msg);
       } else out.push(msg);
     }
-    closeInterrupted();
+    closeInterrupted(messages.length);
     return changed ? out : messages;
+  }
+
+  /* ---- WIRE SANITATION (2026-09-22, Hermes audit Step 2) -------------------------------------------------
+     ONE pre-send normalization every adapter applies before it builds its wire body. Before this, tool-pair
+     repair lived in the two Chat Completions adapters only: after a run ended at the tool boundary the unpaired
+     call rode into the Anthropic body as a `tool_use` with no `tool_result`, and into the Gemini body as a
+     `functionCall` followed by user text. And ids minted by another provider (Kimi's `functions.read_file:0`)
+     reached Anthropic, whose grammar is ^[a-zA-Z0-9_-]+$ (<= 64), unchanged after a fallback.
+
+       prepareWireMessages(messages, target) -> messages
+         target 'chat' | 'codex' | 'gemini' : repairToolPairs only (Chat Completions and Responses carry the ids
+                                              verbatim; Gemini's wire carries no call ids — it pairs by position)
+         target 'anthropic'                 : repairToolPairs + remapToolCallIds(ANTHROPIC_TOOL_ID)
+
+     Never mutates the caller's array or messages. A well-formed transcript with grammar-valid, unique ids
+     returns by IDENTITY, so its request bytes are unchanged. */
+  const ANTHROPIC_TOOL_ID = { re: /^[a-zA-Z0-9_-]{1,64}$/, bad: /[^a-zA-Z0-9_-]/g, max: 64, empty: 'toolu_local' };
+  const WIRE_TARGETS = { chat: {}, codex: {}, gemini: {}, anthropic: { idGrammar: ANTHROPIC_TOOL_ID } };
+
+  /* Rewrite call ids into a target's grammar. Deterministic (same transcript -> same ids) and collision-free
+     across the WHOLE request: a valid id that is unique keeps its bytes; an invalid one is rewritten
+     (bad characters -> '_', clipped); anything that would collide — with an id already assigned, or with a
+     valid id the transcript already carries — takes a numeric suffix. Each batch's results are rewritten
+     with the SAME mapping as their calls (after repairToolPairs every result sits directly after its batch). */
+  function remapToolCallIds(messages, grammar) {
+    if (!Array.isArray(messages) || !messages.length || !grammar) return messages;
+    const reserved = new Set();   // grammar-valid ids present anywhere: a rewrite must never land on one
+    for (const m of messages) {
+      if (!m || typeof m !== 'object') continue;
+      if (m.role === 'assistant' && Array.isArray(m.tool_calls)) {
+        for (const tc of m.tool_calls) { const id = tc && tc.id != null ? String(tc.id) : ''; if (grammar.re.test(id)) reserved.add(id); }
+      }
+    }
+    const used = new Set();
+    let batch = new Map();        // raw id -> wire id for the most recent assistant batch
+    let changed = false;
+    function assign(raw) {
+      if (grammar.re.test(raw) && !used.has(raw)) { used.add(raw); return raw; }
+      const base = String(raw).replace(grammar.bad, '_').slice(0, grammar.max) || grammar.empty;
+      let id = base;
+      for (let n = 2; used.has(id) || (id !== raw && reserved.has(id)) || !grammar.re.test(id); n++) {
+        const sfx = '_' + n;
+        id = base.slice(0, grammar.max - sfx.length) + sfx;
+      }
+      used.add(id);
+      return id;
+    }
+    const out = messages.map(m => {
+      if (!m || typeof m !== 'object') return m;
+      if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+        batch = new Map();
+        let callsChanged = false;
+        const calls = m.tool_calls.map(tc => {
+          if (!tc || typeof tc !== 'object') return tc;
+          const raw = String(tc.id == null ? '' : tc.id);
+          const id = assign(raw);
+          if (!batch.has(raw)) batch.set(raw, id);
+          if (id === tc.id) return tc;
+          callsChanged = true;
+          return Object.assign({}, tc, { id });
+        });
+        if (!callsChanged) return m;
+        changed = true;
+        return Object.assign({}, m, { tool_calls: calls });
+      }
+      if (m.role === 'tool') {
+        const raw = String(m.tool_call_id == null ? '' : m.tool_call_id);
+        const id = batch.get(raw);
+        if (id == null || id === m.tool_call_id) return m;
+        changed = true;
+        return Object.assign({}, m, { tool_call_id: id });
+      }
+      return m;
+    });
+    return changed ? out : messages;
+  }
+
+  function prepareWireMessages(messages, target) {
+    if (!Array.isArray(messages)) return messages;
+    const spec = WIRE_TARGETS[target] || WIRE_TARGETS.chat;
+    let out = repairToolPairs(messages);
+    if (spec.idGrammar) out = remapToolCallIds(out, spec.idGrammar);
+    return out;
   }
 
   // Claude has one leading system block. Keep later host reminders in the
@@ -344,5 +489,6 @@
     });
   }
 
-  return { EVENT_TYPES, FINISH, normalizeFinish, timeouts, runtime, repairToolPairs, preserveClaudeContinuations };
+  return { EVENT_TYPES, FINISH, normalizeFinish, timeouts, runtime, repairToolPairs, preserveClaudeContinuations,
+    prepareWireMessages, remapToolCallIds, ANTHROPIC_TOOL_ID };
 });

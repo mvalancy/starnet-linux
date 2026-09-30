@@ -72,4 +72,12 @@ function active(state, now) {
   return !!(state && typeof state === 'object' && state.salt && state.digest && Number(state.expiresAt) > at);
 }
 
-module.exports = { issue, verify, active, normalizeCode, printableCode, codeFromBytes, ALPHABET, CODE_BYTES, DEFAULT_TTL_MS };
+// The admission decision the channel adapters consult for an UNCLAIMED bot: "/pair CODE" or "pair CODE" (Slack and
+// some Discord clients intercept a leading slash, so it is optional — the code is the proof, not the command word).
+function admission(state, text, now, label) {
+  const match = /^\/?pair\s+([^\s]+)\s*$/i.exec(String(text == null ? '' : text));
+  if (!match || !verify(state, match[1], now)) return false;
+  return { allow: true, consume: true, reply: 'Owner paired. This ' + (label || 'Telegram') + ' DM is now the trusted control channel.' };
+}
+
+module.exports = { issue, verify, active, admission, normalizeCode, printableCode, codeFromBytes, ALPHABET, CODE_BYTES, DEFAULT_TTL_MS };

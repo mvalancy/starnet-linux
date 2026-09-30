@@ -92,6 +92,12 @@
     return files;
   }
 
+  // The persisted shape of an explicit ChatGPT logout: no credential fields, just the marker.
+  const SIGNED_OUT = Object.freeze({ signedOut: true });
+  function isSignedOutTombstone(raw) {
+    return !!(raw && typeof raw === 'object' && raw.signedOut === true && !raw.access_token && !raw.refresh_token && !raw.id_token);
+  }
+
   function loadCodexTokensWithMigration(opts) {
     opts = opts || {};
     const currentFile = opts.currentFile;
@@ -101,6 +107,9 @@
 
     const current = load(currentFile, 'codex');
     if (validCodexTokens(current)) return current;
+    // An explicit logout leaves a signed-out tombstone here. Never migrate a legacy copy over it: that is exactly
+    // the "logged out, restarted, signed back in by itself" resurrection the tombstone exists to stop.
+    if (isSignedOutTombstone(current)) return null;
 
     const pathMod = opts.pathMod || require('node:path');
     const currentKey = pathKey(pathMod, currentFile);
@@ -156,5 +165,5 @@
     return { ok: false, attempts: 2, verified: false, error: lastErr };
   }
 
-  return { validCodexTokens, knownWorkspaceRoots, isRecognizedWorkspaceRoot, candidateCodexTokenFiles, loadCodexTokensWithMigration, persistCodexTokensVerified };
+  return { validCodexTokens, knownWorkspaceRoots, isRecognizedWorkspaceRoot, candidateCodexTokenFiles, loadCodexTokensWithMigration, persistCodexTokensVerified, SIGNED_OUT, isSignedOutTombstone };
 });

@@ -28,6 +28,23 @@ function harness(extra) {
 }
 
 (async () => {
+  // ---- security audit 2026-09-25: the fault text reaches /api/health (unauthenticated), the crash ledger and the log.
+  //      It is scrubbed with the host redact() before truncation, so a credential in an error message never lands there.
+  {
+    const { redact } = require('../sidecar/context.js');
+    const recorded = [];
+    const { h, calls } = harness({ redact, breaker: { record: v => { recorded.push(v); return { tripped: false }; } } });
+    const key = 'sk-or-v1-' + 'a'.repeat(40);
+    h.onUncaught(new Error('fetch https://api.example/v1?api_key=plainsecret123 failed with ' + key + ' ' + 'x'.repeat(300)));
+    const f = h.fault();
+    A.ok(f.message.indexOf(key) < 0 && f.message.indexOf('sk-or-v1') < 0 && f.message.indexOf('plainsecret123') < 0, 'fault() (and so /api/health) carries no credential');
+    A.ok(recorded.length === 1 && recorded[0].summary.indexOf('plainsecret123') < 0, 'the crash-ledger summary is scrubbed');
+    A.ok(f.message.indexOf('[redacted-') >= 0, 'the redaction marker is visible, so the report stays honest');
+    const { h: h2 } = harness({ redact: () => { throw new Error('redactor broke'); } });
+    h2.onUncaught(new Error('token=abcdefgh1234'));
+    A.ok(h2.fault().message.indexOf('abcdefgh1234') < 0, 'a failing redactor withholds the message rather than leaking it');
+  }
+
   // ---- A. a genuine uncaught: surfaced FIRST (diagnostics ring intact), fault recorded, exit(1) scheduled after the delay ----
   {
     const { h, calls } = harness();
@@ -158,6 +175,12 @@ function harness(extra) {
     A.ok(/function quiesceForProcessFault\(\)[\s\S]*groupSessions\.halt/.test(src), 'fault quiesce halts group sessions');
     A.ok(/function quiesceForProcessFault\(\)[\s\S]*for \(const id of GENERIC_CHANNEL_IDS\) stopGenericChannel\(id\)/.test(src), 'fault quiesce disconnects generic channels');
     A.ok(/function quiesceForProcessFault\(\)[\s\S]*clearInterval\(livePricesRefreshTimer\)/.test(src), 'fault quiesce stops the live-price refresh timer');
+    // LINE TRIGGERS are contained like E-STOP contains them (2026-09-24 security review): poll timer cleared, queues
+    // dropped, trigger-hub runs killed — and the runner's halted() refuses any fire after a fault quiesced the process
+    const q = A.fnBody(src, 'function quiesceForProcessFault()');
+    A.ok(/contain\('triggers', \(\) => \{[\s\S]*clearInterval\(triggerPollTimer\);[\s\S]*triggerRunner\.haltAll\(\);[\s\S]*killAll\(null, \.\.\.triggerRunner\.inflights\(\)\);/.test(q), 'fault quiesce stops the folder poll, drops trigger queues and kills trigger-hub runs');
+    A.ok(/let triggerPollTimer = setInterval\(/.test(src), 'the trigger poll timer is clearable');
+    A.ok(/halted: \(\) => cronHalted === true \|\| processFaultQuiesced === true,/.test(src), 'the trigger runner treats a fault-quiesced process as halted');
     const bump = A.fnBody(src, 'function bumpQueue(agentId, d)');
     A.ok(/queueDepth\.delete\(agentId\)/.test(bump), 'bumpQueue deletes a drained entry (bounded Map)');
     const cap = A.fnBody(src, 'function devCaptureReply(chatId, text)');

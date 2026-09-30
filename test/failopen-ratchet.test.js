@@ -36,7 +36,6 @@ const BASELINE = {
   'providers/openai-compatible.js': 1,// catalog warm; a later call retries
   'providers/openrouter.js': 1,       // catalog warm; a later call retries
   'providers/provider.js': 2,         // reader.cancel() on timeout/abort teardown
-  'shellbg.js': 1,                    // opportunistic pid identity pin (fail-closed to cmd matching)
   'spotify/store.js': 1,              // r.json() value default on an error body
   'terminal-sessions.js': 1,          // opportunistic pid identity pin
   'tools/builtin/browser.js': 9,      // CDP best-effort sends on adopt/close/failRequest seams
@@ -131,7 +130,7 @@ const SYNC_BASELINE = {
   'channels/adapter.js': 5,
   'channels/discord.gateway.js': 10,
   'channels/discord.transport.js': 3,
-  'channels/hub.js': 41,   // AUDITED — 41 left: emit() bus wrappers, console.* wrappers, best-effort deletes/edits/acks, timer clears, aborts, host observer callbacks, loadHistory value defaults
+  'channels/hub.js': 40,   // AUDITED — 40 left (the onLineOutcome hook now logs via failNote, 2026-09-24): emit() bus wrappers, console.* wrappers, best-effort deletes/edits/acks, timer clears, aborts, host observer callbacks, loadHistory value defaults
   'channels/proxy-fetch.js': 1,
   'channels/signal.transport.js': 2,
   'channels/slack.transport.js': 8,
@@ -158,7 +157,7 @@ const SYNC_BASELINE = {
   'halt.js': 1,
   'harness-import.js': 1,
   'http-body.js': 2,
-  'index.js': 368,
+  'index.js': 360,
   'ledger.js': 1,
   'logbound.js': 2,
   'loop.js': 2,   // AUDITED — 2 left: aborted sleep() during retry backoff (x2)
@@ -195,7 +194,7 @@ const SYNC_BASELINE = {
   'runroute.js': 2,
   'savestore.js': 7,   // AUDITED — 7 left: ensureRoot, stale .corrupt target unlink, fd close in finally, .bak staging (x2), warn wrappers (x2)
   'servicekeys.js': 1,
-  'shellbg.js': 8,
+  'shellbg.js': 1,   // h2 2026-09-22 — 1 left: child.unref() on a fresh spawn (kill/ledger/pin paths now failNote)
   'shellhooks.js': 4,
   'skillreview.js': 2,
   'skills/catalog.js': 1,
@@ -227,7 +226,7 @@ const SYNC_BASELINE = {
   'tools/builtin/webreader.js': 3,
   'tools/builtin/win32desktop.js': 1,
   'tools/registry.js': 3,   // AUDITED — 3 left: abort-listener attach/detach, abort() in timeout
-  'transcript-history.js': 7,
+  'transcript-history.js': 6,
   'transcriptstore.js': 2,   // AUDITED — 2 left: frozen message marker, tool_calls JSON value default
   'update-preparation.js': 4,
   'workspace-lease.js': 2,

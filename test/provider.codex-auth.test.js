@@ -192,6 +192,22 @@ function jwt(claims) {
     A.eq(saved.file, currentFile, 'persists migrated tokens into the active workspace');
     A.eq(migrated, legacyFile, 'reports the legacy source used for migration');
 
+    // security audit 2026-09-25: an explicit logout leaves a signed-out TOMBSTONE in the current workspace. The
+    // legacy copy is still on disk (migration copies, never deletes), and it must NOT be pulled back in on the next
+    // boot — that silently signed the Commander back in after they logged out.
+    store[currentFile] = tokenStore.SIGNED_OUT;
+    let resurrected = null;
+    const afterLogout = tokenStore.loadCodexTokensWithMigration({
+      currentFile, candidateFiles: files, pathMod,
+      load: file => store[file] || null,
+      save: (file, raw) => { resurrected = { file, raw }; },
+      onMigrate: from => { resurrected = resurrected || { from }; }
+    });
+    A.eq(afterLogout, null, 'a signed-out tombstone loads as signed out');
+    A.eq(resurrected, null, 'the legacy token is NOT migrated over an explicit logout');
+    A.ok(tokenStore.isSignedOutTombstone(tokenStore.SIGNED_OUT) && !tokenStore.isSignedOutTombstone({ signedOut: true, refresh_token: 'r' }),
+      'a tombstone carrying any credential field is not a tombstone');
+
     /* ⛔ A CREDENTIAL MUST NOT CROSS AN ISOLATION BOUNDARY. Every test boot, dev seed and QA journey points
        SKYNET_WORKSPACES at a fresh temp dir. The candidate scan used to run there too, so booting the sidecar
        with a temp workspace COPIED the Commander's live ChatGPT refresh token into os.tmpdir() — and a
@@ -276,9 +292,8 @@ function jwt(claims) {
     const logoutBody = A.fnBody(indexSource, 'function handleCodexLogout(req, res)');
     A.ok(/saveCredentialRemovalVerified\([\s\S]*CODEX_TOKENS_FILE[\s\S]*null/.test(clearBody),
       'codex logout sanitizes both resilient token copies with verified credential removal');
-    A.ok(clearBody.indexOf('saveCredentialRemovalVerified') >= 0
-      && clearBody.indexOf('saveCredentialRemovalVerified') < clearBody.indexOf('unlinkSync'),
-      'codex logout sanitizes credential-bearing copies before best-effort file removal');
+    A.ok(clearBody.indexOf('saveCredentialRemovalVerified') >= 0 && /SIGNED_OUT/.test(clearBody) && clearBody.indexOf('unlinkSync') < 0,
+      'codex logout verifies a signed-out tombstone into both copies and never unlinks it (an absent file re-migrates a legacy token)');
     A.ok(/if\s*\(!clearCodexTokens\(\)\)[\s\S]*json\(500/.test(logoutBody),
       'codex logout reports a durable removal failure instead of false success');
     A.ok(logoutBody.indexOf('clearCodexTokens()') < logoutBody.indexOf('codexTokens = null'),

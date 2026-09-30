@@ -269,6 +269,25 @@ function boot(port, workspaces, attemptsLeft, extraEnv) {
     A.eq(stillHaltedLoops.body.halted, true, 'failed loop resume leaves the live halt in force');
     fs.rmdirSync(HALT_FILE); fs.writeFileSync(HALT_FILE, cronHaltedBytes);
     fs.rmdirSync(LOOPS_HALT_FILE); fs.writeFileSync(LOOPS_HALT_FILE, loopsHaltedBytes);
+
+    // A completed occurrence with a pending result still needs background time.
+    // Seed a future retry so boot recovery cannot finish it before inspection.
+    try { child.kill(); } catch (_) {} await sleep(250);
+    fs.writeFileSync(HALT_FILE, JSON.stringify({ version: 1, halted: false }));
+    fs.writeFileSync(path.join(ws, 'cron.armed.json'), JSON.stringify({ version: 1, armed: true }));
+    fs.writeFileSync(path.join(ws, 'cron.jobs.json'), JSON.stringify({ version: 1, jobs: [{
+      id: 'pending-result', enabled: false, state: 'completed', agentId: 'agent',
+      schedule: { kind: 'once', runAt: new Date().toISOString() },
+      finalization: { runId: 'completed-run', state: 'pending', deliver: 'local', nextAttemptAt: new Date(Date.now() + 3600000).toISOString() }
+    }] }));
+    booted = await boot(port + 100, ws, 20, { SKYNET_CRON_TICK_MS: '300' });
+    child = booted.child; port = booted.port; getOut = booted.out;
+    apiToken = await bootToken(B(), B());
+    const pendingLife = await j('GET', '/api/lifecycle/armed');
+    A.eq(pendingLife.body.categories.routines.armed, true, 'pending delivery keeps an armed ticker alive after execution completes');
+    A.eq(pendingLife.body.categories.routines.count, 1, 'pending result is counted once as background work');
+    await j('POST', '/api/cron/arm', { enabled: false });
+    A.eq((await j('GET', '/api/lifecycle/armed')).body.categories.routines.armed, false, 'explicit scheduler disarm still permits exit with a retained receipt');
   } finally {
     try { child.kill(); } catch (_) {}
     await sleep(150);

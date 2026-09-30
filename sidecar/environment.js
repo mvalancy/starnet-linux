@@ -23,12 +23,16 @@
   const AID_RE = /^[A-Za-z0-9_-]{1,40}$/;
   const nodeCrypto = require('node:crypto');
   const { note: envFailNote } = require('./failopen.js');
+  const { trackChild } = require('./procledger.js');   // F2: foreground receipts for the boot orphan sweep
+  const { stationChildEnv } = require('./child-env.js');   // the shared station-secret strip (audit 2026-09-25 #13)
+  const { assertWorkspaceId } = require('./workspace-reserved.js');   // station-owned dirs are never agent jails
   const WIN = (typeof process !== 'undefined' && process.platform) === 'win32';
   const DEFAULT_DOCKER_IMAGE = 'node:20-bookworm';
 
   function safeAgentId(id) {
     if (!AID_RE.test(id || '')) throw new Error('bad agentId');
-    return id;
+    // WORKSPACES/<id> is this agent's jail on every backend; a station-owned directory name is never one.
+    return assertWorkspaceId(id);
   }
   function clamp(n, lo, hi) {
     n = Number(n);
@@ -62,8 +66,10 @@
   const SECRET_ENV_NAME_RE = /(?:^|_)(?:TOKEN|KEY|SECRET|PASSWORD|PASS|AUTH|BEARER|COOKIE|CREDENTIAL)(?:_|$)|(?:APIKEY|ACCESSTOKEN|ACCESSKEY|SECRETKEY|AUTHTOKEN|APITOKEN|PRIVATEKEY|PASSWD)|(?:^|_)PAT(?:_|$)/i;
   const INTERNAL_ENV_NAME_RE = /^(?:STARNET|SKYNET)_/i;
   const EXECUTION_HOOK_ENV_RE = /^(?:NODE_OPTIONS|NODE_PATH|npm_config_script_shell|COMSPEC)$/i;
+  /* Agent-driven commands: the shared station-secret strip (child-env.js — StarNet's own names, the service-key
+     names the sidecar exported, any held secret VALUE), then every secret-SHAPED name on top. */
   function sanitizeChildEnv(base) {
-    const src = base || {};
+    const src = stationChildEnv(base || {});
     const out = {};
     for (const k of Object.keys(src)) {
       if (SECRET_ENV_NAME_RE.test(k) || INTERNAL_ENV_NAME_RE.test(k) || EXECUTION_HOOK_ENV_RE.test(k)) continue;
@@ -185,6 +191,10 @@
       } catch (e) {
         return reject(new Error('could not start environment process: ' + ((e && e.message) || e)));
       }
+      // F2 (h2 process supervision): a ledgered child is receipted while it runs so a sidecar crash mid-command
+      // leaves an orphan the next boot's sweep can find; released when the command is over (procledger.trackChild).
+      const receipt = trackChild(opts.ledger || null, child && child.pid, { cmd: opts.ledgerCmd != null ? opts.ledgerCmd : '', kind: 'shell.fg', pinAfterMs: opts.ledgerPinAfterMs, exitStampMs: opts.ledgerExitStampMs });
+      if (child && typeof child.on === 'function') child.on('exit', function () { receipt.exited(); });
 
       if (opts.input != null && child.stdin) {
         try {
@@ -192,6 +202,8 @@
           if (typeof child.stdin.end === 'function') child.stdin.end();
         } catch (e) {
           try { killTree(spawn, child, isWin); } catch (_) {}
+          // the child is being torn down: keep its receipt until it has really closed
+          if (child && typeof child.on === 'function') child.on('close', function () { receipt.done(); });
           return reject(new Error('could not write environment process input: ' + ((e && e.message) || e)));
         }
       }
@@ -229,6 +241,7 @@
         settled = true;
         clearTimeout(timer);
         if (sig) { try { sig.removeEventListener('abort', onAbort); } catch (_) {} }
+        receipt.done();
         resolve({
           exitCode: (typeof code === 'number' && !timedOut && !aborted) ? code : -1,
           out: out,
@@ -245,6 +258,7 @@
           settled = true;
           clearTimeout(timer);
           if (sig) { try { sig.removeEventListener('abort', onAbort); } catch (_) {} }
+          receipt.done();
           reject(new Error('environment process error: ' + ((e && e.message) || e)));
         });
         child.on('close', finish);
@@ -277,6 +291,8 @@
   function makeLocalBackend(deps) {
     const spawn = deps.spawn, fs = deps.fs, P = deps.pathMod, ROOT = deps.root;
     const bg = deps.bg || null;
+    const ledger = (deps.ledger && typeof deps.ledger.record === 'function') ? deps.ledger : null;
+    const redactFn = typeof deps.redact === 'function' ? deps.redact : function (s) { return s; };
     const clock = deps.clock || { now: function () { return 0; } };
     const platform = deps.platform || (WIN ? 'win32' : 'posix');
     const isWin = platform === 'win32';
@@ -342,7 +358,10 @@
           maxBytes: opts.maxBytes,
           signal: opts.signal,
           clock: opts.clock || clock,
-          isWin: isWin
+          isWin: isWin,
+          // F2: the foreground child is receipted for the next boot's orphan sweep while it runs (REDACTED command)
+          ledger: ledger,
+          ledgerCmd: opts.ledgerCmd != null ? String(opts.ledgerCmd) : redactFn(String(opts.cmd || ''))
         });
       },
       startBackground: function (opts) {
@@ -364,6 +383,9 @@
       },
       killBackground: function (agentId, bgId) {
         return bg && typeof bg.kill === 'function' ? bg.kill(safeAgentId(agentId || 'agent'), bgId) : { ok: false, error: 'background processes are not available for the local backend' };
+      },
+      waitBackground: function (agentId, bgId, opts) {
+        return bg && typeof bg.wait === 'function' ? bg.wait(safeAgentId(agentId || 'agent'), bgId, opts) : null;
       },
       killAllBackground: function (agentId) {
         return bg && typeof bg.killAll === 'function' ? bg.killAll(agentId) : 0;
@@ -754,6 +776,8 @@
       writeBackground: function (agentId, bgId, opts) { return deps.bg && deps.bg.write ? deps.bg.write(safeAgentId(agentId || 'agent'), bgId, opts) : { ok: false, error: 'background processes are not available for the docker backend' }; },
       closeBackgroundStdin: function (agentId, bgId) { return deps.bg && deps.bg.closeStdin ? deps.bg.closeStdin(safeAgentId(agentId || 'agent'), bgId) : { ok: false, error: 'background processes are not available for the docker backend' }; },
       killBackground: function (agentId, bgId) { return deps.bg && deps.bg.kill ? deps.bg.kill(safeAgentId(agentId || 'agent'), bgId) : { ok: false, error: 'background processes are not available for the docker backend' }; },
+      // the host-side `docker exec` child is a shellbg record, so its exit is observable the same way
+      waitBackground: function (agentId, bgId, opts) { return deps.bg && deps.bg.wait ? deps.bg.wait(safeAgentId(agentId || 'agent'), bgId, opts) : null; },
       killAllBackground: function (agentId) { return deps.bg && deps.bg.killAll ? deps.bg.killAll(agentId) : 0; },
       spawnStdio: spawnStdio,
       _internals: { dockerCreateArgs: dockerCreateArgs, dockerExecArgs: dockerExecArgs, containerName: containerName, inspectContainer: inspectContainer, posixInside: posixInside, spawnStdio: spawnStdio, active: active, lastUsed: lastUsed }
@@ -1221,6 +1245,8 @@
       writeBackground: backend.writeBackground,
       closeBackgroundStdin: backend.closeBackgroundStdin,
       killBackground: backend.killBackground,
+      // null from a backend without an event-driven wait (ssh): the shell.bg.wait tool then polls statusBackground
+      waitBackground: backend.waitBackground || function () { return null; },
       killAllBackground: backend.killAllBackground,
       createCheckpoint: backend.createCheckpoint,
       listCheckpoints: backend.listCheckpoints,

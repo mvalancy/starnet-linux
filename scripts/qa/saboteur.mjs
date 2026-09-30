@@ -19,7 +19,7 @@ import { materializeSeedWorkspace, bootSeededSidecar, waitUp } from '../lib/seed
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const INDEX = join(ROOT, 'sidecar', 'index.js');
 const LEDGER = join(ROOT, 'scripts', 'qa', 'ledger.mjs');
-const TOKEN_EXEMPT = new Set(['/api/key', '/api/channels/token', '/api/health', '/api/spotify/callback', '/api/connectors/oauth/callback', '/api/channels/events']);
+const TOKEN_EXEMPT = new Set(['/api/key', '/api/channels/token', '/api/health', '/api/spotify/callback', '/api/connectors/oauth/callback']);
 const PAYLOAD_ROUTES = [
   '/api/activity', '/api/autonomy/posture', '/api/cron/preview', '/api/dossier',
   '/api/memory/config', '/api/permissions/grant', '/api/quests/mint',

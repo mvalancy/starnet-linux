@@ -123,7 +123,7 @@ function extractBootToken(html) {
     });
     A.eq(tauriBudget.status, 200, 'Tauri trusted flow can read token-gated GETs');
 
-    const sse = await fetch(B + '/api/channels/events?token=' + encodeURIComponent(browserToken), {
+    const sse = await fetch(B + '/api/channels/events?' + require('./_httpToken.js').sseQuery(browserToken), {
       headers: { Origin: B }
     });
     A.eq(sse.status, 200, 'browser EventSource flow can authenticate with token query');

@@ -288,6 +288,11 @@ const Conveyor = (() => {
       // that reaches ITS OWNER's bay (jt.owners = {dir: [agentIds]}, precompiled from the plan). Filters
       // and splitters only ever decide for UNOWNED work — so the crate's path can never contradict who
       // actually runs the job. Deterministic: fixed LANE_ORDER scan.
+      // (multi-bay, 2026-09-22) a crate addressed to ONE BAY (payload.dockId) steers by the lanes' DOCKS first —
+      // quill's bay C crate must take the lane to bay C even where another lane reaches quill's bay A.
+      if (bx.payload && bx.payload.dockId && !bx.payload.outbound && jt.ownerDocks) {
+        for (const d of lanes) { const own = jt.ownerDocks[d]; if (own && own.indexOf(bx.payload.dockId) >= 0) { if (onAdvance) onAdvance(bx, { kind: jt.kind, tile: { x, y }, lane: d, owner: bx.payload.agentId }); return d; } }
+      }
       if (bx.payload && bx.payload.agentId && !bx.payload.outbound && jt.owners) {
         for (const d of lanes) { const own = jt.owners[d]; if (own && own.indexOf(bx.payload.agentId) >= 0) { if (onAdvance) onAdvance(bx, { kind: jt.kind, tile: { x, y }, lane: d, owner: bx.payload.agentId }); return d; } }
       }
@@ -381,7 +386,8 @@ const Conveyor = (() => {
       return best;
     }
 
-    /* stops (optional 5th arg): { "x,y": agentId } — bound-bay hookup tiles. An INBOUND crate arriving on
+    /* stops (optional 5th arg): { "x,y": agentId | { agentId, dockId } } — bound-bay hookup tiles (the object form
+       names the DOCK — multi-bay agents, 2026-09-22 — so one agent's two bays are two different stops). An INBOUND crate arriving on
        a stop tile is DELIVERED there (the dock consumes the job): an unowned crate stops at the FIRST dock
        it reaches; an addressed crate stops only at ITS OWNER's dock and rides past every other. Outbound
        crates ignore stops entirely (they START at a dock and ship out). This is what makes "the crate ends
@@ -442,10 +448,15 @@ const Conveyor = (() => {
           // payload.fromAgentId names the PRODUCER, so a handoff crate rides past every OTHER ring tile of
           // the bay that made it — physics, not just an emitter convention; the spawn-tile check alone only
           // covered the birth tile of a multi-tile hookup.)
-          const stopOwner = stops && stops[key(bx.x, bx.y)];
-          if (stopOwner && bx.payload && !bx.payload.outbound && bx.spawnTile !== key(bx.x, bx.y) &&
-              bx.payload.fromAgentId !== stopOwner &&
-              (!bx.payload.agentId || bx.payload.agentId === stopOwner)) {
+          // (multi-bay) a stop may name its DOCK: the crate is consumed at stopDock === payload.dockId (when the
+          // crate names one) and never at the dock that PRODUCED it (payload.fromDockId) — the same agent's other
+          // bay is a different dock and does consume a handoff addressed to it.
+          const stop = stops && stops[key(bx.x, bx.y)];
+          const stopOwner = stop && typeof stop === 'object' ? stop.agentId : stop;
+          const stopDock = stop && typeof stop === 'object' ? (stop.dockId || null) : null;
+          const own = bx.payload && (stopDock && bx.payload.fromDockId ? bx.payload.fromDockId === stopDock : bx.payload.fromAgentId === stopOwner);
+          const mine = bx.payload && (stopDock && bx.payload.dockId ? bx.payload.dockId === stopDock : (!bx.payload.agentId || bx.payload.agentId === stopOwner));
+          if (stopOwner && bx.payload && !bx.payload.outbound && bx.spawnTile !== key(bx.x, bx.y) && !own && mine) {
             if (onDeliver && !bx.delivered) { bx.delivered = true; onDeliver(bx, bx.x, bx.y); }
             bx.prog = 1; bx.sink = 1; break;
           }

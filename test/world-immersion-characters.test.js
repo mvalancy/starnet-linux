@@ -48,6 +48,8 @@ class RecordingContext {
   rect(...args) { (this.rects ||= []).push(args); }
   clip() { this.clipCount = (this.clipCount || 0) + 1; }
   beginPath() {}
+  clearRect() { this.draws = []; }
+  setTransform() {}
   ellipse(...args) { this.ellipses.push({ args, alpha: this.globalAlpha, color: this.fillStyle }); }
   fill() {}
   getTransform() { return { a: 2, b: 0, c: 0, d: 2, e: 0, f: 0 }; }
@@ -108,6 +110,10 @@ function draw(sprites, b, time, appearance) {
   const geometry = sprites.drawBody(ctx, b, time, appearance);
   return { ctx, geometry, frame: ctx.draws.at(-1) };
 }
+function drawings(frame) {
+  const inner = frame.image && frame.image.context && frame.image.context.draws;
+  return inner ? inner.map(d => d.image.path + '@' + d.alpha.toFixed(3) + ':' + d.composite).join('|') : frame.image.path;
+}
 function padFor(image) {
   for (let y = image.height - 1; y >= 0; y--) {
     for (let x = 0; x < image.width; x++) {
@@ -121,7 +127,7 @@ const appearance = { light: { color: [96, 168, 240], strength: 0.5, dx: 1, dy: 0
 test('normal desktop roster renders the selected refresh without preview flags, with planted walking feet', async () => {
   const selected = JSON.parse(fs.readFileSync(path.join(frontend, 'assets/skin-study-0914/runtime-motion.json')));
   const { sprites, catalog } = await harness(true);
-  assert.equal(Object.keys(catalog).length, 37);
+  assert.equal(Object.keys(catalog).length, 51);
   for (const skin of selected.skins) {
     assert.equal(catalog[skin.skin].set, skin.renderSet, skin.skin + ' keeps its saved ID');
     await sprites.ensureSkin(skin.skin);
@@ -195,11 +201,12 @@ test('legacy calls and existing state tracks keep their motion, seat padding and
     assert.equal(newBody._pose, oldBody._pose, JSON.stringify(extra) + ' keeps its real track');
   }
   const walker = body({ state: 'walk', odo: 12, faceA: Math.PI / 2 });
-  const start = draw(sprites, walker, 1000, {}).frame;
-  const sameDistance = draw(sprites, walker, 1900, {}).frame;
-  assert.equal(start.image, sameDistance.image, 'a wall-clock tick cannot invent a walking step');
+  // signatures are taken at draw time: an in-between lives on one shared scratch canvas
+  const start = drawings(draw(sprites, walker, 1000, {}).frame);
+  const sameDistance = drawings(draw(sprites, walker, 1900, {}).frame);
+  assert.equal(start, sameDistance, 'a wall-clock tick cannot invent a walking step');
   walker.odo += 6;
-  assert.notEqual(draw(sprites, walker, 1900, {}).frame.image, start.image, 'real traveled distance advances the gait');
+  assert.notEqual(drawings(draw(sprites, walker, 1900, {}).frame), start, 'real traveled distance advances the gait');
   const sitter = draw(sprites, body({ sitting: true, seatLift: 8, skin: 'skeleton', dir: 'east' }), 1000, {});
   const [sx, sy, sw, sh] = sitter.frame.args;
   close(sy, Math.round((70.25 - sh - 3 + padFor(sitter.frame.image) * 0.4 - 8) * 2) / 2,
@@ -220,7 +227,7 @@ test('reduced motion freezes decorative breath/gesture/spill without inventing o
   assert.equal(worker._pose, 'blank.type.north');
   assert.notEqual(work1.frame.image, work2.frame.image, 'working still follows its real typing track');
   assert.deepEqual(Object.keys(worker).filter(k => !Object.hasOwn(body({ working: true, sitting: true, dir: 'north' }), k)).sort(),
-    ['_pose', '_rA', '_rAt', '_rD8', '_rW', '_renderCycleUnits', '_renderFrame', '_renderGroundGap', '_renderSpeechAccent', '_renderStandingHeight', '_renderTravelError', '_speechAt', '_speechEase', '_turnAng'], 'only render telemetry and speech interpolation state are added');
+    ['_pose', '_poseLast', '_rA', '_rAt', '_rD8', '_rW', '_renderCycleUnits', '_renderFrame', '_renderGroundGap', '_renderPoseFade', '_renderSpeechAccent', '_renderStandingHeight', '_renderTravelError', '_renderWalkTween', '_speechAt', '_speechEase', '_turnAng'], 'only render telemetry and pose/speech interpolation state are added');
   const spill1 = draw(sprites, body({ id: 'ULTRON' }), 1000, { reducedMotion: true }).ctx.ellipses;
   const spill2 = draw(sprites, body({ id: 'ULTRON' }), 2200, { reducedMotion: true }).ctx.ellipses;
   assert.deepEqual(spill1, spill2, 'leader spill stops pulsing under reduced motion');
@@ -307,4 +314,53 @@ test('working bodies face their desk and unreachable workers stand on the floor'
     draw(sprites, standing, 1000, {});
     assert.equal(standing._pose, 'blank.rot.' + dir, 'unreachable worker stands facing ' + dir);
   }
+});
+
+test('a POSE change dissolves over ~110ms; a walk-cycle frame advance never does', async () => {
+  const { sprites } = await harness();
+  const b = body({ state: 'walk', dir: 'south', odo: 0, _resolvedTravelHeading: Math.PI / 2 });
+  draw(sprites, b, 1000, {});
+  b.odo = 6;
+  const stride = draw(sprites, b, 1016, {});
+  assert.equal(stride.ctx.draws.length, 1, 'a walk-cycle advance is one body draw, never a pose dissolve');
+  b._resolvedTravelHeading = 0; b.dir = 'east';
+  const turn = draw(sprites, b, 1032, {});
+  assert.notEqual(b._pose, 'blank.walk.south', 'regression setup: the body really changed pose');
+  assert.equal(turn.ctx.draws.length, 2, 'the outgoing pose is drawn beneath the incoming one');
+  assert.equal(turn.ctx.draws[0].alpha, 1, 'the dissolve begins from the full outgoing pose (no pop to half-strength)');
+  assert.equal(turn.ctx.draws[1].alpha, 1, 'the incoming pose is always drawn at full strength');
+  assert.notEqual(turn.ctx.draws[0].image, turn.ctx.draws[1].image, 'the dissolve blends two different drawings');
+  const mid = draw(sprites, b, 1032 + 60, {});
+  assert.ok(mid.ctx.draws.length === 2 && mid.ctx.draws[0].alpha < turn.ctx.draws[0].alpha, 'the outgoing pose keeps fading');
+  assert.equal(draw(sprites, b, 1032 + 130, {}).ctx.draws.length, 1, 'the dissolve ends and releases the old pose');
+  const still = body({ state: 'walk', dir: 'south', odo: 0, _resolvedTravelHeading: Math.PI / 2 });
+  draw(sprites, still, 1000, { reducedMotion: true });
+  still._resolvedTravelHeading = 0; still.dir = 'east';
+  assert.equal(draw(sprites, still, 1016, { reducedMotion: true }).ctx.draws.length, 1, 'reduced motion keeps the hard cut');
+});
+
+test('the walk cycle draws IN-BETWEENS: neighbouring drawings crossfade by the continuous stride phase', async () => {
+  const { sprites } = await harness();
+  const track = manifest.sprites['blank.walk.south'];
+  const b = body({ state: 'walk', dir: 'south', odo: 0, aph: 1, _resolvedTravelHeading: Math.PI / 2 });
+  draw(sprites, b, 1000, {});
+  const stride = b._renderCycleUnits / track.length;
+  const at = (odo, appearance) => { b.odo = odo; return draw(sprites, b, 1016, appearance || {}); };
+  const onKey = at(2 * stride * (1 + 1e-9));           // phase 3.0: the authored drawing, crisp
+  assert.ok(onKey.frame.image.path.endsWith(track[3]), 'on a key phase the authored drawing is drawn as-is');
+  assert.equal(b._renderWalkTween, null);
+  const mid = at(2.5 * stride);                       // phase 3.5: halfway from drawing 3 to drawing 4
+  const inner = mid.frame.image.context.draws;
+  assert.equal(inner.length, 2, 'an in-between composes exactly two drawings');
+  assert.ok(inner[0].image.path.endsWith(track[3]) && inner[1].image.path.endsWith(track[4]), 'only NEIGHBOURING drawings of one cycle blend');
+  assert.ok(Math.abs(inner[0].alpha + inner[1].alpha - 1) < 1e-9 && Math.abs(inner[1].alpha - 0.5) < 1e-6, 'weights follow the phase and sum to one');
+  assert.equal(inner[1].composite, 'lighter', 'premultiplied sum, so the body never turns see-through mid-blend');
+  assert.equal(mid.ctx.draws.length, 1, 'one body draw: no ghost pose layered under it');
+  close(mid.frame.args[0], onKey.frame.args[0], 'an in-between never moves the body');
+  const early = at(2.1 * stride).frame.image.context.draws;
+  assert.ok(early[1].alpha < 0.05, 'eased: an authored drawing holds crisp around its own phase');
+  const still = at(2.5 * stride, { reducedMotion: true });
+  assert.ok(!still.frame.image.context, 'reduced motion keeps the hard cuts');
+  b.state = 'idle'; b.odo = 2.5 * stride;
+  assert.ok(!draw(sprites, b, 1016, {}).frame.image.context, 'standing poses never tween');
 });

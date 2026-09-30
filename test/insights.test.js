@@ -77,4 +77,23 @@ A.eq(u.byModel[0].model, '(unknown)', 'a model-less run folds under (unknown)');
   A.eq(x.overTime.reduce((s, b) => s + b.unmeteredRuns, 0), 1, 'mixed: overTime tracks unmetered runs separately');
 }
 
+// interrupted runs: spend never settled -> excluded from every $ figure and from metered runs, counted as spendUnknownRuns
+{
+  const H2 = 3600000;
+  const rows2 = [
+    { reason: 'done', usd: 0.05, tokens: 100, model: 'm1', agentId: 'a', ts: 1000 },
+    { reason: 'interrupted', usd: 0, tokens: 0, spendUnknown: true, model: 'm1', agentId: 'a', ts: 1000 }
+  ];
+  const y = foldInsights(rows2, { nowMs: 1000 + H2, bucketMs: H2, buckets: 2 });
+  A.eq(y.totalRuns, 2, 'interrupted: still counted as a run');
+  A.eq(y.spendUnknownRuns, 1, 'interrupted: named as a spend-unknown run');
+  A.eq(y.meteredRuns, 1, 'interrupted: not counted as a metered (priced) run');
+  A.ok(Math.abs(y.avgUsdPerRun - 0.05) < 1e-9, 'interrupted: avg USD is not diluted by an unpriced run');
+  A.eq(y.byReason.interrupted, 1, 'interrupted: byReason counts it');
+  const m1 = y.byModel.find(m => m.model === 'm1');
+  A.eq(m1.spendUnknownRuns, 1, 'interrupted: byModel names the spend-unknown run');
+  A.eq(m1.meteredRuns, 1, 'interrupted: byModel metered count excludes it');
+  A.eq(y.byAgent.find(a => a.agentId === 'a').spendUnknownRuns, 1, 'interrupted: byAgent names it');
+}
+
 A.report('insights.test');

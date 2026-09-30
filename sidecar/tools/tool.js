@@ -57,6 +57,11 @@
       capability: def.capability || null,
       impact: def.impact || null,
       requiresConsent: !!def.requiresConsent,
+      // its OWN consent class (permissions.js dangerKey) — a cached "always" on a sibling tool of the same
+      // capability must never pre-approve this one. Dropped here before 2026-09-23, silently disabling it.
+      consentKey: typeof def.consentKey === 'string' && def.consentKey ? def.consentKey : null,
+      // revoked once the run has read untrusted content (taint.js) — for tools that PERSIST text another run obeys
+      taintLocked: def.taintLocked === true,
       timeoutMs: def.timeoutMs || 0,
       preconditions: normalizePreconditions(def.preconditions),
       run: def.run || (async () => { throw new Error('tool "' + def.name + '" has no run()'); })

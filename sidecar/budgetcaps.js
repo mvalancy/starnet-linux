@@ -20,6 +20,16 @@
 
   const KEYS = ['perRun', 'perAgent', 'perDay', 'global'];
   const CAP_MAX = 1e7;   // $10M ceiling — guards a fat-fingered / overflow value, far above any real budget
+  /* SHIPPED DEFAULTS — what a fresh install is governed by before the Commander saves anything and before any
+     env var speaks. Every cap was 0 (ungoverned) until 2026-09-17, when a customer's agent spun 98 overnight
+     iterations re-confirming that files existed and burned ~$98 with nothing between a stuck loop and the card.
+     perDay is now a SOFT rail, not a wall: hitting it ends the run with reason 'budget' scope 'day', the Budget
+     panel shows a one-click RESUME that grants another cap of headroom, and the value is editable (0 = off).
+     Unmetered runs (OAuth / subscription sign-ins) never touch it — there is no $ to govern. Andrew's call,
+     2026-09-17, amending the older "quotas default off" decision for this one runaway-spend case. */
+  const DEFAULT_PER_DAY_USD = 25;
+  const SHIPPED_DEFAULTS = Object.freeze({ perRun: 0, perAgent: 0, perDay: DEFAULT_PER_DAY_USD, global: 0 });
+  function shippedDefaults() { return Object.assign({}, SHIPPED_DEFAULTS); }
   function isNum(v) { return typeof v === 'number' && isFinite(v); }
 
   // a stored override is only honoured if it's a finite number >= 0 (0 = explicit "no cap"). Anything else is junk
@@ -69,5 +79,5 @@
     return { ok: true, overrides: next };
   }
 
-  return { KEYS, CAP_MAX, resolveCaps, validateOverridesPatch, cleanOverrides };
+  return { KEYS, CAP_MAX, DEFAULT_PER_DAY_USD, shippedDefaults, resolveCaps, validateOverridesPatch, cleanOverrides };
 });

@@ -48,11 +48,17 @@
       // not a toggleable family: switching it off would strand every deferred tool behind a tool that no
       // longer exists. It is never itself deferred — the finder cannot be the thing that must be found.
       { capId: 'toolsearch', tool: 'tool.search', scope: 'read', requiresConsent: false, network: false },
-      { capId: 'code', tool: 'code.run', scope: 'read', requiresConsent: false, network: false },
+      // execute + consent: see the SECURITY STOPGAP note in tools/builtin/code.js (vm child is not an isolation boundary)
+      { capId: 'code', tool: 'code.run', scope: 'execute', requiresConsent: true, network: false },
       // HARNESS SELF-KNOWLEDGE: reading the station's own secret-free status is part of being able to
       // operate at all, not a power the Commander should have to unlock with a DISH, CABINET or WORKBENCH.
       // A distinct capId is required because `compute` is the non-callable model gate in resolve.js.
       { capId: 'stationinfo', tool: 'station.inspect', scope: 'read', requiresConsent: false, network: false },
+      // The operator manual's REFERENCE sections (navigation / props / troubleshooting), served on demand so the
+      // interactive prompt carries only their table of contents (sidecar/manual.js). Same self-knowledge class as
+      // station.inspect and the same always-present object, so the prompt's "call manual.read" can never name a
+      // tool the run lacks. A constant text lookup: no IO, no network, no consent.
+      { capId: 'stationinfo', tool: 'manual.read', scope: 'read', requiresConsent: false, network: false },
       // Host-scoped scheduled scratchpad: the computer is present on every runnable station, while the tool
       // itself refuses any run without a host-minted cronJobId. This does not grant general notebook access.
       { capId: 'routinescratch', tool: 'routine.notepad', scope: 'write', requiresConsent: false, network: false },
@@ -213,6 +219,7 @@
       // command, so it carries shell.exec's gate, not shell.bg.status's.
       { capId: 'workbench', tool: 'shell.bg.write', scope: 'execute', requiresConsent: true, network: true },
       { capId: 'workbench', tool: 'shell.bg.kill', scope: 'write', requiresConsent: false, network: false },     // H2.2: stop a background process you started
+      { capId: 'workbench', tool: 'shell.bg.wait', scope: 'read', requiresConsent: false, network: false },     // h2: block (bounded) until your background process exits
       // A real PTY/ConPTY rail for interactive programs. Start + input carry the same execution/consent posture
       // as shell.exec; observation, resize, Ctrl-C and stop remain agent-owned control operations.
       { capId: 'workbench', tool: 'terminal.start', scope: 'execute', requiresConsent: true, network: true },
@@ -286,7 +293,14 @@
       // image_generate is: it writes into the workspace. It rides the station's existing TTS ladder (the keyed
       // neural chain, then the free keyless Edge floor), so it needs no studio-specific credential — but it
       // does reach the network on the keyed legs. (see tools/builtin/voice.js)
-      { capId: 'studio', tool: 'voice_generate', scope: 'write', requiresConsent: true, network: true }
+      { capId: 'studio', tool: 'voice_generate', scope: 'write', requiresConsent: true, network: true },
+      // DAVINCI RESOLVE (the edit bay, tools/builtin/resolve.js — a native port of the Hermes plugin). The timeline
+      // FILE writes an FCPXML into the workspace (consent, like every studio write) and works with free Resolve.
+      // resolve_status only reads. resolve_control drives a running Resolve Studio through its scripting API —
+      // imports, timelines, markers, renders — so it is execute + consent. All local: no network.
+      { capId: 'studio', tool: 'resolve_timeline_file', scope: 'write', requiresConsent: true, network: false },
+      { capId: 'studio', tool: 'resolve_status', scope: 'read', requiresConsent: false, network: false },
+      { capId: 'studio', tool: 'resolve_control', scope: 'execute', requiresConsent: true, network: false }
     ],
     // JUKEBOX (Spotify): querying playback/library is consent-free (read); CONTROLLING playback is an outward
     // action on the user's account/device, so it is execute + consent-gated. The OAuth session (PKCE, no secret)

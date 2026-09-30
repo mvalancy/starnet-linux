@@ -231,17 +231,9 @@ a:hover{ color:var(--amber); }
 .bezel img{ width:100%; height:auto; display:block; image-rendering:auto; }
 .bezel canvas{ width:100%; height:auto; display:block; }
 .bezel figcaption{ padding:9px 4px 2px; font-size:14px; letter-spacing:1px; color:rgba(236,224,207,.35); }
-/* the live preview IS the app (website/app, a verbatim frontend copy booted from a seeded
-   save) — an iframe at the app's fixed 1380x900 layout, clipped to the station-camera panel
-   and scaled to the column. live-preview.js measures the current panel rectangle. */
-.bezel.live{ border:0; background:transparent; padding:0; box-shadow:none; }
-.app-clip{ position:relative; overflow:hidden; width:100%; aspect-ratio:var(--app-aspect,666 / 744); }
-.app-clip iframe{
-  position:absolute; left:0; top:0; width:1380px; height:900px; border:0;
-  pointer-events:none;                       /* a preview, not a control surface */
-  transform-origin:0 0;
-  transform:scale(var(--appk,1)) translate(var(--appx,-283px),var(--appy,-88px));
-}
+/* every page's nav rides above the CRT glass (z 60-62) and above the homepage's lifted #station (63,
+   home.css). Doubled class so it outranks the later .topbar z-index rules below. Deliberately SHARED. */
+.topbar.topbar{ z-index:70; }
 
 /* feature cards */
 .cards{ display:grid; grid-template-columns:repeat(3,1fr); gap:18px; }

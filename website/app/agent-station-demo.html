@@ -47,6 +47,7 @@
 <link rel="stylesheet" href="css/readability.css"><!-- Shared readable text roles at STANDARD; cabinet and CRT geometry are unchanged. -->
 <link rel="stylesheet" href="css/beat-cards.css"><!-- Transient work cards share glass materials and semantic text sizes. -->
 <link rel="stylesheet" href="css/overseer-setup.css">
+<link rel="stylesheet" href="css/linewatch.css"><!-- LINE WATCH: the crate-inspect card on the live floor -->
 
 <link rel="stylesheet" href="css/titlebar.css"><!-- custom window chrome (Windows desktop shell): themed titlebar + MIN/MAX/CLOSE; inert unless body.sn-chrome (titlebar.js) -->
 
@@ -782,6 +783,7 @@
 <script src="js/sprite-load-plan.js"></script>
 <script src="agent-demo/sprites.js"></script>
 <script src="app/harness.js"></script>
+<script src="app/apiticket.js"></script><!-- scoped short-lived URL tickets: links/tabs/SSE/beacon never carry the master API token (sidecar/apitickets.js verifies) -->
 <script src="app/queryspine.js"></script><!-- keyed Harness.api GET state: in-flight dedupe, last-good truth, TTL + subscriber-owned polling; MUST load before cron consumers -->
 <script src="app/updatecore.js"></script>
 <script src="app/updates.js"></script>
@@ -790,6 +792,8 @@
 <script src="app/titlebar.js"></script><!-- custom window chrome: renders the themed titlebar ONLY when the desktop shell sets __STARNET_CUSTOM_CHROME__ (Windows, decorations off) -->
 <script src="app/ctxgauge.js"></script>
 <script src="app/floorstats.js"></script>
+<script src="app/linewatch.js"></script><!-- LINE WATCH (pure): bay status lamps, the crate card resolver, per-line plate text -->
+<script src="app/cratecard.js"></script><!-- LINE WATCH: the crate-inspect station card (DOM) -->
 <script src="app/slaglog.js"></script>
 <script src="app/xp.js"></script>
 <script src="app/returns.js"></script><!-- pure return-ritual engine: while-away digest rows + the pending OUTBOX-crate ledger -->

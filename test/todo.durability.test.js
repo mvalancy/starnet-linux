@@ -45,6 +45,8 @@ function memFs() {
   A.eq(memoryFileFor(ROOT, path, 'todo:hero'), path.join(ROOT, 'hero.todo.json'), 'todo keys map to todo sibling files');
   A.eq(memoryFileFor(ROOT, path, 'declined:hero'), path.join(ROOT, 'hero.declined.json'), 'declined keys map to declined sibling files');
   A.eq(memoryFileFor(ROOT, path, 'minted:hero'), path.join(ROOT, 'hero.minted.json'), 'minted keys map to minted sibling files (W6 mint ledger)');
+  A.eq(memoryFileFor(ROOT, path, 'embed:hero'), path.join(ROOT, 'hero.embed.json'), 'embed keys map to embed sibling files (hybrid recall vectors)');
+  A.throws(() => memoryFileFor(ROOT, path, 'embed:../bad'), 'invalid embed agent ids are rejected');
   A.throws(() => memoryFileFor(ROOT, path, 'todo:../bad'), 'invalid todo agent ids are rejected');
   A.throws(() => memoryFileFor(ROOT, path, 'declined:../bad'), 'invalid declined agent ids are rejected');
   A.throws(() => memoryFileFor(ROOT, path, 'minted:../bad'), 'invalid minted agent ids are rejected');

@@ -6,7 +6,8 @@ const vm = require('node:vm');
 const A = require('./_assert.js');
 module.exports = function resumeRatingFixture(saved) {
   const source = fs.readFileSync(path.join(__dirname, '../frontend/app/app.js'), 'utf8');
-  const body = A.fnBody(source, 'function resumeInto(');
+  // resumeInto calls savedStationProv since the #24 station-default fix; lift it too (as genesis-wake-credential does)
+  const body = A.fnBody(source, 'function savedStationProv(') + '\n' + A.fnBody(source, 'function resumeInto(');
   const agents = new Map();
   const noop = () => {};
   const context = {

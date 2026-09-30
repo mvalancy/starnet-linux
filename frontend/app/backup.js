@@ -172,6 +172,17 @@ const Backup = (() => {
     catch (_) { return { ok: false, error: 'file is not valid JSON' }; }
     const res = applyBundle(doc);
     if (res.ok) {
+      // A portable backup is an explicit restore, unlike an ordinary page load.
+      // Restore its autonomy through the durable writer before claiming success.
+      const posture = doc.store && (doc.store['starnet.autonomy.v1'] || doc.store['skynet.autonomy.v1']);
+      if (posture && typeof AutonomyStore !== 'undefined' && AutonomyStore.importState) {
+        try {
+          const result = await AutonomyStore.importState(JSON.parse(posture));
+          if (!result.ok) return { ok: false, error: 'Backup partly restored; autonomy was not confirmed. ' + (result.error || 'Try again when the station is connected.') };
+        } catch (_) { return { ok: false, error: 'Backup partly restored; its autonomy setting could not be restored.' }; }
+      }
+    }
+    if (res.ok) {
       // re-stamp the imported save to NOW and write it through to the durable sidecar mirror. The bundle carries
       // the export-time updatedAt; without this, a boot-reconcile on a machine whose sidecar holds a NEWER save
       // would silently revert the just-imported agent. Stamping now() makes the import win the anti-clobber guard.

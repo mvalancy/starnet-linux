@@ -119,6 +119,8 @@ async function lspAdapter() {
   try {
     const source = path.join(workspace, 'main.fake');
     writeFileSync(source, 'OLD\nclean\n', 'utf8');
+    // fs.edit requires the file to have been observed this session (read-before-edit); read it the way a model would.
+    await tools.readTool.run({ path: 'main.fake' }, { agentId: 'a1', runId: 'eval' });
     const result = await tools.editTool.run({ path: 'main.fake', find: 'clean', replace: 'BROKEN' }, { agentId: 'a1', runId: 'eval', emit: (name, data) => emitted.push({ name, data }) });
     const bytes = readFileSync(source, 'utf8');
     const verified = emitted.find(row => row.name === 'verify.result');

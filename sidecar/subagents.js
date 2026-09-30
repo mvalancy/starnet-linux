@@ -20,11 +20,35 @@
   const writeFileDurable = typeof writeFileDurableInjected === 'function' ? writeFileDurableInjected
     : function (deps, file, data) { const f = deps.fs; const tmp = file + '.' + (typeof process !== 'undefined' ? process.pid : 'p') + '.tmp'; f.writeFileSync(tmp, data); f.renameSync(tmp, file); };
 
+  // failopen.note — the tagged SYNC swallow: a fail-open catch must never be invisible.
+  const { note: failNote } = (typeof require === 'function') ? require('./failopen.js') : { note: function (tag, e) { console.warn('[failopen] ' + tag + ':', (e && e.message) || e); } };
+
   const ID_RE = /^[A-Za-z0-9_-]{1,80}$/;
   // Sets, not object literals: `({a:1})['constructor']` is truthy, so an object-literal allowlist
   // silently admits every Object.prototype key — and these keys come off persisted/model-supplied data.
   const TERMINAL = new Set(['done', 'error', 'refused', 'interrupted', 'stale']);
   const WATCH_EVENTS = new Set(['agent.run.start', 'agent.run.end', 'agent.run.error', 'agent.cost', 'checkpoint.created', 'verify.result', 'shell.exec']);
+  /* LIVENESS (Step 2 F3, Hermes audit 2026-09-22). A background worker has no wall clock by design (outliving the
+     tool call is the point, and iteration/$ caps default off — a locked decision), so a HUNG worker used to stay
+     `running` forever: no result, no failure, nothing for the lead or the overseer hand-back to act on. The fix is
+     a no-PROGRESS check, never a duration cap (Hermes parity: heavy work must never be killed for taking long):
+     any of these events from the worker's own runs proves it is alive — streamed tokens, a tool call or result,
+     a cost booking, a compaction, a fallback. Quiet for STALL_MS (450s) between tool calls, or IN_TOOL_STALL_MS
+     (1200s) while a tool call is still in flight (a long build/test is legitimately silent), and the host's
+     sweep (checkStalls) aborts it and marks it `stale` with an honest reason and a finalization receipt. */
+  /* A worker WAITING ON ITS MODEL is alive too (2026-09-23): provider.retry (a ladder rung announced before its
+     backoff) and agent.waiting (the loop's heartbeat while a model call shows nothing yet — a slow first byte, a
+     silent reasoning stream, a retry backoff) count as progress, so a deep-reasoning worker is no longer staled at
+     450s for thinking. The model call itself stays bounded by the provider idle watchdog and the ladder; and a
+     heartbeat whose wait has already outlasted the in-tool window (a stream trickling keep-alive bytes with no
+     content) stops counting, so a wedged call can still be caught (see noteProgress). */
+  const PROGRESS_EVENTS = new Set(['agent.run.start', 'agent.token', 'agent.tool_call', 'agent.tool_result', 'agent.cost',
+    'cost.estimate', 'agent.compact', 'provider.fallback', 'tool.args.repaired', 'iteration.refunded', 'checkpoint.created',
+    'verify.result', 'shell.exec', 'provider.retry', 'agent.waiting']);
+  const DEFAULT_STALL_MS = 450000;
+  const DEFAULT_IN_TOOL_STALL_MS = 1200000;
+  // An abort REASON the worker's runner can read back (signal.reason.code) to report WHY it stopped.
+  function stopReason(code, message) { const e = new Error(message); e.name = 'AbortError'; e.code = code; return e; }
 
   function safeId(id, label) {
     id = String(id || '');
@@ -48,6 +72,10 @@
     // Test-only crash seam: false means the process stopped after the receipt was durable and before publish.
     const afterFinalizationCommitted = typeof deps.afterFinalizationCommitted === 'function' ? deps.afterFinalizationCommitted : null;
     const keep = deps.keep || 200;
+    // Liveness thresholds (see PROGRESS_EVENTS). 0 disables the sweep; the host passes its env knobs.
+    const knobMs = (v, d) => { const n = Number(v); return (v != null && Number.isFinite(n) && n >= 0) ? Math.floor(n) : d; };
+    const stallMs = knobMs(deps.stallMs, DEFAULT_STALL_MS);
+    const inToolStallMs = Math.max(stallMs, knobMs(deps.inToolStallMs, DEFAULT_IN_TOOL_STALL_MS));
     let seq = 0;
     const newId = typeof deps.newId === 'function' ? deps.newId : function () { return 'sub_' + (++seq); };
     if (!fs || !P || !file) throw new Error('subagents.js requires { fs, pathMod, file }');
@@ -96,11 +124,15 @@
       return {
         id: r.id, leadId: r.leadId, agentId: r.agentId, runId: r.runId, status: r.status, destination: r.destination || '',
         prompt: r.prompt, context: r.context || '', result: r.result || '', reason: r.reason || '', usd: r.usd || 0,
+        parentRunId: r.parentRunId || '', cancelledBy: r.cancelledBy || '', stalledAfterMs: r.stalledAfterMs || 0,
         projectRoot: r.projectRoot || '', workdir: r.workdir || '',
         parentStreamId: r.parentStreamId || '', streamId: r.streamId || '',
         generation: Math.max(1, Math.floor(Number(r.generation) || 1)),
         resultSchema: r.resultSchema || null, structuredResult: r.structuredResult == null ? null : r.structuredResult,
         validation: r.validation || null, repairRunId: r.repairRunId || '',
+        // the worker run's host-proven untrusted-content taint ('' = clean). team.subagents relays it with the
+        // result text so the polling lead latches it too (sec-taint 09-25)
+        taintedBy: r.taintedBy || '',
         artifacts: Array.isArray(r.artifacts) ? r.artifacts.slice(-40) : [],
         steerHistory: Array.isArray(r.steerHistory) ? r.steerHistory.slice(-40) : [],
         attempts: r.attempts || 0, startedAt: r.startedAt || 0, updatedAt: r.updatedAt || 0,
@@ -205,9 +237,15 @@
         workdir: String(meta.workdir != null ? meta.workdir : ((old && old.workdir) || '')).slice(0, 4096),
         parentStreamId: String(meta.parentStreamId != null ? meta.parentStreamId : ((old && old.parentStreamId) || '')),
         streamId: String(meta.streamId != null ? meta.streamId : ((old && old.streamId) || '')),
+        // The run that started THIS generation (a lead's team.dispatch/team.spawn, or the run that called
+        // team.resume). A cancelled parent run cascades to it (cancelChildren); '' = no parent run to follow.
+        parentRunId: String(meta.parentRunId || '').slice(0, 120),
+        cancelledBy: '',
+        stalledAfterMs: 0,
         status: 'running',
         reason: '',
         result: old && old.result ? old.result : '',
+        taintedBy: old && old.result && old.taintedBy ? old.taintedBy : '',   // the kept result keeps its provenance
         usd: 0,
         events: old && Array.isArray(old.events) ? old.events.slice(-80) : [],
         attempts: (meta.attempts || 0) + 1,
@@ -238,8 +276,11 @@
       if (typeof runner !== 'function') throw new Error('subagent runner required');
       const rec = upsertStart(meta || {});
       const ac = new AbortController();
-      controllers.set(rec.id, { ac: ac, generation: rec.generation });
+      // lastProgressAt/openTools are in-memory liveness state for THIS generation only (checkStalls): a restart
+      // already stales every running record in load(), so nothing here needs to be durable.
+      controllers.set(rec.id, { ac: ac, generation: rec.generation, lastProgressAt: now(), openTools: new Set() });
       const runEmit = function (name, payload) {
+        noteProgress(rec.id, rec.generation, name, payload);
         appendEvent(rec.id, name, payload);
         try { emit(name, payload); } catch (_) {}
       };
@@ -275,6 +316,9 @@
         // the replacement's controller or overwrite that newer generation's durable state.
         if (cur && cur.generation !== rec.generation) return;
         if (cur && cur.status === 'interrupted') return;
+        // The liveness sweep already settled this generation as stale (with its own receipt); the aborted run's
+        // late 'cancelled' result must not rewrite that verdict into a success or a generic failure.
+        if (cur && cur.status === 'stale' && cur.stalledAfterMs > 0) return;
         const status = !result ? 'refused' : (result.status || (result.reason === 'done' ? 'done' : 'done'));
         const fields = {
           status: status,
@@ -284,6 +328,7 @@
           structuredResult: result && result.structuredResult != null ? clone(result.structuredResult) : null,
           validation: result && result.validation ? clone(result.validation) : null,
           repairRunId: (result && result.repairRunId) || '',
+          taintedBy: result && typeof result.taintedBy === 'string' ? result.taintedBy.slice(0, 200) : '',
           artifacts: result && Array.isArray(result.artifacts) ? result.artifacts.slice(-40) : ((cur && cur.artifacts) || []),
           completedAt: now(),
           canResume: status !== 'done'
@@ -299,6 +344,7 @@
         const cur = get(rec.id);
         if (cur && cur.generation !== rec.generation) return;
         if (cur && cur.status === 'interrupted') return;
+        if (cur && cur.status === 'stale' && cur.stalledAfterMs > 0) return;
         const msg = 'worker run failed: ' + ((e && e.message) || e);
         const fields = { status: 'error', reason: 'error', result: msg, usd: 0, completedAt: now(), canResume: true,
           finalization: { id: rec.runId + ':final', state: 'pending', destination: destinationOf(rec), result: msg, usd: 0, committedAt: now() } };
@@ -382,20 +428,109 @@
       return n;
     }
 
-    function resume(id, runner) {
+    // Liveness bookkeeping for one generation's events (see PROGRESS_EVENTS). A late event from a superseded
+    // generation never refreshes the replacement's clock.
+    function noteProgress(id, generation, name, payload) {
+      const control = controllers.get(id);
+      if (!control || control.generation !== generation || !PROGRESS_EVENTS.has(name)) return;
+      // one model call silent for longer than the longest legitimate tool silence is wedged, not slow
+      if (name === 'agent.waiting' && payload && Number(payload.sinceMs) > inToolStallMs) return;
+      control.lastProgressAt = now();
+      const callId = payload && payload.callId != null ? String(payload.callId) : '';
+      if (name === 'agent.tool_call' && callId) control.openTools.add(callId);
+      else if (name === 'agent.tool_result' && callId) control.openTools.delete(callId);
+    }
+
+    /* STOP REACHES BACKGROUND WORKERS (Step 2 F2, Hermes audit 2026-09-22). Each worker owns its own
+       AbortController, deliberately NOT chained to its lead's signal: a background worker exists to OUTLIVE the
+       tool call and the lead's normal end. But a lead run that was CANCELLED (Stop in COMMS, /stop in a channel,
+       a superseding message, a disconnect, a reclaimed hung cron beat — any abort of the run's signal) used to
+       leave every worker it had started running on, spending, with nobody left to read the result (audit probe
+       D3: lead cancelled, worker still `running`). The host (index.js cascadeCancelToWorkers) calls this when a run's signal
+       aborts WHILE the run is live; a run that ends normally detaches first and never cascades.
+       There is no "detach" option on team.dispatch/team.spawn, and none is invented here: a worker follows the
+       run that started its current generation (parentRunId). A Commander-driven resume has no parent run and so
+       is never cascaded; interrupt/E-STOP still reach every worker as before.
+       Honest state: `interrupted` + cancelledBy 'parent' + a reason naming the parent run, canResume true (the
+       Commander can restart it), and the descendants of each cancelled worker are cancelled the same way. */
+    function cancelChildren(parentRunId, why, depth) {
+      const pid = String(parentRunId || '');
+      const d = Math.max(0, Math.floor(Number(depth) || 0));
+      if (!pid || d > 8) return 0;
+      const because = String(why || ('its parent run ' + pid + ' was cancelled')).slice(0, 200);
+      let n = 0;
+      for (const r of records.slice()) {
+        if (!r || r.parentRunId !== pid) continue;
+        const control = controllers.get(r.id);
+        if (r.status !== 'running' && !control) continue;
+        // non-strict patch: a failed save is logged by save() and the in-memory verdict still stands (a restart
+        // would stale a `running` row anyway — never resurrect it as live).
+        const next = patch(r.id, { status: 'interrupted', reason: 'cancelled: ' + because, cancelledBy: 'parent', completedAt: now(), canResume: true });
+        if (control && control.ac) {
+          controllers.delete(r.id);
+          try { control.ac.abort(stopReason('parent_cancelled', 'cancelled: ' + because)); } catch (e) { failNote('subagents.cancelChildren.abort', e); }
+        }
+        publishTask(next || r, 'failed');
+        n++;
+        n += cancelChildren(r.runId, 'its parent worker ' + r.id + ' was cancelled', d + 1);
+      }
+      return n;
+    }
+
+    /* The liveness sweep (see PROGRESS_EVENTS). The host calls it on a timer; tests call it after advancing the
+       injected clock. Marks the record stale FIRST (durable, with a finalization receipt so the lead's
+       team.subagents, the task feed, the subagent_stop hook and the overseer hand-back all see it), then aborts
+       the run and cascades to anything the stalled worker started. Returns the stalled records' views. */
+    function checkStalls() {
+      if (!(stallMs > 0)) return [];
+      const t = now();
+      const out = [];
+      for (const entry of Array.from(controllers.entries())) {
+        const id = entry[0], control = entry[1];
+        const i = findIndex(id);
+        const r = i >= 0 ? records[i] : null;
+        if (!r || r.status !== 'running' || r.generation !== control.generation) continue;
+        const inTool = !!(control.openTools && control.openTools.size);
+        const limit = inTool ? inToolStallMs : stallMs;
+        const quiet = Math.max(0, t - (Number(control.lastProgressAt) || 0));
+        if (quiet < limit) continue;
+        const secs = Math.round(quiet / 1000);
+        const reason = 'stalled: no progress for ' + secs + 's' + (inTool ? ' while a tool call was still running' : '')
+          + ' — the liveness check stopped this worker (threshold ' + Math.round(limit / 1000) + 's)';
+        const result = '[STOPPED — this background worker produced no tokens, tool activity or cost for ' + secs + 's'
+          + (inTool ? ' while one of its tool calls was still running' : '')
+          + ', so the host stopped it. Its work is INCOMPLETE and was not accepted. Inspect its event tail; resume it with team.resume if the work is still needed, or report the stall — do not present it as done.]';
+        const fields = { status: 'stale', reason: reason, result: result, stalledAfterMs: quiet, completedAt: t, canResume: true,
+          finalization: { id: r.runId + ':final', state: 'pending', destination: destinationOf(r), result: result, usd: r.usd || 0, committedAt: t } };
+        let done = null;
+        try { done = patch(id, fields, true); }
+        catch (e) { failNote('subagents.checkStalls.patch', e); continue; }   // not durable yet: leave it running, the next sweep retries
+        controllers.delete(id);
+        try { control.ac.abort(stopReason('worker_stalled', reason)); } catch (e) { failNote('subagents.checkStalls.abort', e); }
+        try { publishFinalization(done); } catch (e) { failNote('subagents.checkStalls.publish', e); }   // the pending receipt is replayed at restart
+        cancelChildren(r.runId, 'its parent worker ' + id + ' stalled');
+        out.push(view(records[findIndex(id)] || done));
+      }
+      return out;
+    }
+
+    function resume(id, runner, meta) {
       id = safeId(id, 'subagent id');
       const rec = get(id);
       if (!rec) return { ok: false, error: 'no such subagent' };
       if (controllers.get(id)) return { ok: false, error: 'subagent is already running' };
       if (rec.status === 'done') return { ok: false, error: 'subagent already completed' };
-      const started = start(Object.assign({}, rec, { id: rec.id, runId: newId(), attempts: rec.attempts || 0, startedAt: rec.startedAt || now() }), runner);
+      // The new generation follows the run that resumed it (meta.parentRunId), never the run that started the old one.
+      const parentRunId = meta && meta.parentRunId ? String(meta.parentRunId) : '';
+      const started = start(Object.assign({}, rec, { id: rec.id, runId: newId(), attempts: rec.attempts || 0, startedAt: rec.startedAt || now(), parentRunId: parentRunId }), runner);
       return { ok: true, record: started };
     }
 
     load();
     reconcileFinalizations();
     return { list: list, get: get, activeRuns: activeRuns, start: start, steer: steer, interrupt: interrupt, interruptAll: interruptAll, resume: resume,
-      reconcileFinalizations: reconcileFinalizations,
+      reconcileFinalizations: reconcileFinalizations, cancelChildren: cancelChildren, checkStalls: checkStalls,
+      stallPolicy: function () { return { stallMs: stallMs, inToolStallMs: inToolStallMs }; },
       _internals: { records: function () { return records; }, controllers: controllers, load: load, save: save, appendEvent: appendEvent, publishFinalization: publishFinalization, drainSteer: drainSteer } };
   }
 

@@ -177,7 +177,7 @@ async function readNdjson(res) {
     const job = (await create.json()).job;
     A.ok(job && job.id, 'routine id returned');
 
-    sse = await startSseCollector(B + '/api/channels/events?token=' + encodeURIComponent(token), async event => {
+    sse = await startSseCollector(B + '/api/channels/events?' + require('./_httpToken.js').sseQuery(token), async event => {
       if (event.name !== 'station.command') return;
       const p = event.payload;
       await fetch(B + '/api/station/ack', { method: 'POST', headers,

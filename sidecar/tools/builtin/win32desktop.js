@@ -6,7 +6,8 @@
    command fragment. */
 'use strict';
 
-const CP = require('node:child_process');
+const CP = require('../../child-env.js').guardChildProcess(require('node:child_process'));
+const { stationChildEnv } = require('../../child-env.js');
 
 const POWERSHELL = String.raw`
 $ErrorActionPreference = 'Stop'
@@ -96,10 +97,12 @@ function makeWin32DesktopDriver(opts) {
   const platform = opts.platform || process.platform;
   if (platform !== 'win32') return null;
   const execFile = opts.execFile || CP.execFile;
-  const envBase = opts.env || process.env;
+  // no station secrets in the PowerShell helper's env (child-env.js); built per call so it tracks live keys
+  const baseEnv = () => opts.env || stationChildEnv(process.env);
   const timeoutMs = Number(opts.timeoutMs) || 20000;
   function invoke(payload) {
     return new Promise((resolve, reject) => {
+      const envBase = baseEnv();
       const env = Object.assign({}, envBase, { STARNET_REMOTE_DESKTOP_REQUEST: JSON.stringify(payload) });
       execFile(powershellPath(envBase), ['-NoProfile', '-NonInteractive', '-Command', POWERSHELL], {
         windowsHide: true, timeout: timeoutMs, maxBuffer: 40 * 1024 * 1024, env

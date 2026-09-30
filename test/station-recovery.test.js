@@ -50,6 +50,10 @@ function seedCompleteStation() {
   write('grok/tokens.json', { access_token: 'GROK_ACCESS_SECRET', refresh_token: 'GROK_REFRESH_SECRET' });
   write('kimi/tokens.json', { access_token: 'KIMI_ACCESS_SECRET', refresh_token: 'KIMI_REFRESH_SECRET' });
   write('.browser-profile/Cookies', 'COOKIE_SECRET');
+  // quarantined / derivative copies of credential stores (index.js quarantineCorrupt names them <file>.corrupt-<pid>-<seq>)
+  write('channels/secrets.json.corrupt-4242-1', { telegram: { token: 'QUARANTINED_TELEGRAM_SECRET' } });
+  write('connectors/servicekeys.json.corrupt-99-3', { keys: [{ key: 'QUARANTINED_SERVICE_SECRET' }] });
+  write('connectors/state.json.old', { oauth: { byId: { x: { refreshToken: 'STRAY_COPY_SECRET' } } } });
   write('proc-ledger.json', { procs: [{ pid: 1 }] });
   write('.recovery-mutation.json', { lastCompletedMutation: 100 });
 }
@@ -75,6 +79,13 @@ A.eq(v1.recoveryPoint.continuousRpoCompletedMutations, null, 'bundle does not in
 const bundleText = JSON.stringify(v1);
 for (const secret of ['URL_SECRET', 'MCP_SECRET', 'ACCESS_SECRET', 'REFRESH_SECRET', 'CLIENT_SECRET', 'TELEGRAM_SECRET', 'PROVIDER_SECRET', 'SERVICE_SECRET', 'SPOTIFY_SECRET', 'CODEX_SECRET', 'GROK_ACCESS_SECRET', 'GROK_REFRESH_SECRET', 'KIMI_ACCESS_SECRET', 'KIMI_REFRESH_SECRET', 'COOKIE_SECRET', 'BROWSER_SECRET']) {
   A.ok(bundleText.indexOf(secret) < 0, 'bundle excludes secret: ' + secret);
+}
+{
+  // security audit 2026-09-25: file payloads are base64, so check the DECODED bytes, not just the JSON envelope.
+  const decoded = v1.files.map(x => x.path + '\n' + Buffer.from(String(x.data || ''), 'base64').toString('utf8')).join('\n');
+  for (const secret of ['QUARANTINED_TELEGRAM_SECRET', 'QUARANTINED_SERVICE_SECRET', 'STRAY_COPY_SECRET', 'TELEGRAM_SECRET', 'SERVICE_SECRET', 'REFRESH_SECRET'])
+    A.ok(decoded.indexOf(secret) < 0, 'decoded bundle payloads exclude: ' + secret);
+  A.ok(!v1.files.some(x => /\.corrupt-|state\.json\.old/.test(x.path)), 'quarantined/derivative credential copies are not captured at all');
 }
 A.ok(v1.report.reauthentication.some(x => x.kind === 'connector' && x.id === 'notion'), 'connector reference survives with OAuth reauthentication receipt');
 A.ok(v1.report.reauthentication.some(x => x.kind === 'channel' && x.id === 'telegram'), 'channel reference survives with token reauthentication receipt');

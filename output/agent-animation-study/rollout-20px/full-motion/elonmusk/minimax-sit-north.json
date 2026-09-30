@@ -1,0 +1,10 @@
+{
+  "id": "elonmusk",
+  "track": "sit",
+  "dir": "north",
+  "job": "bf345059-8013-42ef-a981-bd19dc9adf2d",
+  "result": "frames: 5\nhttps://api.pixellab.ai/mcp/images/bf345059-8013-42ef-a981-bd19dc9adf2d/download?index=0",
+  "packed": true,
+  "lastRaw": "output/agent-animation-study/rollout-20px/full-motion/elonmusk/minimax/sit-north/bf345059-8013-42ef-a981-bd19dc9adf2d/4.png",
+  "frameCount": 5
+}

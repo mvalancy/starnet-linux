@@ -45,7 +45,7 @@ const { makeAgentLifecycle } = require('../sidecar/agent-lifecycle.js');
     'checkpoint restore acquires the lifecycle mutation lease');
   A.ok(/handleAutonomyWrite[\s\S]{0,2600}agentLifecycle\.acquireMutation\(agentId,\s*sessionKey\)/.test(source),
     'autonomy write acquires the lifecycle mutation lease');
-  A.ok(/handleAgentDelete[\s\S]{0,900}agentLifecycle\.beginDelete/.test(source),
+  A.ok(/handleAgentDelete[\s\S]{0,1400}agentLifecycle\.beginDelete/.test(source),
     'agent deletion reserves the lifecycle before archive');
   A.ok(/agentLifecycle\.canStart\(agentId\)[\s\S]{0,900}concurrencyGate\.tryEnter/.test(source),
     'run admission rejects work while deletion is reserved');

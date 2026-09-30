@@ -55,6 +55,7 @@
       allowedChats: o.allowedChats,
       ownerUserId: o.ownerUserId,
       onOwnerClaim: o.onOwnerClaim,
+      ownerAdmission: o.ownerAdmission,   // one-time pairing code (index.js channelOwnerAdmission)
       onInbound: o.onInbound,
       onCallback: o.onCallback,
       onStatus: o.onStatus,

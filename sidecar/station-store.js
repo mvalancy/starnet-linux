@@ -43,7 +43,8 @@ function makeStationStore(o) {
   function hasStation() { return !!station; }
   function getStation() { return doc; }
   function getRoutingPlan() { return routingPlan; }
-  function bayObjects(agentId) { return station ? station.bayObjects(agentId) : null; }
+  // (multi-bay) dockId = the bay the run is at; the station model resolves that bay's room (or the agent's desk room)
+  function bayObjects(agentId, dockId) { return station ? station.bayObjects(agentId, dockId) : null; }
 
   return { validateStationDoc, setStation, setSaveDoc, clearStation, hasStation, getStation, getRoutingPlan, bayObjects };
 }

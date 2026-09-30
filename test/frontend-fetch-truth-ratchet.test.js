@@ -26,7 +26,8 @@ const THEN_DISCARD = /\.then\(\s*\(?\s*r\s*\)?\s*=>\s*r\.json\(\)\s*\)/g;
 /* Audited baseline (forward-slash paths relative to frontend/). Every file not listed must be CLEAN. */
 const BASELINE = {
   'app/windows/connectors.js': 3, // refresh/connect POSTs: {} falls into the error/else branch (fail-closed); publisher Google registration removed the customer oauth-client POST
-  'app/build.js': 1,              // cron preview only; creation keeps HTTP status and confirms the saved job through a fresh list
+  // app/build.js ratcheted 1 -> 0 (2026-09-22): the INBOX card's cron preview moved into the docked Workflow panel
+  // (app/workflowpanel.js), whose one api() helper keeps the HTTP status on every answer.
 };
 
 function walk(dir, out) {

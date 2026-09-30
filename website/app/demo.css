@@ -1,15 +1,10 @@
-/* demo.css — WEBSITE EMBED ONLY. The landing iframe shows the app below native size;
-   the full-strength glass overlays (scanlines z950 / vignette z940) downscale into a
-   muddy haze, so the embed runs them at roughly half strength. */
-body::after { opacity: 0.45; }
-body::before { opacity: 0.55; }
-body:not(.no-flicker) #app { animation: none; }
-
-/* the camera-panel chrome tags sit at the panel corners — the landing clip cuts them
-   in half, so the embed hides them (and the CINEMA control, inert with pointer-events
-   off anyway). Embed-only; the app keeps its chrome. */
-.cam-label, .cam-rec, .cam-feed, .cam-cine { display: none !important; }
-
-/* one-time coach marks/toasts make no sense in the read-only landing clip and get
-   cut in half by it — embed hides them. */
-#nav-coach { display: none !important; }
+/* Website camera viewport. The actual app renderer owns the station's lighting,
+   materials and phosphor treatment; do not stack a second layer of page glass. */
+body::before, body::after { display: none !important; }
+body #app, body #screen-game.active { animation: none !important; }
+body #screen-game.active { display: block; padding: 0; }
+#screen-game > :not(#stage-wrap), #logo, #nav-coach { display: none !important; }
+#screen-game #stage-wrap { position: absolute; inset: 0; margin: 0; border: 0; border-radius: 0; box-shadow: none; }
+#stage-wrap::before, .cam-hud, .cam-label, .cam-rec, .cam-feed, .cam-cine { display: none !important; }
+/* Smooth the browser's final downscale, retaining the app's native pixel artwork. */
+#stage { image-rendering: auto; }

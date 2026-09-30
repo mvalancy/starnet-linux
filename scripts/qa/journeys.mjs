@@ -55,6 +55,7 @@ import { mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync } from 'nod
 import { createServer } from 'node:http';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import { sleep, launchChrome, connectCDP, evalJS, capture, collectDiagnostics } from '../lib/cdp.mjs';
 import { materializeSeedWorkspace, bootSeededSidecar, isUp, waitUp, waitDevReady, DEFAULT_MODEL } from '../lib/seed.mjs';
@@ -112,6 +113,14 @@ const WIN = process.env.SKYNET_SHOT_SIZE || '1440,900';
 const KEEP = process.argv.includes('--keep');
 const SCRATCH = join(OUT_DIR, '_seed-workspace');
 const PROFILE = join(OUT_DIR, '_profile');
+// A FRESH BROWSER PER RUN (2026-09-23): the end-of-run wipe below fails silently while Chrome still holds
+// the profile, and a surviving profile carries a dirty `starnet.save` that cloudsave.reconcile() pushes over
+// the fresh seed (the audit gate inherited a placed prop every Guardian hour). Wipe before launch; fail loud.
+function freshProfile(dir) {
+  rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 250 });
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
 const ONLY = (() => {
   const i = process.argv.indexOf('--only');
   return i >= 0 && process.argv[i + 1] ? new Set(process.argv[i + 1].split(',').map(s => s.trim().toUpperCase())) : null;
@@ -708,7 +717,7 @@ async function journeyDoubleSend(cdp, A, mock, diag) {
 
 /* ═══════════════════════════ J4 — summon → assign → deliverable → OPEN ═══════════════════════════
  * A deliverable's Open action is only truthful if the /workshop-run jail actually SERVES a runnable page.
- * The frontend Open action navigates a new tab to /workshop-run/<agent>/<run>/index.html?token= — an
+ * The frontend Open action navigates a new tab to /workshop-run/~t/<ticket>/<agent>/<run>/index.html (run-scoped ticket) — an
  * interactive nav a headless CDP page can't meaningfully follow. So we assert the SERVE CONTRACT directly
  * over HTTP (the exact bytes+headers the Open action depends on): a real workshop deliverable, built through
  * the granted fs-jail, is served 200 as runnable text/html under an opaque-origin sandbox CSP. This is the
@@ -750,7 +759,10 @@ async function journeyDeliverableOpen(cdp, A, base, token, mock) {
   if (!runId || !hasHtml) return;
 
   // THE OPEN CONTRACT: the served page is 200 runnable text/html, script intact, opaque-origin sandbox CSP.
-  const runUrl = base + '/workshop-run/' + agentId + '/' + runId + '/index.html?token=' + encodeURIComponent(token);
+  // a tab open carries a RUN-SCOPED ticket in the path (sidecar/apitickets.js) — the master token in a URL is refused
+  const apitickets = createRequire(import.meta.url)('../../sidecar/apitickets.js');
+  const runTicket = apitickets.mint(token, 'run', apitickets.scopeRun(agentId, runId), { now: Date.now() });
+  const runUrl = base + '/workshop-run/~t/' + runTicket + '/' + agentId + '/' + runId + '/index.html';
   const pageRes = await fetch(runUrl).catch(e => ({ status: 0, _err: String(e) }));
   A.ok('J4/workshop-run-200', pageRes && pageRes.status === 200, 'GET /workshop-run/.../index.html → ' + (pageRes && pageRes.status) + (pageRes && pageRes._err ? ' ' + pageRes._err : ''));
   if (pageRes && pageRes.status === 200) {
@@ -1052,7 +1064,7 @@ async function main() {
     JOURNEY_API_TOKEN = token;
   } catch (_) {}
 
-  const { proc: chromeProc, chrome } = launchChrome({ cdpPort: CDP_PORT, win: WIN, profileDir: PROFILE });
+  const { proc: chromeProc, chrome } = launchChrome({ cdpPort: CDP_PORT, win: WIN, profileDir: freshProfile(PROFILE) });
   proc = chromeProc;
   proc.on('error', (e) => { console.error('chrome spawn error', e); });
   console.log(`chrome: ${chrome}\ntarget: ${APP_URL}`);

@@ -1,0 +1,10 @@
+{
+  "id": "catinthehat",
+  "track": "sit",
+  "dir": "north",
+  "job": "975a42ec-309c-4062-b25b-a95e12f5bbdf",
+  "result": "frames: 5\nhttps://api.pixellab.ai/mcp/images/975a42ec-309c-4062-b25b-a95e12f5bbdf/download?index=0",
+  "packed": true,
+  "lastRaw": "output/agent-animation-study/rollout-20px/full-motion/catinthehat/minimax/sit-north/975a42ec-309c-4062-b25b-a95e12f5bbdf/4.png",
+  "frameCount": 5
+}

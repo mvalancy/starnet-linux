@@ -474,9 +474,13 @@ const App = (() => {
     const e = String(effort || '').trim();
     if (hasEffort) a.reasoningEffort = (m && e) ? e : null;
     if (agent && a.id === agent.id) {   // focused agent — apply live so the next run reflects the pin at once
-      if (m && typeof Harness !== 'undefined' && Harness.setModel) Harness.setModel(m);
-      if (p && typeof Harness !== 'undefined' && Harness.setProv) Harness.setProv(p);
-      if (hasEffort && a.reasoningEffort && typeof Harness !== 'undefined' && Harness.setReasoningEffort) Harness.setReasoningEffort(a.reasoningEffort);
+      if (m) {
+        if (typeof Harness !== 'undefined' && Harness.setModel) Harness.setModel(m);
+        if (p && typeof Harness !== 'undefined' && Harness.setProv) Harness.setProv(p);
+        if (hasEffort && a.reasoningEffort && typeof Harness !== 'undefined' && Harness.setReasoningEffort) Harness.setReasoningEffort(a.reasoningEffort);
+      } else {
+        applyWire(focusWire(a));   // a CLEARED pin follows the station default now, not the pin it just dropped (#24)
+      }
       if (typeof ModelDock !== 'undefined' && ModelDock.reflect) ModelDock.reflect();
     }
     pushRoster();   // the pin reaches the sidecar roster (honored by runOnce + cron)
@@ -681,6 +685,77 @@ const App = (() => {
       if (agent && agent.id === a.id && typeof Chat !== 'undefined' && Chat.setSystem) Chat.setSystem(a.systemPrompt);   // focused: the live COMMS session follows
     }
   }
+  /* THE STATION DEFAULT IS THE OVERSEER'S WIRE (issue #24). Focusing an agent writes its model/provider/effort into
+     the ONE global wire every COMMS run reads (Harness). A pinned agent brings its own wire; an agent with no pin
+     ("Follow station default") must get the Overseer's, because nothing else resets the global. Before this, a
+     specialist summoned while the station ran on StarNet credits kept a `starnet` pin; the Commander switched the
+     station to OpenRouter, focused that specialist, cleared its pin, and every run after that still went out as
+     `starnet` — refused at 0s with "Out of managed credit" on a funded BYOK station. */
+  function stationDefaultWire() {
+    const hero = agents.get('agent') || null;
+    return { model: (hero && hero.model) || '', provider: (hero && hero.provider) || '', effort: (hero && hero.reasoningEffort) || '' };
+  }
+  // A save's top-level `prov` used to record the FOCUSED agent's pin; the hero's own provider is the station's truth.
+  function savedStationProv(saved) { return (saved && saved.agent && saved.agent.provider) || (saved && saved.prov) || ''; }
+  /* 0.12.5 REASONING MIGRATION, once per save (persist() writes `reasoningMigrated` on every save from the first
+     0.12.5 persist, so an explicit 0.12.5 choice is never touched). 0.12.4's model dock could not read a reasoning
+     dial for OpenAI-API, xAI/Grok, DeepSeek or StarNet Managed models: it showed them locked at OFF and saved that,
+     while the adapter sent no reasoning_effort at all. 0.12.5 reads their real dials and sends the saved level, which
+     would silently change what an upgraded station runs:
+       - OpenAI-API / xAI / Grok / DeepSeek ran at the MODEL's default reasoning. The inherited 'none' would now turn it
+         off, so it is dropped and the provider default applies (the dock clamps it to a level the model accepts).
+       - StarNet Managed sent nothing. The Overseer's onboarding MEDIUM would now switch paid thinking on, so a Managed
+         pin keeps OFF (nothing is sent) until someone picks a level. */
+  const REASONING_MIGRATION = '0125';
+  const LEGACY_DIAL_LOCKED = ['openai', 'xai', 'grok', 'deepseek'];
+  function migrateLegacyReasoning(saved) {
+    if (!saved || typeof saved !== 'object' || saved.reasoningMigrated === REASONING_MIGRATION) return false;
+    const station = normalizeProviderId(savedStationProv(saved) || 'openrouter');
+    const settle = (prov, effort) => {
+      const p = normalizeProviderId(prov || station);
+      const e = String(effort || '').trim().toLowerCase();
+      if (LEGACY_DIAL_LOCKED.indexOf(p) >= 0) return (e === 'none' || e === 'off') ? null : (effort || null);
+      if (p === 'starnet') return 'none';
+      return effort || null;
+    };
+    const fix = a => { if (a && typeof a === 'object' && a.model) a.reasoningEffort = settle(a.provider, a.reasoningEffort); };
+    fix(saved.agent);
+    if (Array.isArray(saved.agents)) saved.agents.forEach(fix);
+    if (saved.reasoningEffort != null) {
+      const top = settle(station, saved.reasoningEffort);
+      if (top == null) delete saved.reasoningEffort; else saved.reasoningEffort = top;
+    }
+    // the page's own per-provider wire (localStorage) inherited the same OFF from 0.12.4's locked dock
+    if (typeof Harness !== 'undefined' && Harness.clearLegacyReasoningOff) Harness.clearLegacyReasoningOff(LEGACY_DIAL_LOCKED);
+    if (typeof Harness !== 'undefined' && Harness.setReasoningEffort) Harness.setReasoningEffort('none', 'starnet');
+    saved.reasoningMigrated = REASONING_MIGRATION;
+    return true;
+  }
+  function focusWire(a) {
+    const station = stationDefaultWire();
+    if (!(a && a.model)) return station;
+    return { model: a.model, provider: a.provider || station.provider, effort: a.reasoningEffort || '' };
+  }
+  // SETTINGS -> PROVIDERS picks the STATION's provider, and the station default IS the Overseer's pin
+  // (stationDefaultWire). The card used to move only the global wire, so the Overseer kept the provider the station
+  // had just left: unpinned agents, their roster rows and a restore all followed it (the #24 "Out of managed credit"
+  // symptom through a Settings switch from StarNet credits to a BYOK key). An invalid model under the new provider is
+  // reconciled by the dock the next time the Overseer is focused, exactly as a dock provider pick is.
+  function setStationProvider(p) {
+    const hero = agents.get('agent');
+    const next = p ? normalizeProviderId(p) : '';
+    if (!hero || !next || hero.provider === next) return false;
+    hero.provider = next;
+    pushRoster();
+    persist();
+    return true;
+  }
+  function applyWire(w) {
+    if (typeof Harness === 'undefined') return;
+    if (w.model && Harness.setModel) Harness.setModel(w.model);
+    if (w.provider && Harness.setProv) Harness.setProv(w.provider);
+    if (w.effort && Harness.setReasoningEffort) Harness.setReasoningEffort(w.effort);
+  }
   function focusAgent(id) {
     // P1.2 (UPDATE_STATE_SAFETY_AUDIT) — end silent impersonation. The old `agents.get(id) || agents.get('agent')`
     // SILENTLY rebound COMMS + the run identity to the OVERSEER whenever `id` was missing from the live registry
@@ -699,15 +774,15 @@ const App = (() => {
     if (!a) return;
     if (typeof Chat !== 'undefined' && Chat.setRosterStatus) Chat.setRosterStatus('');   // a real agent is focused — clear any prior honest-miss notice
     agent = a;
-    if (a.model && typeof Harness !== 'undefined' && Harness.setModel) Harness.setModel(a.model);
     // #4: provider + reasoning-effort are PER-AGENT, not one global — restore them on focus so switching to an
     // Anthropic agent right after a Codex one doesn't run the Anthropic model through the codex provider (and the
-    // dock label match). Only set when the agent actually carries them, so older agents keep today's behavior.
-    if (a.provider && typeof Harness !== 'undefined' && Harness.setProv) Harness.setProv(a.provider);
-    if (a.reasoningEffort && typeof Harness !== 'undefined' && Harness.setReasoningEffort) Harness.setReasoningEffort(a.reasoningEffort);
+    // dock label match). An agent with no pin FOLLOWS THE STATION DEFAULT (issue #24): it gets the Overseer's wire,
+    // never the leftover pin of whichever agent was focused before it.
+    const wire = focusWire(a);
+    applyWire(wire);
     if (typeof Chat !== 'undefined' && Chat.setSystem) Chat.setSystem(a.systemPrompt);   // runs carry the FOCUSED agent's identity
     const gtA = el('gt-agent'); if (gtA) gtA.textContent = a.name;
-    const gtM = el('gt-model'); if (gtM) gtM.textContent = a.model;
+    const gtM = el('gt-model'); if (gtM) gtM.textContent = wire.model || '';
     if (typeof World !== 'undefined' && World.focusBody) World.focusBody(a.id);   // Phase C: reframe the camera onto this body
     if (typeof ModelDock !== 'undefined' && ModelDock.reflect) ModelDock.reflect();
   }
@@ -873,8 +948,14 @@ const App = (() => {
     if (!Array.isArray(savedAgents)) return;
     for (const s of savedAgents) {
       if (!s || !s.id || s.id === 'agent' || agents.has(s.id)) continue;   // hero already registered; skip dups (so the 'specialist' default below is always correct here — the orchestrator never routes through this path)
-      const a = { id: s.id, name: s.name, color: s.color, skin: s.skin || DATA.DEFAULT_SKIN, model: s.model || (agent && agent.model),
-                  provider: s.provider || (agent && agent.provider) || null, reasoningEffort: s.reasoningEffort || (agent && agent.reasoningEffort) || null,   // #4: per-agent provider+effort (fall back to the hero's)
+      // An empty model is the durable "Follow station default" choice, not a missing pin
+      // to replace with a snapshot of the hero. Preserve it across reload/provider changes.
+      const a = { id: s.id, name: s.name,
+                  // a saved suit tint lands in style attrs: hex only, else a palette suit (security audit 2026-09-23)
+                  color: /^#[0-9a-f]{3,8}$/i.test(String(s.color || '')) ? String(s.color) : (typeof SUITS !== 'undefined' ? SUITS[agents.size % SUITS.length] : '#6fb3bf'),
+                  skin: s.skin || DATA.DEFAULT_SKIN, model: s.model || null,
+                  provider: s.model ? (s.provider || (agent && agent.provider) || null) : null,
+                  reasoningEffort: s.model ? (s.reasoningEffort || (agent && agent.reasoningEffort) || null) : null,
                   personaId: (typeof Personas !== 'undefined' ? Personas.resolve(s.personaId) : s.personaId), role: s.role || 'specialist', voiceTraits: s.voiceTraits || null, customVoice: s.customVoice || '',
                   approvalMode: s.approvalMode || 'ask', executionProfile: executionProfileOf(s), workshop: !!s.workshop, purpose: s.purpose || null, specialtyId: s.specialtyId || null,
                   skills: Array.isArray(s.skills) ? s.skills.slice() : [],   // Class Loadouts S1: restore the per-agent skill package
@@ -1373,7 +1454,9 @@ const App = (() => {
   }
   function pushRoster() {
     try {
-      const fallbackProv = (typeof Harness !== 'undefined' && Harness.getProv) ? Harness.getProv() : 'openrouter';
+      // An unpinned row follows the STATION DEFAULT (the Overseer's provider), never the global wire — that is the
+      // focused agent's pin, and stamping it onto every unpinned agent sent their routines/channel runs to it (#24).
+      const fallbackProv = stationDefaultWire().provider || ((typeof Harness !== 'undefined' && Harness.getProv) ? Harness.getProv() : 'openrouter');
       const list = liveAgents().map(a => ({ agentId: a.id, system: a.systemPrompt || '', name: a.name || a.id, model: a.model || '', provider: a.provider || fallbackProv, role: rosterRole(a), approvalMode: (a.approvalMode === 'full' ? 'full' : 'ask'), executionProfile: executionProfileOf(a),
         track: rosterTrack(a),    // S3: this agent's EARNED track record, so the lead's dispatch briefing can pick on evidence (see rosterTrack)
         workshop: !!a.workshop,   // W3: the away-build grant travels with the roster so the consent broker can honor it
@@ -1466,13 +1549,15 @@ const App = (() => {
     // persist while a summoned agent is focused would overwrite the hero identity and corrupt resume.
     const hero = agents.get('agent') || agent;
     const stationStats = (typeof XpStore !== 'undefined') ? XpStore.stationStats() : undefined;
-    const prov = (typeof Harness !== 'undefined' && Harness.getProv) ? Harness.getProv() : undefined;   // persist the provider so a codex agent resumes without a key prompt after a wipe/origin-reset
+    // persist the provider so a codex agent resumes without a key prompt after a wipe/origin-reset. Like the root, it is
+    // the STATION's (the hero's), never the focused crew member's pin — a saved pin reloaded as the station provider (#24).
+    const prov = (hero && hero.provider) || ((typeof Harness !== 'undefined' && Harness.getProv) ? Harness.getProv() : undefined);
     const reasoningEffort = (typeof Harness !== 'undefined' && Harness.getReasoningEffort) ? Harness.getReasoningEffort() : undefined;
     const profile = (typeof ProfileStore !== 'undefined') ? ProfileStore.serialize() : undefined;
     const worksignal = (typeof WorkSignalStore !== 'undefined') ? WorkSignalStore.serialize() : undefined;   // the capability-usage histogram (adaptive recruitment)
     const roster = liveAgents();
     const dossier = (typeof DossierStore !== 'undefined') ? DossierStore.serialize() : undefined;   // the station-wide Commander model
-    const doc = Save.write(Object.assign({ _saveDirty: true, _saveRevision: typeof CloudSave !== 'undefined' && CloudSave.revision ? CloudSave.revision() : 0, agent: hero, agents: roster.length > 1 ? roster.map(serializeAgentLite) : undefined, usage: Harness.totals(), prov, reasoningEffort, station: station ? station.serialize() : undefined, stationStats, profile, worksignal, dossier }, Workstreams.serialize()));
+    const doc = Save.write(Object.assign({ _saveDirty: true, _saveRevision: typeof CloudSave !== 'undefined' && CloudSave.revision ? CloudSave.revision() : 0, agent: hero, agents: roster.length > 1 ? roster.map(serializeAgentLite) : undefined, usage: Harness.totals(), prov, reasoningEffort, reasoningMigrated: '0125' /* = REASONING_MIGRATION; a literal so persist() also runs when lifted alone */, station: station ? station.serialize() : undefined, stationStats, profile, worksignal, dossier }, Workstreams.serialize()));
     if (doc && typeof CloudSave !== 'undefined') CloudSave.push(doc);   // durable write-through to the sidecar (debounced, best-effort)
     if (rosterPushFailed) pushRoster();   // a prior roster POST failed — retry it opportunistically on this persist
     if (!doc) {
@@ -2651,7 +2736,8 @@ const App = (() => {
     if (Save.isFuture && Save.isFuture()) { showFutureSaveGate(Save.loadStatus().version); return; }
     const saved = Save.has() ? Save.load() : null;
     if (saved && saved.agent) {
-      if (saved.prov && Harness.setProv) Harness.setProv(saved.prov);
+      migrateLegacyReasoning(saved);   // before any saved effort reaches the wire (0.12.5 reasoning migration)
+      if (savedStationProv(saved) && Harness.setProv) Harness.setProv(savedStationProv(saved));
       if (saved.reasoningEffort && Harness.setReasoningEffort) Harness.setReasoningEffort(saved.reasoningEffort);
       if (Harness.getKey() || (Harness.configured && Harness.configured()) || Harness.getProv() === 'codex') {
         resumingSaved = null; resumeInto(saved); return;
@@ -2840,6 +2926,10 @@ const App = (() => {
     // leaves the prior station intact, and keeps its confirmed grant visible instead of commissioning a fresh
     // Commander who silently inherited cabinet:write. Saved-station resume returns above and keeps its grants.
     if (typeof PermissionsStore !== 'undefined') await PermissionsStore.reset();
+    if (typeof AutonomyStore !== 'undefined') {
+      const autonomyReset = await AutonomyStore.reset();
+      if (!autonomyReset.ok) { wakeBtnBusy(false); msg.className = 'msg bad'; msg.textContent = autonomyReset.error; return false; }
+    }
     const newCommanderEpoch = Date.now();
     if (typeof JourneyStore !== 'undefined' && JourneyStore.reset) {
       const journeyResetResult = await JourneyStore.reset(newCommanderEpoch);
@@ -2883,7 +2973,6 @@ const App = (() => {
     if (typeof UnderstandingStore !== 'undefined' && UnderstandingStore.reset) UnderstandingStore.reset();   // …and no inherited rating corroboration — a new Commander never inherits the prior hero's 👍/👎 confidence signal (own key)
     if (typeof MaintQuestStore !== 'undefined') MaintQuestStore.reset();   // …and no inherited maintenance quests — a new Commander never sees the prior hero's slag/jam backlog (own key)
     if (typeof MintStore !== 'undefined') MintStore.reset();   // …no inherited recurring-task shapes — these feed the seed shelf, so a leak would offer a prior Commander's chores (own key)
-    if (typeof AutonomyStore !== 'undefined') AutonomyStore.reset();   // …and a fresh autonomy posture (safe floor) — a new Commander is never handed the previous one's free-range grant (own key)
     if (typeof AutoJobStore !== 'undefined') AutoJobStore.reset();   // …and re-arm the one-time standing-jobs proposal (own key; server-side routines are separate)
     if (typeof AutopilotStore !== 'undefined') AutopilotStore.reset();   // …and a fresh idle autopilot (no inherited idle/armed state — its decision is re-earned by the new Commander's posture + dossier)
     if (typeof ReturnStore !== 'undefined') ReturnStore.reset();   // …and no inherited return-ritual trail — a fresh Commander gets no prior hero's pending OUTBOX crates or attendance stamp (own key)
@@ -2920,7 +3009,7 @@ const App = (() => {
     registerHero(agent);                           // found the registry with the hero…
     rehydrateRoster(saved.agents);                 // …then restore any summoned crew (older saves: no-op)
     recomposeOrchestrators();                      // …and only NOW does the hero's YOUR CREW clause see them (composing above sees an empty registry)
-    if (saved.prov && Harness.setProv) Harness.setProv(saved.prov);   // keep the provider with the agent (codex vs openrouter)
+    if (savedStationProv(saved) && Harness.setProv) Harness.setProv(savedStationProv(saved));   // keep the provider with the agent (codex vs openrouter)
     if (saved.reasoningEffort && Harness.setReasoningEffort) Harness.setReasoningEffort(saved.reasoningEffort);
     if (!agent.provider && saved.prov) agent.provider = saved.prov;   // #4: older hero saves stored provider only at the top level — stamp it onto the hero object so focusAgent restores it
     if (!agent.reasoningEffort && saved.reasoningEffort) agent.reasoningEffort = saved.reasoningEffort;
@@ -3007,7 +3096,7 @@ const App = (() => {
       // agents: the live multi-agent roster the BAY agent-picker / builder offer. The bay->agent binding
       // persists via station.serialize (prop.agentId round-trips), so the routing floor is saved per agent.
       Build.init({ getStation: () => station, persist: persist, world: World,
-        agents: () => liveAgents().map(a => ({ id: a.id, name: a.name, color: a.color, model: a.model })),
+        agents: () => liveAgents().map(a => ({ id: a.id, name: a.name, color: a.color, model: a.model, skin: a.skin || DATA.DEFAULT_SKIN })),   // skin: the Workflow panel shows each agent by its body
         // A workstation can be placed while its owning COMMS stream stays open. Reconcile the derived
         // "nowhere to sit" row after REFIT commits so the transcript cannot outlive the floor truth.
         onClose: () => { if (typeof Chat !== 'undefined' && Chat.retireDeskPrompt) Chat.retireDeskPrompt(); } });
@@ -3303,12 +3392,15 @@ const App = (() => {
     // AutonomyStore. The level chooser ties grant + posture so the Commander dials never→fully-autonomous.
     if (typeof PermissionsStore !== 'undefined') PermissionsStore.init({
       getPosture: () => (typeof AutonomyStore !== 'undefined' && AutonomyStore.summary) ? AutonomyStore.summary() : null,
-      applyPreset: (id) => {
-        if (typeof AutonomyStore !== 'undefined' && AutonomyStore.applyPreset) AutonomyStore.applyPreset(id);
+      applyPreset: async (id) => {
+        if (typeof AutonomyStore === 'undefined' || !AutonomyStore.applyPreset) return { ok: false };
+        const result = await AutonomyStore.applyPreset(id);
+        if (!result.ok) return result;
         // GROWTH Tier 3: a permissions-LEVEL change is a NON-DIAL posture writer — reconcile the earned-rung record
         // against the rung the preset just set (a diverged record retires; user override wins), so a stale record
         // can never later demote FROM a rung the dial isn't at (the silent-escalation blocker).
         try { if (typeof TrustStore !== 'undefined' && TrustStore.onManualInitiative && typeof AutonomyStore !== 'undefined' && AutonomyStore.get) TrustStore.onManualInitiative((AutonomyStore.get() || {}).initiative); } catch (_) {}
+        return result;
       },
       api: {
         load: () => Harness.api.get('/api/permissions'),
@@ -3328,7 +3420,7 @@ const App = (() => {
       now: () => Date.now(),
       getStats: () => { const a = agents.get('agent'); return (a && a.stats && typeof Xp !== 'undefined' && Xp.compute) ? Xp.compute(a.stats) : (a ? a.stats : null); },
       getPosture: () => (typeof AutonomyStore !== 'undefined' && AutonomyStore.summary) ? AutonomyStore.summary() : null,
-      setInitiative: (level) => { if (typeof AutonomyStore !== 'undefined' && AutonomyStore.setInitiative) AutonomyStore.setInitiative(level); persist(); },
+      setInitiative: async (level) => { if (typeof AutonomyStore === 'undefined' || !AutonomyStore.setInitiative) return false; const result = await AutonomyStore.setInitiative(level); if (result.ok) persist(); return result; },
       // the ONLY capabilities a grant offer may pre-bless — the sidecar's curated GRANTABLE (cabinet:write today).
       grantable: (typeof SK !== 'undefined' && SK.permgrants && Array.isArray(SK.permgrants.GRANTABLE)) ? SK.permgrants.GRANTABLE.slice() : (typeof Permissions !== 'undefined' && Permissions.grantableKeys ? Permissions.grantableKeys() : ['cabinet:write']),
       getGrants: () => { try { return (typeof PermissionsStore !== 'undefined' && PermissionsStore.snapshot) ? (PermissionsStore.snapshot().grants || []) : []; } catch (_) { return []; } },
@@ -5165,7 +5257,8 @@ const App = (() => {
     }
     // restore the provider BEFORE the credential check so a codex agent (tokens server-side) jumps straight
     // in after a wipe/origin-reset instead of being misrouted to an OpenRouter key prompt.
-    if (saved && saved.prov && Harness.setProv) Harness.setProv(saved.prov);
+    if (saved && saved.agent) migrateLegacyReasoning(saved);   // before any saved effort reaches the wire (0.12.5 reasoning migration)
+    if (saved && savedStationProv(saved) && Harness.setProv) Harness.setProv(savedStationProv(saved));
     if (saved && saved.reasoningEffort && Harness.setReasoningEffort) Harness.setReasoningEffort(saved.reasoningEffort);
     if (saved && saved.agent) {
       // AUTO-RESUME: a saved station goes STRAIGHT back into the world when creds are available — an OpenRouter
@@ -5226,5 +5319,6 @@ const App = (() => {
     // Model-facing edits wait for the same roster write used by the Dossier UI.
     configSynced: () => lastRosterPush,
     setApproval: setAgentApproval,
-    setExecutionProfile: setAgentExecutionProfile };
+    setExecutionProfile: setAgentExecutionProfile,
+    setStationProvider: setStationProvider };
 })();

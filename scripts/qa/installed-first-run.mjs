@@ -890,11 +890,11 @@ export function makeCdpInstalledDriver(options = {}) {
         },
 
         async openDeliverable({ deadline, deliverable }) {
-          // The deliverable link is a REAL /api/file href (query-token authed — the sidecar's documented
-          // native-load escape hatch). In the installed desktop build a _blank navigation is dead under the
+          // The deliverable link is a REAL /api/file href (authed by a file-scoped, short-lived ?ticket= —
+          // the sidecar's documented native-load escape hatch; never the master token). In the installed desktop build a _blank navigation is dead under the
           // Tauri window policy, so the click hands that URL to the OS browser via the open_external_url
           // command — instrument the invoke bridge to capture the handed URL, then bind that URL to the
-          // exact task bytes by fetching it IN-PAGE (which also proves the ?token= auth the link relies on).
+          // exact task bytes by fetching it IN-PAGE (which also proves the ?ticket= auth the link relies on).
           await evalJS(cdp, `(() => {
             if (window.__STARNET_W1_OPEN_INSTRUMENTED__) return true;
             const core = window.__TAURI__ && window.__TAURI__.core;

@@ -38,7 +38,9 @@ const read = rel => fs.readFileSync(path.join(ROOT, rel), 'utf8');
   A.ok(/mod lifecycle_preferences;/.test(main), 'desktop shell owns one focused lifecycle-preference module');
   A.ok(/starnet_set_start_minimized[\s\S]*starnet_set_close_to_tray/.test(main), 'both native preference commands are registered');
   A.ok(/StartupReveal::new\(start_minimized\)/.test(main), 'stored start-minimized choice gates initial window reveal');
-  A.ok(/payload\.event\(\) == tauri::webview::PageLoadEvent::Finished[\s\S]{0,250}startup_reveal\.finish_load\(\)[\s\S]{0,80}window\.show\(\)/.test(main), 'only the first completed document load may auto-reveal the window');
+  A.ok(/payload\.event\(\) == tauri::webview::PageLoadEvent::Finished[\s\S]{0,250}startup_reveal\.finish_load\(\)[\s\S]{0,400}window\.show\(\)/.test(main), 'only the first completed document load may auto-reveal the window');
+  // WebView2 crash recovery (webview_recovery.rs) may re-reveal a REBUILT window, but only one that was showing before it died.
+  A.ok(/let reveal_rebuilt = Arc::new\(AtomicBool::new\(restore\.is_some_and\(\|r\| r\.visible\)\)\)/.test(main), 'a crash-rebuilt window reveals itself only if the window it replaces was showing');
   A.ok(/WindowEvent::CloseRequested[\s\S]{0,250}startup_reveal\.cancel\(\)[\s\S]{0,300}win\.hide\(\)/.test(main), 'closing cancels any delayed startup reveal before hiding');
   A.ok(/close_to_tray\s*=\s*lifecycle_preferences_snapshot\(st\)\.close_to_tray[\s\S]{0,500}?if close_to_tray[\s\S]{0,500}?stay_resident_or_quit[\s\S]{0,120}?return;/.test(main), 'stored close-to-tray choice keeps the supervised process alive before armed-work probing — via the revealable-residency invariant');
   A.ok(/fn stay_resident_or_quit[\s\S]{0,800}?close_exit_pending\.store\(false[\s\S]{0,800}?get_webview_window\("main"\)[\s\S]{0,2000}?drain_and_kill_sidecar[\s\S]{0,200}?app\.exit\(0\)/.test(main), 'every stay-resident decision clears the exit veto and full-quits if the main window is gone (no unrevealable background process)');
@@ -50,8 +52,15 @@ const read = rel => fs.readFileSync(path.join(ROOT, rel), 'utf8');
   A.ok(/id="set-close-to-tray"/.test(settings) && /Lifecycle\.setCloseToTray/.test(settings), 'Settings renders and wires CLOSE WINDOW TO TRAY');
   A.ok(/close_exit_pending\.store\(true[\s\S]*RunEvent::ExitRequested\s*\{\s*api,\s*code[\s\S]*close_exit_pending\.swap\(false[\s\S]*api\.prevent_exit\(\)/.test(main), 'only a paired main-window close prevents event-loop exit while the close worker decides');
 
-  A.ok(/if !spawn_sidecar_with_retry\(&state\) \{\s*return Err/.test(main), 'startup Cancel aborts before the guardian starts');
+  A.ok(/if !spawn_sidecar_with_retry\((?:app\.handle\(\),\s*)?&state\) \{[\s\S]{0,300}?kill_sidecar\(\)[\s\S]{0,300}?std::process::exit\(0\)[\s\S]{0,600}?spawn_guardian\(/.test(main), 'startup Cancel stops the sidecar and exits cleanly before the guardian starts');
+  A.ok(!/if !spawn_sidecar_with_retry\((?:app\.handle\(\),\s*)?&state\) \{\s*return Err/.test(main), 'startup Cancel never returns a setup Err (release panic=abort turns it into a crash)');
   A.ok(/sidecar_startup::spawn/.test(main) && /!listening && exited.is_none\(\)[\s\S]{0,150}sidecar_startup::stop_timed_out/.test(main), 'the desktop uses tracked spawning and reaps a timed-out attempt');
   A.ok(/startup_reveal.is_pending\(\)/.test(main) && /report_window_startup_failure/.test(main), 'a hidden stalled window gets a native diagnostic');
+  // A hidden native window does NOT hide the WebView2 page: without SetIsVisible(false) the world's rAF loop kept
+  // rendering at full rate while parked in the tray (2026-09-25 report, ~a full core).
+  A.ok(/fn set_webview_on_screen[\s\S]{0,300}?controller\(\)\.SetIsVisible\(on_screen\)/.test(main), 'the page visibility follows the native window through the WebView2 controller');
+  A.ok(/let _ = win\.hide\(\);\s*set_webview_on_screen\(&win, false\)/.test(main), 'close-to-tray marks the page hidden so rendering pauses');
+  A.ok(/fn show_main_window[\s\S]{0,300}?set_webview_on_screen\(&win, true\)/.test(main) && /reveal it\s*let _ = win\.unminimize\(\);\s*set_webview_on_screen\(&win, true\)/.test(main), 'every tray/relaunch reveal marks the page visible again');
+  A.ok(/WindowEvent::Resized\(_\)[\s\S]{0,200}?sync_webview_on_screen/.test(main) && /PageLoadEvent::Finished[\s\S]{0,1200}?sync_webview_on_screen\(&window\)/.test(main), 'minimize/restore and a load into a hidden window re-sync page visibility');
   A.report('desktop-lifecycle-preferences');
 })().catch(error => { console.error(error); process.exit(1); });

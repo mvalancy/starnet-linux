@@ -938,7 +938,7 @@ const Tutorial = (() => {
   const WF_COACH = {
     intake: 'that’s the INBOX — outside work (a DM, a routine) physically arrives here. belt it toward a BAY and you’ll watch the job ride in.',
     bay: 'a BAY is one agent’s personal dock — jobs land there, and every finished result ships out from it. it works with no belts at all; click it to pick whose dock it is.',
-    outbox: 'the OUTBOX is the loading dock — every job we actually FINISH ships a crate here onto the pallet. hit ▸ PREVIEW to watch the whole loop once.',
+    outbox: 'the OUTBOX is the loading dock — every job we actually FINISH ships a crate here onto the pallet. hit ▸ PREVIEW FLOW to watch the whole loop once.',
     filter: 'a FILTER sorts UNOWNED work by what it is — code down one lane, research down another. work that already belongs to someone rides straight home past it. click it to set the lanes.',
     splitter: 'a SPLITTER spreads unowned work across its lanes — several agents working the same stream in parallel. it needs at least two out-going lanes.',
     // truthful telemetry (2026-07-26 mechanic removal): a merger is a LANE FUNNEL — it never batches or combines
@@ -964,7 +964,7 @@ const Tutorial = (() => {
   function onBeltPlaced() {
     tickBrief('belt');
     showCoach('belt', '#refit-test',
-      'belts show real work moving between us. want to see it without waiting for a message? hit ▸ PREVIEW — i’ll send dummy crates down the line so you can watch them sort.');
+      'belts show real work moving between us. want to see it without waiting for a message? hit ▸ PREVIEW FLOW — i’ll send dummy crates down the line so you can watch them sort.');
   }
   function onConnectorPlaced() {
     tickBrief('build');
@@ -1087,6 +1087,20 @@ const Tutorial = (() => {
      SYSTEM dock → stationui window → this chapter renderer. Equipment labels come from
      WorldModel; examples are instructions to try, never badges claiming completed work. */
 
+  const fmEsc = v => String(v == null ? '' : v).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
+  /* THE NAMES THE LINES CHAPTER USES COME FROM REFIT ITSELF (Build.refitNames — tab, tool, button labels and
+     live counts), so a renamed tab or a new machine cannot leave the manual describing a UI that is gone
+     (2026-09-23 playtest). The fallback is only for a context where build.js is not loaded (headless tests). */
+  function refitNames() {
+    try { if (typeof Build !== 'undefined' && Build.refitNames) { const r = Build.refitNames(); if (r && r.machines && r.machines.length) return r; } } catch (e) { /* fall back to the static names below */ }
+    return { tab: 'CONVEYORS', lines: 'CONVEYOR LINES', belt: 'BELT', lineKey: '9', beltKey: '7', preview: '▸ PREVIEW FLOW', lineCount: null, machinesShelf: 'MACHINES',
+      machines: [
+        { label: 'SPLITTER', purpose: 'fans one lane into several branches', junction: true },
+        { label: 'JOINER', purpose: 'waits for every branch, then sends one merged result on', junction: true },
+        { label: 'FILTER', purpose: 'sorts work by its content into different lanes', junction: true },
+        { label: 'MERGER', purpose: 'funnels several lanes into one', junction: true },
+        { label: 'LOOP', purpose: 'sends work back round until it passes', junction: true }] };
+  }
   function fmEntry(tag, title, body) {
     const t = tag ? '<span class="fm-tag">' + tag + '</span>' : '';
     return '<section class="fm-entry">' + t + '<h3 class="fm-entry-h">' + title + '</h3><div class="fm-entry-b">' + body + '</div></section>';
@@ -1195,14 +1209,16 @@ const Tutorial = (() => {
         + fmAction('connectors', 'OPEN ABILITIES');
     }
     if (tab === 'LINES') {
+      const R = refitNames(), e = fmEsc;
+      const junctions = R.machines.filter(m => m.junction);
       return '<p class="fm-lead">Turn repeatable work into a production line. You can still give ordinary jobs in COMMS without building belts.</p>'
         + '<div class="fm-route"><span>INBOX<small>work arrives</small></span><i aria-hidden="true">→</i><span>BAY<small>agent + instructions</small></span><i aria-hidden="true">→</i><span>OUTBOX<small>output leaves</small></span></div>'
-        + fmEntry('01', 'Place the stations', 'In REFIT, open <b>PROPS › WORKFLOW</b> and place an INBOX, BAY, and OUTBOX. Click the BAY in SELECT mode to assign an agent and define its step. Its room needs a computer.')
-        + fmEntry('02', 'Connect the route', 'Press <kbd>7</kbd> for BELT. <b>Click one machine, then another</b> to lay a connection automatically; dragging lays tiles by hand. Connect INBOX → BAY, then BAY → OUTBOX. Inspect the route and fix any flagged breaks.')
-        + fmEntry('03', 'Give the line a source', '<b>BUILD › CHANNELS</b> connects incoming messages. <b>WORK › AUTOMATION</b> manages routines and loops. Configure the source and destination for the workflow; an inbox marked <b>NO FEED</b> has no source feeding it.')
-        + fmEntry('TEST', 'A test crate is a rehearsal', 'Use <b>TEST</b> in REFIT to watch sample crates travel. That checks the visible route; it does not prove a real agent completed a job. Run real work and inspect its session and output afterward.')
-        + fmEntry('BRANCHES', 'Add steps when you need them', '<b>FILTER</b> selects by tag. <b>MERGER</b> brings lanes together. <b>SPLITTER</b> fans work into branches and needs at least two outgoing lanes. Assign agents to bays, not to belt tiles.')
-        + fmMission('Start with a layout', 'Press <kbd>9</kbd> for <b>LAYOUTS</b> in REFIT, choose a starter line, and place it. Inspect the bays and feed before running your job.')
+        + fmEntry('01', 'Place the stations', 'In REFIT, open <b>' + e(R.tab) + ' › ' + e(R.machinesShelf) + '</b> and place an INBOX, BAY, and OUTBOX. Click the BAY: the <b>Workflow panel</b> docks beside the floor — assign an agent and define its step. Its room needs a computer.')
+        + fmEntry('02', 'Connect the route', 'Press <kbd>' + e(R.beltKey) + '</kbd> for ' + e(R.belt) + '. <b>Click one machine, then another</b> to lay a connection automatically; dragging lays tiles by hand. Connect INBOX → BAY, then BAY → OUTBOX. Inspect the route and fix any flagged breaks.')
+        + fmEntry('03', 'Give the line a source', 'Click the INBOX: its Workflow panel answers <b>What starts this line?</b> — add a schedule there, or a message on a connected channel (<b>BUILD › CHANNELS</b> connects the platforms; <b>WORK › AUTOMATION</b> manages routines and loops). An inbox marked <b>NO FEED</b> has nothing feeding it yet.')
+        + fmEntry('TEST', 'Rehearse, then test for real', '<b>' + e(R.preview) + '</b> in the REFIT top bar animates sample crates along the route. It runs no agent: it checks the visible route only. To test for real, click a machine on the line and use <b>STEP TEST</b> in its Workflow panel: it runs the real agents one step at a time and pauses at every hand-off so you can read or edit what moves on. Inspect the session and output afterward.')
+        + fmEntry('BRANCHES', 'Add steps when you need them', junctions.map(m => '<b>' + e(m.label) + '</b>: ' + e(m.purpose) + '.').join(' ') + ' Assign agents to bays, not to belt tiles.')
+        + fmMission('Start with a layout', 'In REFIT, press <kbd>' + e(R.lineKey) + '</kbd> or open <b>' + e(R.tab) + ' › ' + e(R.lines) + '</b>: ' + (typeof R.lineCount === 'number' ? R.lineCount + ' ' : '') + 'ready-made layouts. Stamp one, then inspect its bays and feed before running your job.')
         + '<p class="fm-note"><b>Recipes = WHAT.</b> A job to launch. <b>Skills = HOW.</b> Reusable instructions. <b>Routines = WHEN.</b> Scheduled work. <b>Loops = UNTIL.</b> Repeated work with a stopping condition.</p>'
         + fmAction('automation', 'OPEN AUTOMATION');
     }

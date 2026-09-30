@@ -40,6 +40,8 @@
 <link rel="stylesheet" href="css/interface.css">
 <link rel="stylesheet" href="css/refit-kit.css">
 <link rel="stylesheet" href="css/refit-polish.css?v=3">
+<link rel="stylesheet" href="css/linewatch.css"><!-- LINE WATCH: the crate-inspect card on the live floor + the Workflow panel's TODAY row -->
+<link rel="stylesheet" href="css/workflow-panel.css"><!-- the DOCKED Workflow panel of REFIT (workflowpanel.js) — rides the refit glass tokens -->
 <link rel="stylesheet" href="css/utility-menus.css?v=1">
 <link rel="stylesheet" href="css/glass-demo.css">
 <link rel="stylesheet" href="css/glass-comms.css">
@@ -772,6 +774,7 @@
 <script src="app/propsearch.js"></script><!-- pure REFIT palette search matcher (flat lookup across all 120 props, both tiers) -->
 <script src="app/conveyor.js"></script>
 <script src="app/pipeline.js"></script>
+<script src="app/workflowline.js"></script><!-- pure readings of one conveyor line (run order, how-it-runs sentence, readiness, cost) from the compiled plan — the Workflow panel speaks only through it -->
 <script src="app/ghostline.js"></script><!-- GHOST PROJECTION (guided workflows Phase 3): a dashed projected crate loops an INCOMPLETE line so you watch the workflow before it exists — dedicated engine, never mixes with real telemetry -->
 
 <script src="app/propanchor.js"></script>
@@ -782,6 +785,7 @@
 <script src="app/skin-study-tone.js"></script><script src="app/skin-study-preview.js"></script>
 <script src="js/assets.js"></script>
 <script src="app/harness.js"></script>
+<script src="app/apiticket.js"></script><!-- scoped short-lived URL tickets: links/tabs/SSE/beacon never carry the master API token (sidecar/apitickets.js verifies) -->
 <script src="app/queryspine.js"></script><!-- keyed Harness.api GET state: in-flight dedupe, last-good truth, TTL + subscriber-owned polling; MUST load before cron consumers -->
 <script src="app/updatecore.js"></script>
 <script src="app/updates.js"></script>
@@ -790,6 +794,8 @@
 <script src="app/titlebar.js"></script><!-- custom window chrome: renders the themed titlebar ONLY when the desktop shell sets __STARNET_CUSTOM_CHROME__ (Windows, decorations off) -->
 <script src="app/ctxgauge.js"></script>
 <script src="app/floorstats.js"></script>
+<script src="app/linewatch.js"></script><!-- LINE WATCH (pure): bay status lamps, the crate card resolver, per-line plate text -->
+<script src="app/cratecard.js"></script><!-- LINE WATCH: the crate-inspect station card (DOM) -->
 <script src="app/slaglog.js"></script>
 <script src="app/xp.js"></script>
 <script src="app/returns.js"></script><!-- pure return-ritual engine: while-away digest rows + the pending OUTBOX-crate ledger -->
@@ -914,6 +920,7 @@
 
 <script src="app/equipmenthelp.js"></script>
 <script src="app/stationtemplates.js"></script>
+<script src="app/workflowpanel.js"></script><!-- the DOCKED Workflow panel (REFIT): one card for the whole line, beside the live floor -->
 <script src="app/build.js"></script>
 <script src="app/save.js"></script>
 <script src="app/cloudsavecore.js"></script><!-- pure retry/health brain (unit-tested); MUST load before cloudsave.js -->

@@ -529,4 +529,110 @@ function cycle(loops, res, at) {
   A.ok(!/ALREADY DONE AND APPROVED/.test(d), 'an interrupted pass is never represented as completed work');
 }
 
+// ---- 27. THE STALL BREAKER: a loop that claims work the ledger cannot see parks itself ----------------------
+// The 2026-09-17 customer incident: 98 overnight passes on a full-access loop, each "verified the files exist",
+// each filed as a candidate, each auto-approved, none changing anything. dryStreak never moved (the model never
+// conceded) and the review queue never filled (gate:'auto'). The breaker reads the LEDGER instead of the mood.
+{
+  // (a) the pure signal — what counts as "changed nothing"
+  const git = { workdir: 'C:\\proj', iterations: [] };
+  A.eq(LJ.stallSignal(git, { outcome: 'candidate', files: [], commit: null, summary: 'verified all files exist' }), 'no-change',
+    'a git loop pass with no files, no commit and no findings is a no-change stall');
+  A.eq(LJ.stallSignal(git, { outcome: 'candidate', files: ['a.js'], commit: null, summary: 'x' }), null, 'a touched file is real work');
+  A.eq(LJ.stallSignal(git, { outcome: 'candidate', files: [], commit: 'abc123', summary: 'x' }), null, 'a landed commit is real work');
+  A.eq(LJ.stallSignal(git, { outcome: 'candidate', files: [], commit: null, digest: { filed: true, count: 2 } }), null,
+    'a filed digest with findings is real work even with no diff (a report is the deliverable)');
+  A.eq(LJ.stallSignal(git, { outcome: 'noop', files: [], commit: null }), null, 'a noop is convergence, not a stall (own counter)');
+  A.eq(LJ.stallSignal(git, { outcome: 'failed', files: [], commit: null }), null, 'a failure is not a stall (own counter)');
+
+  // a loop with no workdir produces TEXT — that alone is never a stall; the SAME text again is
+  const txt = { workdir: null, iterations: [{ n: 1, outcome: 'candidate', summary: 'Verified that all the project files exist and everything is in place as expected.' }] };
+  A.eq(LJ.stallSignal(txt, { n: 2, outcome: 'candidate', files: [], commit: null, summary: 'Verified that all project files exist, everything is in place as expected.' }), 'echo',
+    'a text loop repeating its previous summary is an echo stall');
+  A.eq(LJ.stallSignal(txt, { n: 2, outcome: 'candidate', files: [], commit: null, summary: 'Drafted the pricing section with three tiers and a comparison table.' }), null,
+    'a text loop saying something NEW is real work');
+  A.eq(LJ.stallSignal({ workdir: null, iterations: [] }, { n: 1, outcome: 'candidate', files: [], commit: null, summary: 'first pass' }), null,
+    'the first pass of a text loop has nothing to echo');
+  A.ok(LJ.similarity('Fixed lint errors in foo.js and bar.js today', 'Fixed lint errors in baz.js and qux.js today') < LJ.ECHO_THRESHOLD,
+    'two genuinely different fixes with shared scaffolding words are NOT an echo');
+  A.eq(LJ.similarity('ok done', 'ok done'), 1, 'short summaries compare by exact match');
+  A.eq(LJ.similarity('ok done', 'all done'), 0, 'and a short near-miss is not an echo (overlap on two words is a coin toss)');
+
+  // (b) the store: three no-change passes in a row park a FULL-ACCESS git loop as paused, with the reason spelled out
+  const stalled = (loops, id, at, summary) => cycle(loops, { runId: id, status: 'ok', text: summary, title: summary, summary: summary, files: [], commit: null }, at);
+  let loops = mk({ gate: 'auto', workdir: 'C:\\proj', queueCap: 5 });
+  loops = stalled(loops, 's1', T0, 'Verified the files exist. Everything is in place.');
+  A.eq(one(loops).stallStreak, 1, 'one no-change pass counts');
+  A.eq(one(loops).iterations[0].stall, 'no-change', 'and is stamped on the row for the panel');
+  A.eq(one(loops).iterations[0].verdict, 'approved', 'the auto gate still recorded it honestly (it did run)');
+  A.eq(one(loops).state, 'idle', 'one stall does not park — the nudge gets a chance first');
+  const nudged = LJ.digest(one(loops), {});
+  A.ok(/CHANGED NOTHING/.test(nudged), 'the next pass is told its last pass changed nothing');
+  A.ok(/Checking that files exist is not work/.test(nudged), 'and named the exact loop it is in');
+  A.ok(/NOTHING-TO-DO/.test(nudged), 'with the honest exit still on the table');
+  loops = stalled(loops, 's2', T0 + MIN * 2, 'Confirmed all files are present. Everything is in place.');
+  A.eq(one(loops).stallStreak, 2, 'a second no-change pass extends the streak');
+  loops = stalled(loops, 's3', T0 + MIN * 4, 'Verified the files exist again. Everything is in place.');
+  const parked = one(loops);
+  A.eq(parked.stallStreak, 3, 'the third stall reaches the ceiling');
+  A.eq(parked.state, 'paused', 'and PARKS the loop — the 98-pass overnight burn cannot happen');
+  A.eq(parked.enabled, false, 'disabled, so decide() refuses to fire');
+  A.ok(/3 passes in a row changed nothing/.test(parked.stopReason), 'with the count in the reason');
+  A.eq(LJ.decide(parked, {}, { now: T0 + HOUR }).fire, false, 'a parked loop does not fire');
+  A.eq(LJ.decide(parked, {}, { now: T0 + HOUR }).binding, 'paused', 'and the binding names the quiet state');
+  const s = LJ.summarize(parked, { now: T0 + HOUR });
+  A.eq(s.stallStreak, 3, 'the projection carries the streak');
+  A.eq(s.stallStopAfter, 3, 'and the shipped ceiling');
+  A.eq(s.recent.filter(r => r.stall === 'no-change').length, 3, 'and marks every stalled row for the panel');
+
+  // (c) real work resets the streak; a stall after real work starts over
+  let mixed = mk({ gate: 'auto', workdir: 'C:\\proj', queueCap: 5 });
+  mixed = stalled(mixed, 'm1', T0, 'Verified the files exist.');
+  mixed = stalled(mixed, 'm2', T0 + MIN * 2, 'Verified the files exist.');
+  mixed = cycle(mixed, { runId: 'm3', status: 'ok', text: 'Fixed the null check', title: 'Fixed the null check', files: ['auth.js'], commit: 'c1' }, T0 + MIN * 4);
+  A.eq(one(mixed).stallStreak, 0, 'a pass that changed a file resets the streak');
+  A.eq(one(mixed).iterations[2].stall, undefined, 'and carries no stall mark');
+  mixed = stalled(mixed, 'm4', T0 + MIN * 6, 'Verified the files exist.');
+  A.eq(one(mixed).stallStreak, 1, 'a later stall starts a fresh count, not the old one');
+  A.eq(one(mixed).state, 'idle', 'so the loop is still live');
+
+  // (d) a REVIEW-gated git loop stalls the same way (the breaker is not an auto-only rule)
+  let rev = mk({ gate: 'review', workdir: 'C:\\proj', queueCap: 5 });
+  for (let i = 0; i < 3; i++) rev = stalled(rev, 'r' + i, T0 + i * MIN * 2, 'Verified the files exist.');
+  A.eq(one(rev).state, 'paused', 'a review loop that only looks is parked too, before the queue fills with nothing');
+
+  // (e) a text loop (no workdir) that does new work every pass is never touched
+  let research = mk({ gate: 'auto', queueCap: 5 });
+  const findings = ['Three competitors price at $29, $49 and $99 per seat with annual discounts.', 'Their onboarding funnels lose most users at the credential step, per public reviews.', 'Two of the three ship a free tier; the third gates everything behind a demo call.'];
+  findings.forEach((f, i) => { research = cycle(research, { runId: 'q' + i, status: 'ok', text: f, title: f.slice(0, 40), summary: f, files: [] }, T0 + i * MIN * 2); });
+  A.eq(one(research).stallStreak, 0, 'a research loop producing new text each pass has no stall streak');
+  A.eq(one(research).state, 'idle', 'and stays live');
+  // …but the same text three times is the echo case, and it parks
+  let echo = mk({ gate: 'auto', queueCap: 5 });
+  for (let i = 0; i < 3; i++) echo = cycle(echo, { runId: 'e' + i, status: 'ok', text: 'x', title: 'Verified', summary: 'Verified that every deliverable file exists and everything is in place.', files: [] }, T0 + i * MIN * 2);
+  A.eq(one(echo).iterations[0].stall, undefined, 'the first pass cannot be an echo');
+  A.eq(one(echo).iterations[1].stall, 'echo', 'the second is');
+  A.eq(one(echo).iterations[2].stall, 'echo', 'and the third');
+  A.eq(one(echo).stallStreak, 2, 'two echoes so far');
+  A.eq(one(echo).state, 'idle', 'not yet parked (the ceiling counts stalls, and the first pass was not one)');
+  echo = cycle(echo, { runId: 'e3', status: 'ok', text: 'x', title: 'Verified', summary: 'Verified that every deliverable file exists and everything is in place.', files: [] }, T0 + 6 * MIN * 2);
+  A.eq(one(echo).state, 'paused', 'the third echo parks it');
+  A.ok(/CHANGED NOTHING/.test(LJ.digest(one(echo), {})) && /repeated the pass before it/.test(LJ.digest(one(echo), {})), 'the nudge says WHY it counted (the report repeated itself)');
+
+  // (f) the ceiling is editable and clamped; RESUME clears the streak but keeps the marked rows
+  A.eq(LJ.stallStopOf({ stallStopAfter: 0 }), 1, 'a zero ceiling clamps to 1 (never "off" — off is the 98-pass burn)');
+  A.eq(LJ.stallStopOf({ stallStopAfter: 999 }), 20, 'and to the max');
+  A.eq(LJ.stallStopOf({}), 3, 'default 3');
+  A.eq(one(S.updateLoop(mk(), 'l1', { stallStopAfter: 7 }, { now: T0 })).stallStopAfter, 7, 'the ceiling is patchable');
+  const woke = one(S.resumeLoop(loops, 'l1', { now: T0 + DAY }));
+  A.eq(woke.state, 'idle', 'resume lifts the park');
+  A.eq(woke.stallStreak, 0, 'and clears the streak so it does not instantly re-park');
+  A.eq(woke.iterations.filter(it => it.stall).length, 3, 'but the record keeps what happened');
+
+  // (g) a pre-breaker record loads with the shipped ceiling and a clean streak (no upgrade step needed)
+  const old = S.loadEnvelope({ version: 1, loops: [{ id: 'old1', name: 'legacy', objective: 'o', iterations: [] }] });
+  A.eq(old.loops[0].stallStreak, 0, 'a legacy record has a clean stall streak');
+  A.eq(old.loops[0].stallStopAfter, 3, 'and the shipped ceiling');
+}
+
 A.report('loopjob (pure LOOP core)');

@@ -1,0 +1,7 @@
+{
+  "id": "tylerdurden",
+  "skin": "tylerdurden",
+  "targetStandingHeight": 19,
+  "characterId": "d7380144-7a68-493e-b8a7-d277b28bd102",
+  "detail": "status: completed\nid: d7380144-7a68-493e-b8a7-d277b28bd102\nrotations:\n  south: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/d7380144-7a68-493e-b8a7-d277b28bd102/rotations/south.png?t=1\n  east: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/d7380144-7a68-493e-b8a7-d277b28bd102/rotations/east.png?t=1\n  north: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/d7380144-7a68-493e-b8a7-d277b28bd102/rotations/north.png?t=1\n  west: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/d7380144-7a68-493e-b8a7-d277b28bd102/rotations/west.png?t=1\n  south-east: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/d7380144-7a68-493e-b8a7-d277b28bd102/rotations/south-east.png?t=1\n  north-east: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/d7380144-7a68-493e-b8a7-d277b28bd102/rotations/north-east.png?t=1\n  north-west: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/d7380144-7a68-493e-b8a7-d277b28bd102/rotations/north-west.png?t=1\n  south-west: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/d7380144-7a68-493e-b8a7-d277b28bd102/rotations/south-west.png?t=1\n"
+}

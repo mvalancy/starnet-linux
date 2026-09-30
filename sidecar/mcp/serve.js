@@ -12,7 +12,8 @@
      - discovers the token out-of-band the same way the browser does: GET / and scrape
        window.__STARNET_API_TOKEN__ (also honors STARNET_TOKEN / STARNET_API_TOKEN / SKYNET_API_TOKEN
        env and --token= / --port= / --host= flags);
-     - subscribes to the sidecar's SSE feed (GET /api/channels/events?token=) to fill the event queue.
+     - subscribes to the sidecar's SSE feed (GET /api/channels/events, token on the x-starnet-token header — a Node
+       client can set headers, and the sidecar refuses the master token in a URL) to fill the event queue.
 
    The server itself always boots and lists tools even when the sidecar is down; tools then return a
    structured "start StarNet" error (truthful telemetry). */
@@ -134,9 +135,9 @@ async function startSse() {
   sseActive = true;
   let buf = '';
   let req;
-  const path = '/api/channels/events?token=' + encodeURIComponent(token);
+  const path = '/api/channels/events';
   try {
-    req = http.request({ host: CFG.host, port: CFG.port, method: 'GET', path: path, headers: { 'Origin': BASE_LABEL, 'Accept': 'text/event-stream' } }, res => {
+    req = http.request({ host: CFG.host, port: CFG.port, method: 'GET', path: path, headers: { 'Origin': BASE_LABEL, 'Accept': 'text/event-stream', 'x-starnet-token': token } }, res => {
       // A 401/403 here means the token this feed presented is dead (station restarted): drop it so the reconnect
       // re-scrapes, instead of re-presenting the same rejected token every 3s forever.
       if (res.statusCode !== 200) { log('SSE feed status', res.statusCode); if (res.statusCode === 401 || res.statusCode === 403) invalidateToken('SSE ' + res.statusCode); res.resume(); sseActive = false; scheduleSseReconnect(); return; }

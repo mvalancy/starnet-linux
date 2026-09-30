@@ -32,14 +32,15 @@
     const rows = csvRows(raw, maxRows, maxCols);
     return '<table class="deliverable-csv"><tbody>' + rows.map((r, ri) => '<tr>' + r.map(c => '<' + (ri ? 'td' : 'th') + '>' + esc(c) + '</' + (ri ? 'td' : 'th') + '>').join('') + '</tr>').join('') + '</tbody></table>';
   }
-  function openUrl(url, token) { return String(url || '') + (String(url || '').indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(String(token || '')); }
+  // A server-built open URL -> a TICKETED one (a file- or run-scoped, minutes-long capability; ApiTicket.sign). The
+  // master token never rides an href: these URLs reach OS-browser history, Referer and copied links.
+  function openUrl(url) { return (typeof ApiTicket !== 'undefined' && ApiTicket.sign) ? ApiTicket.sign(url) : String(url || ''); }
   const fmtSize = n => n == null ? 'size unknown' : n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
-  const token = () => typeof window !== 'undefined' ? String(window.__STARNET_API_TOKEN__ || '') : '';
   const apiBase = () => typeof window !== 'undefined' ? String(window.__STARNET_API__ || '') : '';
   const post = (url, body) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }).then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; });
 
   function fileHref(f) {
-    const href = openUrl(f && f.openUrl, token());
+    const href = openUrl(f && f.openUrl);
     const base = apiBase();
     return base && href.charAt(0) === '/' ? base + href : href;
   }
@@ -54,8 +55,11 @@
     return (typeof window !== 'undefined' && window.__TAURI__ && window.__TAURI__.core) ? window.__TAURI__.core : null;
   }
   function revokePreview(state) {
-    if (!state || !state.blobUrl) return;
-    try { URL.revokeObjectURL(state.blobUrl); } catch (_) {}
+    if (!state) return;
+    state.previewId = (state.previewId || 0) + 1;
+    if (state.previewAbort) { state.previewAbort.abort(); state.previewAbort = null; }
+    if (state.previewExpiry) { clearTimeout(state.previewExpiry); state.previewExpiry = null; }
+    if (state.blobUrl) try { URL.revokeObjectURL(state.blobUrl); } catch (_) {}
     state.blobUrl = '';
   }
   async function openDesktop(r, f, href, say) {
@@ -71,7 +75,8 @@
     } catch (err) {
       // Cancel at the host confirmation is an answer. Falling through would bypass the user's refusal.
       if (/declined at the host/i.test(String(err || ''))) return true;
-      try { await core.invoke('open_external_url', { url: href }); }
+      // re-mint: the host confirmation above may have outlasted the first ticket's few-minute life
+      try { await core.invoke('open_external_url', { url: fileHref(f) }); }
       catch (_) { if (say) say('Could not open that file — use its session or workspace folder to find it on disk.', true); }
     }
     return true;
@@ -81,23 +86,37 @@
     revokePreview(state);
     if (state && state.previewHost && state.previewHost !== host) state.previewHost.innerHTML = '';
     if (state) state.previewHost = host;
+    const id = state.previewId;
+    const current = () => state.previewId === id && host.isConnected !== false;
+    const controller = new AbortController(); state.previewAbort = controller;
     host.innerHTML = '<p class="muted">Loading safe preview…</p>';
     try {
-      const response = await fetch(fileHref(f), { cache: 'no-store' });
+      const response = await fetch(fileHref(f), { cache: 'no-store', signal: controller.signal });
+      if (!current()) return true;
       if (!response.ok) throw new Error('HTTP ' + response.status);
       if (f.preview === 'image') {
-        const blobUrl = URL.createObjectURL(await response.blob());
+        const blob = await response.blob();
+        if (!current()) return true;
+        const blobUrl = URL.createObjectURL(blob);
         if (state) state.blobUrl = blobUrl;
         host.innerHTML = '<img class="deliverable-image" alt="Preview of ' + esc(f.path) + '">';
         const img = host.querySelector('img');
-        const expiry = setTimeout(() => revokePreview(state), 30000);
-        img.onload = img.onerror = () => { clearTimeout(expiry); revokePreview(state); };
+        const release = () => {
+          // A late load/error from the previous image owns only its own URL.
+          if (state.blobUrl !== blobUrl) return;
+          clearTimeout(state.previewExpiry); state.previewExpiry = null;
+          URL.revokeObjectURL(blobUrl); state.blobUrl = '';
+        };
+        state.previewExpiry = setTimeout(release, 30000);
+        img.onload = img.onerror = release;
         img.src = blobUrl;
       } else {
         const text = await response.text();
+        if (!current()) return true;
         host.innerHTML = '<div class="cfg-block"><b>SAFE PREVIEW · ' + esc(f.path) + '</b>' + (f.preview === 'markdown' ? safeMarkdown(text) : safeCsv(text, 50, 20)) + '</div>';
       }
     } catch (e) {
+      if (!current()) return true;
       host.innerHTML = '';
       // A 404 here has ONE ordinary cause: the file was moved or deleted on disk after the library recorded it.
       // KEEP copies rather than moves, so the archive normally survives — but the Commander owns that folder and
@@ -106,7 +125,7 @@
       if (say) say(gone
         ? 'That file is no longer on disk — it was moved or deleted after this deliverable was recorded.'
         : 'Could not preview that file: ' + e.message, true);
-    }
+    } finally { if (state.previewAbort === controller) state.previewAbort = null; }
     return true;
   }
   async function handleOpenClick(ev, rows, state, say) {
@@ -118,8 +137,9 @@
     if (!r || !f || !f.openUrl) return false;
 
     const core = tauriCore();
-    // A browser-only non-preview is already a real href; let the anchor perform its native navigation.
-    if ((!core || !core.invoke) && (!f.preview || f.sandboxed)) return false;
+    // A browser-only non-preview is already a real href; let the anchor perform its native navigation — with a
+    // FRESH ticket (the rendered one may be past its few-minute life; a click handler runs before the navigation).
+    if ((!core || !core.invoke) && (!f.preview || f.sandboxed)) { try { link.href = fileHref(f); } catch (_) {} return false; }
     ev.preventDefault();
     ev.stopPropagation();
     if (core && core.invoke) return openDesktop(r, f, fileHref(f), say);

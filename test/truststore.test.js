@@ -306,6 +306,21 @@ const o = TrustStore.currentOffer(); if (o) { TrustStore.accept(o); TrustStore.d
 TrustStore.reset();
 A.eq(emitted, 0, 'TrustStore never emits on U.bus (read-only citizen; lint-emits stays green)');
 
+// Initiative writes use the same acknowledgement rule as grants.
+initiative = 'propose';
+let finishWrite;
+TrustStore.init({ getPosture: () => ({ initiative }), setInitiative: () => new Promise(r => { finishWrite = r; }) });
+TrustStore.reset();
+const acceptance = TrustStore.accept({ kind: 'initiative', to: 'leash' });
+A.eq(TrustStore._state().earned.initiative, undefined, 'pending initiative has no earned provenance');
+finishWrite({ ok: false });
+A.eq(await acceptance, false, 'failed asynchronous initiative is not accepted');
+A.eq(TrustStore._state().earned.initiative, undefined, 'failed initiative leaves no provenance');
+const accepted = TrustStore.accept({ kind: 'initiative', to: 'leash' });
+initiative = 'leash'; finishWrite({ ok: true });
+A.eq(await accepted, true, 'confirmed asynchronous initiative is accepted');
+A.eq(TrustStore._state().earned.initiative.to, 'leash', 'only confirmed initiative records provenance');
+
 A.report('truststore.test');
 
 })().catch(e => { console.log('FAIL: uncaught — ' + (e && e.stack || e)); process.exit(1); });

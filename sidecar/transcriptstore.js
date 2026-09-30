@@ -244,6 +244,9 @@
       // Recovery provenance is deliberately an opaque run id, never tool arguments. It lets boot reconciliation
       // prove that a journal's final rows already reached durable transcript storage before retiring the journal.
       if (e.sourceRunId != null) { const id = str(e.sourceRunId).slice(0, 200); if (id) entry.sourceRunId = id; }
+      // UNTRUSTED-CONTENT TAINT (additive, sec-taint 09-25): the writing run's taint source at the moment this row
+      // was written. A later run that REPLAYS this row replays untrusted content, so it must start tainted (taintOf).
+      if (e.taint) { const t = str(e.taint).slice(0, 200); if (t) entry.taint = t; }
       return entry;
     }
 
@@ -287,14 +290,15 @@
     // shape and same skip rule (injected 'system' fences are not dialogue), so the durable file is unchanged;
     // only WHICH messages are considered new differs. Idempotent: appending the same array twice writes once,
     // which also makes it safe to drain mid-run (at a compaction) and again at run end.
-    function appendNew(streamId, agentId, messages) {
+    function appendNew(streamId, agentId, messages, opts) {
       if (!Array.isArray(messages)) return 0;
+      const taint = opts && opts.taint ? opts.taint : null;
       let n = 0;
       for (const m of messages) {
         if (!m || typeof m !== 'object' || m[PERSISTED]) continue;
         markPersisted([m]);                                    // mark BEFORE the role filter so fences aren't re-checked
         if (!ROLES.has(m.role) || m.role === 'system') continue;
-        append({ streamId: streamId, agentId: agentId, role: m.role, content: flattenContent(m.content), toolCalls: m.tool_calls, toolCallId: m.tool_call_id });
+        append({ streamId: streamId, agentId: agentId, role: m.role, content: flattenContent(m.content), toolCalls: m.tool_calls, toolCallId: m.tool_call_id, taint: taint });
         n++;
       }
       return n;
@@ -310,11 +314,89 @@
       for (const m of messages) {
         if (!m || typeof m !== 'object' || m[PERSISTED]) continue;
         if (!ROLES.has(m.role) || m.role === 'system') { markPersisted([m]); continue; }
-        appendStrict({ streamId: streamId, agentId: agentId, role: m.role, content: flattenContent(m.content), toolCalls: m.tool_calls, toolCallId: m.tool_call_id, sourceRunId: opts.sourceRunId });
+        appendStrict({ streamId: streamId, agentId: agentId, role: m.role, content: flattenContent(m.content), toolCalls: m.tool_calls, toolCallId: m.tool_call_id, sourceRunId: opts.sourceRunId, taint: opts.taint || null });
         markPersisted([m]);
         n++;
       }
       return n;
+    }
+
+    /* H2 RECOVERY RECONCILIATION — which recovered turns does the transcript ALREADY hold?
+       A recovery continuation starts from the run journal's provider-valid checkpoint of an interrupted run. The
+       interrupted run wrote its turns to this transcript as it went (per-turn persistence), but not necessarily
+       ALL of them: a hard kill can land between the journal checkpoint and the transcript write, a parallel tool
+       batch's results can be journaled but not yet checkpointed, and the recovery planner adds its own pairing
+       results for calls that never returned. Marking the whole recovered prompt persisted (the old rule) dropped
+       those rows forever; appending it all again would duplicate everything the source run did write.
+       markRecorded() marks exactly the recovered messages that `rows` (the source run's own transcript rows)
+       already prove durable, by IDENTITY rather than position — the source may have compacted, so the recovered
+       working set is not a positional copy of what it wrote: a tool result by its tool_call_id, an assistant
+       tool-call turn by its call ids, any other turn by role + stored (redacted, capped) content. Multiset:
+       each recorded row vouches for ONE message. Everything left unmarked is genuinely missing and is appended
+       by the next appendNewStrict — in order, strictly. System fences are marked (they are never dialogue). */
+    function callIdsKey(ids) { return ids.map(id => str(id).slice(0, 200)).join('\u0001'); }
+    function rowIdentity(r) {
+      if (!r || typeof r !== 'object') return '';
+      if (r.role === 'tool') return 'tool\u0000' + str(r.toolCallId);
+      if (r.role === 'assistant' && r.toolCalls) {
+        let ids = null;
+        try { const tc = JSON.parse(r.toolCalls); if (Array.isArray(tc) && tc.length) ids = tc.map(c => c && c.id); }
+        catch (e) { failNote('transcript.rowIdentity', e); }   // a capped/unparsable call list falls back to content
+        if (ids) return 'calls\u0000' + callIdsKey(ids);
+      }
+      return str(r.role) + '\u0000' + str(r.content);
+    }
+    function messageIdentity(m) {
+      if (m.role === 'tool') return 'tool\u0000' + str(m.tool_call_id).slice(0, 200);
+      if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) return 'calls\u0000' + callIdsKey(m.tool_calls.map(c => c && c.id));
+      return str(m.role) + '\u0000' + buildEntry({ content: flattenContent(m.content) }).content;
+    }
+    function markRecorded(messages, recordedRows) {
+      if (!Array.isArray(messages)) return 0;
+      const vouch = new Map();
+      for (const r of (Array.isArray(recordedRows) ? recordedRows : [])) {
+        const k = rowIdentity(r);
+        if (k) vouch.set(k, (vouch.get(k) || 0) + 1);
+      }
+      let n = 0;
+      for (const m of messages) {
+        if (!m || typeof m !== 'object' || m[PERSISTED]) continue;
+        if (!ROLES.has(m.role) || m.role === 'system') { markPersisted([m]); continue; }
+        const k = messageIdentity(m);
+        const left = vouch.get(k) || 0;
+        if (!left) continue;
+        vouch.set(k, left - 1);
+        markPersisted([m]);
+        n++;
+      }
+      return n;
+    }
+
+    /* REPLAYED TAINT (sec-taint 09-25). Does replaying `messages` (a run's prior context on `streamId`) bring back
+       rows a TAINTED run wrote? Two independent proofs, either suffices:
+         1. IDENTITY — a replayed message matches a stored tainted row (same identity markRecorded uses: tool result
+            by call id, tool-call turn by call ids, anything else by role + redacted content).
+         2. WINDOW — a caller-held history (the browser's own copy) may not be byte-identical to the stored rows, so
+            the stream's newest rows covering as many user/assistant turns as were replayed are checked too.
+       Decay is structural, never silent: once tainted rows fall outside what is replayed (a new session, a history
+       window that no longer reaches them) the next run starts clean, because the untrusted text is no longer in its
+       context. Returns the first taint source found, else null. */
+    function taintOf(streamId, messages, o) {
+      o = o || {};
+      const prior = (Array.isArray(messages) ? messages : []).filter(m => m && typeof m === 'object' && ROLES.has(m.role) && m.role !== 'system');
+      if (!prior.length) return null;
+      const rowsNow = history(streamId, { limit: num(o.limit) > 0 ? num(o.limit) : 1200 });
+      if (!rowsNow.some(r => r && r.taint)) return null;          // the common case: this stream never carried taint
+      const tainted = new Map();
+      for (const r of rowsNow) if (r && r.taint) { const k = rowIdentity(r); if (k && !tainted.has(k)) tainted.set(k, str(r.taint)); }
+      for (const m of prior) { const hit = tainted.get(messageIdentity(m)); if (hit) return hit; }
+      let turns = prior.filter(m => m.role === 'user' || m.role === 'assistant').length;
+      for (let i = rowsNow.length - 1; i >= 0 && turns > 0; i--) {
+        const r = rowsNow[i];
+        if (r && r.taint) return str(r.taint);
+        if (r && (r.role === 'user' || r.role === 'assistant')) turns--;
+      }
+      return null;
     }
 
     // the recent dialogue for ONE workstream, oldest-first (ready to replay back into COMMS). We keep the LAST
@@ -364,7 +446,7 @@
     }
 
     return {
-      append, appendStrict, appendTurns, appendNew, appendNewStrict, markPersisted, history, reconstruct, search, streams, around,
+      append, appendStrict, appendTurns, appendNew, appendNewStrict, markPersisted, markRecorded, history, reconstruct, taintOf, search, streams, around,
       all() { return rows.map(r => Object.assign({}, r)); },
       count() { return rows.length; },
       _internals: { normStream, SID_RE }

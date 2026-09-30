@@ -453,13 +453,8 @@ const Onboarding = (() => {
   // unattended, so it gets no line. Fail-open: an unreachable route (or missing engine) → '' → the ack stands alone.
   async function nightshiftPostureLine(preset) {
     if (preset === 'wait' || preset === '' || typeof NightReport === 'undefined' || typeof fetch !== 'function') return '';
-    // mirror the just-set posture to the server and wait, so the status route reflects THIS pick (not the last one).
-    try {
-      if (typeof AutonomyStore !== 'undefined' && AutonomyStore.summary) {
-        const p = AutonomyStore.summary() || {};
-        await fetch('/api/autonomy/posture', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ posture: { initiative: p.initiative, reach: p.reach, leashPerDay: p.leashPerDay } }) });
-      }
-    } catch (_) { /* posture sync best-effort — read whatever the server has */ }
+    // The cadence writer is awaited before this read; never issue a second,
+    // unacknowledged posture write from a presentation helper.
     let status = null;
     try { const r = await fetch('/api/nightshift/status', { cache: 'no-store' }); if (r && r.ok) status = await r.json(); } catch (_) { return ''; }
     try { return NightReport.postureOutlook(status) || ''; } catch (_) { return ''; }
@@ -509,7 +504,10 @@ const Onboarding = (() => {
       if (!isSkip && s.dossierDim && typeof DossierStore !== 'undefined' && DossierStore.upsert) { DossierStore.upsert(s.dossierDim, { text, source: 'onboarding', weight: 'stated' }); ink(s.dossierDim, text); }   // V3: always the Commander's own words now (steer chips can't write); the ink stamp shows the write landing
       // the autonomy cadence beat writes the chosen OPENING posture straight to AutonomyStore (the option value is a
       // cadence-preset id). Skipping ('Decide later') leaves the safe floor — fully wait-for-me.
-      if (!isSkip && s.posturePreset && typeof AutonomyStore !== 'undefined' && AutonomyStore.applyPreset) AutonomyStore.applyPreset(text);
+      if (!isSkip && s.posturePreset && typeof AutonomyStore !== 'undefined' && AutonomyStore.applyPreset) {
+        const saved = await AutonomyStore.applyPreset(text);
+        if (!saved.ok) { await Dialogue.say([seg(saved.error || 'That setting could not be saved. Please try again.', 44, 360)]); continue; }
+      }
       // seed the user-affinity profile from the stated PURPOSE so day-one suggestions aren't blank (the engine
       // ignores this once real usage accrues). Cheap, explicit, no inference.
       if (!isSkip && s.field === 'purpose' && typeof ProfileStore !== 'undefined' && typeof Classify !== 'undefined') ProfileStore.seed(Classify.getTag(text));

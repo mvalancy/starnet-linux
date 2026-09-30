@@ -11,7 +11,7 @@ the layout IS the org: rooms = capability scopes, placed props = real tool grant
 (**object = capability**), conveyor items = real work. The core product law is **truthful
 telemetry**: the UI never asserts anything the harness can't prove.
 
-- Thesis: beginner-friendly and power-user-complete — sandbox freedom, real work, Factorio-style pride loop. User-work quotas are off by default; limits are opt-in.
+- Thesis: beginner-friendly and power-user-complete — sandbox freedom, real work, Factorio-style pride loop. User-work quotas are off by default; limits are opt-in — with ONE shipped exception: a $25/day SOFT spend rail on metered runs (one-click RESUME, editable, 0 = off; `sidecar/budgetcaps.js`, DECISIONS 2026-09-17).
 - Lineage: UltronOS (banned from Claude API 2026-04-04) → "v7" fake sim → this real harness
   (reuses v7's canvas + U.bus). Rebranded Skynet→StarNet 2026-06-22; internal `skynet.*`
   keys are intentionally kept.
@@ -158,7 +158,11 @@ everything in `docs/archive/`.
 
 When in doubt: the newer date wins, the audit beats the plan, and trunk beats both.
 
-## The biggest bottlenecks right now (brutal, 2026-07-06)
+## Bottlenecks as of 2026-07-06 (historical — current priorities live in docs/NEXT.md)
+
+Since this list was written: releases are public on `androoAGI/starnet-releases` (every cut since v0.10.x),
+the release train signs Windows installers and notarizes both macOS builds, and outside users file issues
+and PRs on the public repo. Kept for the reasoning, not as current status.
 
 1. **Everything user-facing is bottlenecked on Andrew's ~1 hour of launch chores** — publish
    the releases repo (updater 404s for the public until then), rotate the dev OpenRouter

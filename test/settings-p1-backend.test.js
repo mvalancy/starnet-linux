@@ -38,7 +38,12 @@ ok(/handleConfigReset[\s\S]{0,2200}unknown or non-resettable section/.test(src),
 ok(/function resolveKnob\(/.test(src), 'P1-9: resolveKnob implements the precedence');
 ok(/resolveKnob\('MAX_ITERS', 'maxIters', 0\)/.test(src), 'P1-9: maxIters defaults to unlimited and resolves via resolveKnob');
 ok(/resolveKnob\('MAX_CONCURRENT_AGENTS', 'maxConcurrentAgents', 0\)/.test(src), 'P1-9: maxConcurrentAgents defaults to unlimited and resolves via resolveKnob');
-ok(/perRun:\s*num\(ENV\('BUDGET_PER_RUN'\), 0\)/.test(src), 'P1-9: the per-run spend ceiling defaults off');
+// 2026-09-17: the four caps read their defaults from ONE shipped table (budgetcaps.SHIPPED_DEFAULTS) so the
+// runaway-loop day rail and the still-off per-run ceiling cannot drift apart. Per-run stays off — asserted on
+// the table itself, not on a literal the source no longer carries.
+ok(/perRun:\s*num\(ENV\('BUDGET_PER_RUN'\), BUDGET_SHIPPED\.perRun\)/.test(src), 'P1-9: the per-run spend ceiling resolves env > shipped default');
+ok(require('../sidecar/budgetcaps.js').shippedDefaults().perRun === 0, 'P1-9: the per-run spend ceiling defaults off');
+ok(require('../sidecar/budgetcaps.js').shippedDefaults().perDay === 25, 'the per-day rail ships ON at $25 (the 2026-09-17 runaway-loop incident)');
 ok(/ORCH_PER_WORKER\s*=\s*num\(ENV\('BUDGET_PER_WORKER'\), 0\)/.test(src), 'P1-9: the delegated-worker spend ceiling defaults off');
 ok(/ORCH_WORKER_MAX_ITERS\s*=\s*num\(ENV\('WORKER_MAX_ITERS'\), 0\)/.test(src), 'P1-9: the delegated-worker iteration ceiling defaults off');
 ok(/maxConcurrent:\s*\(\)\s*=>\s*num\(ENV\('V1_MAX_CONCURRENT'\), 0\)/.test(src), 'P1-9: the external API concurrency ceiling defaults off');

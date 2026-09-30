@@ -135,6 +135,7 @@ async function run() {
     const store = fakeStore(); let lastRun = null; const asked = [];
     const runOnce = async (o) => { lastRun = o; o.emit('agent.run.start', { agentId: o.agentId, runId: o.runId, trigger: 'event', model: o.model }); o.emit('agent.token', { agentId: o.agentId, runId: o.runId, delta: 'ok' }); o.emit('agent.run.end', { agentId: o.agentId, runId: o.runId, reason: 'done', turns: 1, usd: 0 }); };
     const mk = (transcribe, classify) => makeChannelHub({
+      isOwner: () => true,   // these scenarios are the paired owner (the non-owner gate: channels.owner-gates.test.js)
       runOnce, store, send: () => Promise.resolve({ ok: true }), secrets: () => ({ key: 'k', model: 'm' }),
       classify: classify || (() => false), newId: idGen(),
       fetchMedia: () => Promise.resolve({ ok: true, buffer: Buffer.from('OGGBYTES') }),
@@ -249,6 +250,7 @@ async function run() {
     const store = fakeStore();
     store.saveChatRecord = (chatId, patch) => { saves.push({ chatId, patch }); return patch; };
     const hub = makeChannelHub({
+      isOwner: () => true,   // these scenarios are the paired owner (the non-owner gate: channels.owner-gates.test.js)
       runOnce: async () => {}, store,
       send: (chatId, text) => { sent.push(text); return Promise.resolve({ ok: true }); },
       secrets: () => ({ key: 'k', model: 'm' }), classify: () => false, newId: idGen()
@@ -351,6 +353,7 @@ async function run() {
     let runs = 0;
     const sent = [];
     const hub = makeChannelHub({
+      isOwner: () => true,   // these scenarios are the paired owner (the non-owner gate: channels.owner-gates.test.js)
       runOnce: async () => { runs++; }, store,
       send: (chatId, text) => { sent.push(text); return Promise.resolve({ ok: true }); },
       secrets: () => ({ key: 'k', model: 'm' }), classify: () => false, newId: idGen()
@@ -377,6 +380,7 @@ async function run() {
     // and the remembered chatter is replayed when the bot IS finally addressed
     let lastRun = null;
     const hub2 = makeChannelHub({
+      isOwner: () => true,   // these scenarios are the paired owner (the non-owner gate: channels.owner-gates.test.js)
       runOnce: async (o) => { lastRun = o; o.emit('agent.run.start', { agentId: o.agentId, runId: o.runId, trigger: 'event', model: o.model }); o.emit('agent.token', { agentId: o.agentId, runId: o.runId, delta: 'ok' }); o.emit('agent.run.end', { agentId: o.agentId, runId: o.runId, reason: 'done', turns: 1, usd: 0 }); },
       store, send: () => Promise.resolve({ ok: true }), secrets: () => ({ key: 'k', model: 'm' }), classify: () => false, newId: idGen()
     });
@@ -391,6 +395,7 @@ async function run() {
     const store = fakeStore();
     store.saveChatRecord = (chatId, patch) => { saves.push(patch); return patch; };
     const hub = makeChannelHub({
+      isOwner: () => true,   // these scenarios are the paired owner (the non-owner gate: channels.owner-gates.test.js)
       runOnce: async () => {}, store, send: (c, t) => { sent.push(t); return Promise.resolve({ ok: true }); },
       secrets: () => ({ key: 'k', model: 'm' }), classify: () => false, newId: idGen()
     });
@@ -419,6 +424,7 @@ async function run() {
       const store = fakeStore();
       store.saveChatRecord = () => ({});
       const hub = makeChannelHub({
+      isOwner: () => true,   // these scenarios are the paired owner (the non-owner gate: channels.owner-gates.test.js)
         runOnce: async () => {}, store, send: (c, t) => { sent.push(t); return Promise.resolve({ ok: true }); },
         secrets: () => ({ key: 'k', model: 'm' }), classify: () => false, newId: idGen(),
         canReadAllGroupMessages: privacy

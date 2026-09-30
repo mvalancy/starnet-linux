@@ -170,7 +170,9 @@
       // on EVERY turn, so one zod-authored connector would take out every Gemini run. Prune to the
       // documented field set here, at the wire seam that owns the constraint.
       const decl = { name, description: fn.description || '' };
-      const params = toolschema.forGemini(fn.parameters || {});
+      // sanitizeKeys first: property names every wire accepts; the model's args are mapped back to the declared
+      // names on the way in (see stream()).
+      const params = toolschema.forGemini(toolschema.sanitizeKeys(fn.parameters || {}));
       if (!toolschema.isEmptyObjectSchema(params)) decl.parameters = params;
       declarations.push(decl);
     }
@@ -311,7 +313,10 @@
       body.generationConfig = Object.assign({}, body.generationConfig, { thinkingConfig: cfg });
     }
     function buildBody(req) {
-      const converted = messagesToGemini(req.messages || []);
+      // ONE pre-send normalization (provider.js prepareWireMessages): a functionCall left unanswered mid-history (a
+      // run that died at the tool boundary) gets its functionResponse before the next turn, instead of being
+      // followed straight by user text. Gemini's wire carries no call ids (it pairs by position), so no id rewrite.
+      const converted = messagesToGemini(provider.prepareWireMessages(req.messages || [], 'gemini'));
       const body = { contents: converted.contents };
       if (converted.systemInstruction) body.systemInstruction = converted.systemInstruction;
       const tools = toGeminiTools(req.tools);
@@ -320,12 +325,16 @@
       return body;
     }
 
-    async function* stream(req) {
+    // A tool advertised under sanitized property keys gets its args mapped back to the declared names before
+    // the loop sees them; with no such tool this is the raw stream itself.
+    function stream(req) { return toolschema.withRestoredArgKeys(wireStream(req), req && req.tools); }
+
+    async function* wireStream(req) {
       req = req || {};
       maybeRewarmCatalog();
       const body = buildBody(req);
       let res;
-      try { res = await requestWithRetry(req.model, body, req.signal); }
+      try { res = await requestWithRetry(req.model, body, req.signal, provider.runtime.preStreamRetries(req, RETRY_DELAYS.length)); }
       catch (e) { if (isAbort(e, req.signal)) return; throw e; }
       const reader = timeouts.idleGuardedReader(res.body.getReader(), { signal: req.signal });
       const dec = new TextDecoder();
@@ -347,7 +356,12 @@
       }
       function* emitFrom(j) {
         if (!j || typeof j !== 'object') return;
-        if (j.error) throw new Error('gemini stream error: ' + ((j.error && (j.error.message || j.error.status || j.error.code)) || 'unknown'));
+        if (j.error) {
+          const err = new Error('gemini stream error: ' + ((j.error && (j.error.message || j.error.status || j.error.code)) || 'unknown'));
+          err.body = j;   // {error:{code, status:'RESOURCE_EXHAUSTED'|…}} — errorClass reads the status code
+          err.ownMessage = true;
+          throw err;
+        }
         const candidates = Array.isArray(j.candidates) ? j.candidates : [];
         let usageEmittedForFrame = false;   // usage rides the done-carrying frame; emit it exactly once, BEFORE done
         for (let ci = 0; ci < candidates.length; ci++) {
@@ -444,7 +458,11 @@
       }
     }
 
-    async function requestWithRetry(model, body, signal) {
+    async function requestWithRetry(model, body, signal, maxRetries) {
+      // maxRetries: the loop may LOWER this ladder (req.preStreamRetries = 0 once it owns the pacing — provider.js).
+      // `waited` is the backoff actually spent; the exhaustion marker reports it so the loop counts it, not repeats it.
+      const retries = (maxRetries == null) ? RETRY_DELAYS.length : maxRetries;
+      let waited = 0;
       for (let attempt = 0; ; attempt++) {
         if (signal && signal.aborted) throw abortError();
         let res;
@@ -460,22 +478,29 @@
           });
         } catch (e) {
           if (isAbort(e, signal)) throw e;
-          if (attempt < RETRY_DELAYS.length) { await delay(RETRY_DELAYS[attempt], signal); continue; }
-          throw provider.runtime.markPreStreamRetriesExhausted(e);
+          // a TLS rejection or a crash in our own request code cannot heal by re-sending: fail fast, unmarked
+          if (!classifyApiError(e, { model }).retryable) throw e;
+          if (attempt < retries) { waited += RETRY_DELAYS[attempt]; await delay(RETRY_DELAYS[attempt], signal); continue; }
+          throw provider.runtime.markPreStreamRetriesExhausted(e, { attempts: attempt + 1, waitedMs: waited });
         } finally {
           guard.disarm();
         }
         if (res.ok && res.body) return res;
-        let detail = res.statusText || '';
-        try { const j = await res.json(); detail = (j && j.error && (j.error.message || j.error.status || j.error.code)) || JSON.stringify(j); }
+        let detail = res.statusText || '', errBody = null;
+        try { const j = await res.json(); errBody = j; detail = (j && j.error && (j.error.message || j.error.status || j.error.code)) || JSON.stringify(j); }
         catch (_) { try { detail = (await res.text()).slice(0, 300); } catch (_) {} }
         const err = new Error('gemini http ' + res.status + ' - ' + detail);
         err.status = res.status;
         err.headers = res.headers;
+        /* KEEP THE PROVIDER'S ERROR BODY (same law as codex.js). The message above keeps only error.message, but the
+           classifier's decisive signal can be the canonical status ({error:{status:'RESOURCE_EXHAUSTED'}}); dropping
+           the body left errorClass reading prose. The message stays the adapter's own sentence (label + status —
+           what the UI routes on; err.ownMessage tells errorClass so); the body rides alongside for its code. */
+        if (errBody && typeof errBody === 'object') { err.body = errBody; err.ownMessage = true; }
         const cls = classifyApiError(err, { model });
         err.transient = cls.retryable;
-        if (cls.retryable && attempt < RETRY_DELAYS.length) { await delay(Math.min(60000, Math.max(RETRY_DELAYS[attempt], cls.retryAfterMs || 0)), signal); continue; }
-        throw cls.retryable ? provider.runtime.markPreStreamRetriesExhausted(err) : err;
+        if (cls.retryable && attempt < retries) { const wait = Math.min(60000, Math.max(RETRY_DELAYS[attempt], cls.retryAfterMs || 0)); waited += wait; await delay(wait, signal); continue; }
+        throw cls.retryable ? provider.runtime.markPreStreamRetriesExhausted(err, { attempts: attempt + 1, waitedMs: waited }) : err;
       }
     }
 

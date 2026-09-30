@@ -620,7 +620,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 // the host's own posture thunk must be wired at the call site (the tool cannot read the roster itself)
 {
   const src = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
-  A.ok(/approvalPosture: \(\) => \(FULL_ACCESS \|\| \(\(agentRoster\.get\(agentId\) \|\| \{\}\)\.approvalMode === 'full'\)\) \? 'full' : 'ask'/.test(src),
+  A.ok(/approvalPosture: \(\) => \(!hostPowerWithheldFor\(o\) && \(FULL_ACCESS \|\| \(\(agentRoster\.get\(agentId\) \|\| \{\}\)\.approvalMode === 'full'\)\)\) \? 'full' : 'ask'/.test(src),
     'the run host wires the EFFECTIVE (lead) approval posture into makeOrchestrationTools');
 }
 

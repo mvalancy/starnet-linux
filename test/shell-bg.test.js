@@ -17,7 +17,14 @@ function makeFakeSpawn() {
     if (cmd === 'taskkill') {
       spawn.taskkills++;
       spawn.order.push('taskkill');
-      return { pid: 0, on() {}, unref() {}, stdout: { on() {} }, stderr: { on() {} } };
+      // h2: kill() now waits for taskkill's verdict — answer it (exit 0) and let the named root close, as the OS would
+      const h = {};
+      setImmediate(() => {
+        const target = spawn.children.find(c => String(c.pid) === String(argsOrOpts[1]));
+        if (target) target._close(1);
+        if (h.close) h.close(0);
+      });
+      return { pid: 0, on(ev, fn) { h[ev] = fn; }, unref() {}, stdout: { on() {} }, stderr: { on() {} } };
     }
     let dataCb = null, closeCb = null, errCb = null;
     const child = {
@@ -94,19 +101,22 @@ let T = 1000; const clock = { now: () => T };
 }
 
 // ---- kill reaps a running child and reports killed on its (simulated) close ----
-{
+// h2: kill() is async and answers only with proof (test/shellbg.kill-verified.test.js holds the full contract).
+const killBlock = (async () => {
   const spawn = makeFakeSpawn();
   const exits = [];
   const bg = makeShellBg({ spawn, clock, onExit: (e) => exits.push(e), maxPerAgent: 5, isWin: true });
   bg.start({ agentId: 'a', cmd: 'sleep 99' });   // bg_1
   const k = bg.kill('a', 'bg_1');
-  A.ok(k.ok, 'kill ok');
   A.eq(spawn.order, ['taskkill'], 'Windows asks taskkill /T to discover the live tree BEFORE killing its root');
   A.ok(!spawn.children[0].killed, 'the direct child kill does not race taskkill tree discovery');
   spawn.children[0]._close(137);   // the OS reaps it after the kill
   A.eq(exits[0].killed, true, 'a killed process reports killed:true on exit');
-  A.ok(!bg.kill('a', 'nope').ok, 'killing an unknown id -> not ok');
-}
+  const kr = await k;
+  A.eq(kr.ok, false, 'without a process table the kill is not claimed as done (it was ok the instant taskkill launched)');
+  A.eq(!!(kr.unverified && kr.rootExited), true, 'it says what it knows: the root exited, the tree is unverified');
+  A.ok(!(await bg.kill('a', 'nope')).ok, 'killing an unknown id -> not ok');
+})();
 
 // ---- a post-spawn error is not process-exit truth; only close releases the cleanup receipt ----
 {
@@ -126,17 +136,18 @@ let T = 1000; const clock = { now: () => T };
 }
 
 // ---- Windows reaper launch failure falls back to the direct child ----
-{
+const reaperBlock = (async () => {
   const baseSpawn = makeFakeSpawn();
   const spawn = function (cmd, opts) {
     if (cmd === 'taskkill') throw new Error('taskkill unavailable');
     return baseSpawn(cmd, opts);
   };
-  const bg = makeShellBg({ spawn, clock, maxPerAgent: 5, isWin: true });
+  const bg = makeShellBg({ spawn, clock, maxPerAgent: 5, isWin: true, killVerify: { attempts: 2, pollMs: 0 } });
   bg.start({ agentId: 'a', cmd: 'sleep 99' });
-  A.ok(bg.kill('a', 'bg_1').ok, 'kill still reports accepted when taskkill cannot start');
+  const r = await bg.kill('a', 'bg_1');
   A.ok(baseSpawn.children[0].killed, 'taskkill launch failure falls back to direct child.kill');
-}
+  A.eq(r.ok, false, 'a kill whose reaper could not even start is NOT reported as done (it used to be "accepted")');
+})();
 
 // ---- redacted command + exact OS identity pin ----
 {
@@ -173,8 +184,10 @@ let T = 1000; const clock = { now: () => T };
 
 // ---- the shell TOOLS delegate to the manager (background:true + shell.bg.status/kill) ----
 (async () => {
+  await killBlock; await reaperBlock;
   const spawn = makeFakeSpawn();
-  const bg = makeShellBg({ spawn, clock, maxPerAgent: 5, isWin: true });
+  // a process table that shows no owned descendants: the kill below can be CONFIRMED (h2 F3)
+  const bg = makeShellBg({ spawn, clock, maxPerAgent: 5, isWin: true, processTable: async () => [{ pid: 1, ppid: 0, created: 1 }] });
   const fs = { mkdirSync: function () {}, existsSync: function () { return true; } };
   const tools = makeShellTool({ spawn, fs, pathMod: path, root: path.join('root'), clock, bg, platform: 'win32' });
   const ctx = { agentId: 'a' };
@@ -198,6 +211,24 @@ let T = 1000; const clock = { now: () => T };
   const asyncTools = makeShellTool({ environment: asyncEnvironment, fs, pathMod: path, root: path.join('root'), clock, platform: 'win32' });
   const remote = await asyncTools.execTool.run({ cmd: 'node server.js', background: true }, ctx);
   A.ok(/Started background process bg_remote/.test(remote.content), 'shell tool awaits an async persistent-backend startup');
+
+  // a docker/ssh kill is never reported as a confirmed tree kill: the host-side proof covers only the exec client
+  for (const backendId of ['docker', 'ssh']) {
+    const env = Object.assign({}, asyncEnvironment, { backendId,
+      killBackground: () => Promise.resolve({ ok: true, verified: true, bgId: 'bg_remote', killedPids: [11, 12] }) });
+    const t = makeShellTool({ environment: env, fs, pathMod: path, root: path.join('root'), clock, platform: 'win32' });
+    const kr = await t.bgKillTool.run({ id: 'bg_remote' }, ctx);
+    A.ok(!/confirmed gone\./.test(kr.content) && !/^Killed/.test(kr.content), backendId + ': the kill does not claim the whole tree is confirmed gone');
+    A.ok(/unverified/.test(kr.content) && new RegExp(backendId).test(kr.content), backendId + ': it says the kill went through the backend and is unverified');
+    A.eq(kr.summary, 'kill unconfirmed', backendId + ': honest summary');
+  }
+  {
+    const env = Object.assign({}, asyncEnvironment, { backendId: 'local',
+      killBackground: () => Promise.resolve({ ok: true, verified: true, bgId: 'bg_l', killedPids: [11, 12] }) });
+    const t = makeShellTool({ environment: env, fs, pathMod: path, root: path.join('root'), clock, platform: 'win32' });
+    const kr = await t.bgKillTool.run({ id: 'bg_l' }, ctx);
+    A.ok(/confirmed gone/.test(kr.content) && kr.summary === 'killed', 'the local backend keeps its proven wording');
+  }
 
   A.report('shell-bg.test');
 })().catch(function (e) { console.error(e); process.exit(1); });

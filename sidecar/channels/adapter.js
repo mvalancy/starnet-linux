@@ -315,7 +315,10 @@
           // the hub as a direct reply: it gets the same durable inbox/outbox guarantees as a model answer while the
           // pairing code stays out of transcript/history. A repeated /pair from the owner is consumed too, so a
           // crash after owner persistence but before acknowledgement can never leak the code into the model.
-          const pairCommand = /^\/pair(?:\s|$)/i.test(String(m.text || ''));
+          // Slack/Discord panels show the slash-less "pair XXXXX-XXXXX" (Slack intercepts "/pair"); consume only
+          // that exact code SHAPE so an ordinary "pair these two files" from the owner still reaches the agent.
+          const pairText = String(m.text || '');
+          const pairCommand = /^\/pair(?:\s|$)/i.test(pairText) || /^pair\s+[A-Za-z0-9]{5}-?[A-Za-z0-9]{5}\s*$/i.test(pairText);
           if ((own.claimed && own.consume) || pairCommand) {
             onInbound({
               channel: name, chatId: String(m.chatId), chatType: 'dm', userId: String(m.userId || ''),

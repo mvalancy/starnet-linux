@@ -42,8 +42,10 @@
 
   function scopeOf(tool) { return (tool && tool.scope) || 'read'; }
 
+  // consentKey lets a tool keep its OWN consent class instead of sharing its capability's: autonomy.set rides the
+  // orchestrator capability for projection, but an "always" given to routine.create must never pre-approve it.
   function dangerKey(tool) {
-    const cls = (tool && (tool.capability || tool.name)) || 'unknown';
+    const cls = (tool && (tool.consentKey || tool.capability || tool.name)) || 'unknown';
     return cls + ':' + scopeOf(tool);
   }
 

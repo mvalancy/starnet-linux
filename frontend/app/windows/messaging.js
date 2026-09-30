@@ -70,7 +70,8 @@
         steps: [
           'Open the <b>Discord Developer Portal</b> → <b>New Application</b> → <b>Bot</b> → <b>Reset Token</b> → copy the token.',
           'Enable <b>MESSAGE CONTENT INTENT</b> on the Bot page (required to read your messages), then invite the bot to a server (OAuth2 → URL Generator → <code>bot</code> scope).',
-          'Paste the token below and connect.'
+          'Paste the token below and connect.',
+          '<b>Pair your account.</b> StarNet shows a <code>pair</code> message with a one-time code. Send it to the bot from YOUR account (no slash — Slack reserves <code>/</code>). Until you do, the bot refuses every message.'
         ],
         note: 'Your token is saved on this machine and never displayed.',
         fieldsHtml: '<label class="ch-lbl" for="dc-token">BOT TOKEN <span class="dim">— from the Discord Developer Portal</span></label>' +
@@ -90,7 +91,8 @@
           'Open <b>api.slack.com/apps</b> → <b>Create New App</b> → From scratch.',
           'Enable <b>Socket Mode</b> (Settings → Socket Mode) and create an <b>app-level token</b> with <code>connections:write</code> (starts <code>xapp-</code>).',
           'Under <b>OAuth &amp; Permissions</b> add bot scopes <code>chat:write</code>, <code>im:history</code>, <code>channels:history</code> → <b>Install to Workspace</b> → copy the <b>bot token</b> (starts <code>xoxb-</code>).',
-          'Under <b>Event Subscriptions</b> subscribe the bot to <code>message.im</code>.'
+          'Under <b>Event Subscriptions</b> subscribe the bot to <code>message.im</code>.',
+          '<b>Pair your account.</b> StarNet shows a <code>pair</code> message with a one-time code. Send it to the bot from YOUR account (no slash — Slack reserves <code>/</code>). Until you do, the bot refuses every message.'
         ],
         note: 'Both tokens are saved on this machine and never displayed.',
         fieldsHtml: '<label class="ch-lbl" for="sl-bot-token">BOT TOKEN <span class="dim">— xoxb-…, from OAuth &amp; Permissions</span></label>' +
@@ -112,9 +114,10 @@
         steps: [
           'Create a Matrix account for the agent (e.g. on <b>matrix.org</b> or your homeserver).',
           'Get an <b>access token</b> for that account (Element: Settings → Help &amp; About → Advanced → Access Token).',
-          'Enter the homeserver URL + token below and connect, then invite the agent\'s account to a room from YOUR account and accept the invite once from any client.'
+          'Enter the homeserver URL + token below and connect, then invite the agent\'s account to a room from YOUR account and accept the invite once from any client.',
+          '<b>Pair your account.</b> StarNet shows a <code>pair</code> message with a one-time code. Send it to the bot from YOUR account (no slash — Slack reserves <code>/</code>). Until you do, the bot refuses every message.'
         ],
-        note: 'Every room is owner-locked: the first person to message the agent claims it.',
+        note: 'Owner-locked: only the account that sends the one-time pair code can reach the agent — anyone else in a room is ignored.',
         fieldsHtml: '<label class="ch-lbl" for="mx-endpoint">HOMESERVER URL <span class="dim">— e.g. https://matrix.org</span></label>' +
           '<input id="mx-endpoint" type="text" class="key-input" placeholder="https://matrix.org" autocomplete="off" spellcheck="false">' +
           '<label class="ch-lbl" for="mx-token">ACCESS TOKEN <span class="dim">— for the agent\'s Matrix account</span></label>' +
@@ -132,7 +135,8 @@
         steps: [
           'Run the <b>signal-cli REST API</b> next to StarNet (docker: <code>bbernhard/signal-cli-rest-api</code>).',
           'Register or link a number for the agent (the bridge\'s <code>/v1/register</code> or QR link flow).',
-          'Enter the bridge URL + that number below and connect, then message it from your own Signal.'
+          'Enter the bridge URL + that number below and connect, then message it from your own Signal.',
+          '<b>Pair your account.</b> StarNet shows a <code>pair</code> message with a one-time code. Send it to the bot from YOUR account (no slash — Slack reserves <code>/</code>). Until you do, the bot refuses every message.'
         ],
         note: 'No token needed — the bridge runs on your machine; keep it bound to localhost.',
         fieldsHtml: '<label class="ch-lbl" for="sg-endpoint">SIGNAL-CLI REST URL <span class="dim">— e.g. http://127.0.0.1:8080</span></label>' +
@@ -210,6 +214,12 @@
           '</div>' +
           '<div id="' + c.pre + '-msg" class="msg"></div>' +
           '</section>' + (c.extraHtml || '') +
+          (c.id === 'telegram' ? '' :
+            '<div class="ch-bots" id="' + c.pre + '-owner">' +
+              '<div class="ch-bots-head">Pair your account <span class="dim" id="' + c.pre + '-owner-state">not paired</span></div>' +
+              '<p class="ch-note">Pairing tells the bot which account is yours; every other sender is ignored. The code expires after 10 minutes.</p>' +
+              '<div class="set-save"><button class="bb xs" id="' + c.pre + '-owner-pair" style="display:none">PAIR OWNER</button></div>' +
+            '</div>') +
         '</div>';
     }
     // Real platform marks share the station theme and stay decorative beside the text labels.
@@ -245,6 +255,11 @@
     // channel.connect event cannot replace it with a generic success line (the live-reported lost-code bug).
     const pairingInstruction = {};
     const savedPlaceholder = {};
+    function pairInstruction(c, code) {
+      return c.id === 'telegram'
+        ? 'Telegram poller starting. To activate DMs, send this exact message to your bot: /pair ' + code + ' (expires in 10 minutes).'
+        : 'To activate DMs, send this exact message to your ' + c.title + ' bot from your own account: pair ' + code + ' (expires in 10 minutes).';
+    }
 
     // status-line colour by state as a CLASS (never inline el.style.color — truthful-telemetry palette lives in css).
     function stateClass(conn, inFlight, state, configured) {
@@ -310,10 +325,10 @@
       const configured = !!(st && st.configured);
       // Telegram has two separate truths: Bot API polling and admitted owner DMs. Polling without a paired owner
       // is real transport health, but it is not an operational channel; ordinary messages are refused by design.
-      const pairingBlocked = c.id === 'telegram' && conn && !(st && st.acceptingDms === true);
+      const pairingBlocked = conn && !(st && st.acceptingDms === true);
       configuredById[c.id] = configured;
       el.className = 'ch-state ' + (pairingBlocked ? 'st-wait' : stateClass(conn, inFlight, state, configured));
-      el.textContent = pairingBlocked ? '◐ POLLING — DMs BLOCKED: PAIR OWNER'
+      el.textContent = pairingBlocked ? (c.id === 'telegram' ? '◐ POLLING — DMs BLOCKED: PAIR OWNER' : '◐ ' + c.verb.toUpperCase() + ' — DMs BLOCKED: PAIR OWNER')
         : conn ? ('● CONNECTED — ' + c.verb + (state && state !== 'up' ? ' (' + state + ')' : ''))
         : inFlight ? ('◐ ' + (state === 'reconnecting' ? 'reconnecting' : 'connecting') + '…' + (st.detail ? ' — ' + st.detail : ''))
         : state === 'error' ? ('✕ error' + (st.detail ? ' — ' + st.detail : '') + (c.errHint || ''))
@@ -328,7 +343,7 @@
       const sum = body.querySelector('#' + c.pre + '-sum');
       if (sum) {
         sum.className = 'ch-state ' + (pairingBlocked ? 'st-wait' : stateClass(conn, inFlight, state, configured));
-        sum.textContent = pairingBlocked ? '◐ polling — pair owner' : conn ? '● connected' : inFlight ? '◐ connecting…'
+        sum.textContent = pairingBlocked ? '◐ ' + c.verb + ' — pair owner' : conn ? '● connected' : inFlight ? '◐ connecting…'
           : state === 'error' ? '✕ error' : configured ? '○ saved — offline' : '○ not connected';
       }
       // SETUP GUIDE auto-fold — keyed off `configured` (a real saved config), never off `conn`: a platform
@@ -398,12 +413,24 @@
         }
       }
 
+      if (c.id !== 'telegram') {
+        const ownerState = body.querySelector('#' + c.pre + '-owner-state');
+        const pairBtn = body.querySelector('#' + c.pre + '-owner-pair');
+        const ownerLocked = !!(st && st.ownerLocked);
+        const pairingActive = !!(st && st.ownerPairingActive);
+        if (ownerState) ownerState.textContent = ownerLocked ? 'owner paired' : pairingActive ? 'pairing code active - awaiting pair message' : 'not paired';
+        if (pairBtn) { pairBtn.style.display = configured && !ownerLocked ? '' : 'none'; pairBtn.disabled = !configured; }
+        const oMsg = body.querySelector('#' + c.pre + '-msg');
+        if (ownerLocked && pairingInstruction[c.id]) { delete pairingInstruction[c.id]; setMsg(oMsg, '✓ owner paired — ' + c.title + ' is connected and accepting DMs', 'ok'); }
+        else if (!ownerLocked && !pairingActive && pairingInstruction[c.id]) { delete pairingInstruction[c.id]; setMsg(oMsg, 'pairing code expired — click PAIR OWNER for a fresh one', 'info'); }
+      }
+
       // finalize a pending connect's MESSAGE from the proven status (not the optimistic POST body).
       if (pendingConnect[c.id]) {
         const msgEl = body.querySelector('#' + c.pre + '-msg');
         if (conn) {
-          if (c.id === 'telegram' && !(st && st.acceptingDms === true)) {
-            setMsg(msgEl, pairingInstruction.telegram || 'Telegram is polling, but DMs stay blocked until you click PAIR OWNER and send the /pair command.', 'info');
+          if (!(st && st.acceptingDms === true)) {
+            setMsg(msgEl, pairingInstruction[c.id] || (c.id === 'telegram' ? 'Telegram is polling, but DMs stay blocked until you click PAIR OWNER and send the /pair command.' : c.title + ' is connected, but DMs stay blocked until you click PAIR OWNER and send the pair message.'), 'info');
           } else setMsg(msgEl, c.okMsg, 'ok');
           delete pendingConnect[c.id];
           // first-steps: only ticked on the PROVEN round-trip (this branch), never on the optimistic POST.
@@ -538,11 +565,11 @@
           else {
             // DERIVE the outcome line from the status refresh (paintCard finalizes pendingConnect), NOT from this
             // POST — the sidecar only reports 'connecting' until the transport actually proves the round-trip.
-            if (c.id === 'telegram' && j.pairingCode) {
-              pairingInstruction.telegram = 'Telegram poller starting. To activate DMs, send this exact message to your bot: /pair ' + j.pairingCode + ' (expires in 10 minutes).';
-              setMsg(msgEl, pairingInstruction.telegram, 'info');
-            } else if (c.id === 'telegram' && j.pairingRequired) {
-              setMsg(msgEl, 'Telegram poller starting, but DMs are blocked: ' + (j.pairingError || 'click PAIR OWNER to issue a pairing command.'), 'info');
+            if (j.pairingCode) {
+              pairingInstruction[c.id] = pairInstruction(c, j.pairingCode);
+              setMsg(msgEl, pairingInstruction[c.id], 'info');
+            } else if (j.pairingRequired) {
+              setMsg(msgEl, c.title + ' is starting, but DMs are blocked: ' + (j.pairingError || 'click PAIR OWNER to issue a pairing command.'), 'info');
             } else if (localFallback) setMsg(msgEl, 'connecting… (token saved locally, not the OS keychain)', 'info');
             sfx('click');
             try { c.clear(body); } catch (_) {}
@@ -617,6 +644,24 @@
       // Enter in any of the card's inputs = CONNECT
       body.querySelectorAll('#ch-card-' + c.id + ' input.key-input').forEach(inp => {
         inp.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); body.querySelector('#' + c.pre + '-connect').click(); } });
+      });
+    }
+
+    // ---- Owner enrollment for Discord/Slack/Matrix/Signal (2026-09-23 audit): same one-time local code as Telegram. ----
+    for (const c of CHANNEL_CATALOG) {
+      if (c.id === 'telegram') continue;
+      const pairBtn = body.querySelector('#' + c.pre + '-owner-pair');
+      const msgEl = body.querySelector('#' + c.pre + '-msg');
+      if (!pairBtn) continue;
+      pairBtn.addEventListener('click', async () => {
+        try {
+          const r = await Harness.api.post('/api/channels/' + c.id + '/owner/pair', {});
+          const j = r.j || {};
+          if (!r.ok || j.error || !j.code) { setMsg(msgEl, 'could not issue a pairing code: ' + (j.error || ('HTTP ' + r.status)), ''); sfx('bad'); return; }
+          pairingInstruction[c.id] = 'DM your ' + c.title + ' bot from your own account: pair ' + j.code + ' (code expires in 10 minutes).';
+          setMsg(msgEl, pairingInstruction[c.id], 'info');
+          sfx('click'); refreshAll();
+        } catch (_) { setMsg(msgEl, 'could not reach the sidecar', ''); sfx('bad'); }
       });
     }
 

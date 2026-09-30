@@ -31,6 +31,10 @@ on:
         description: "Publish a public test pre-release to starnet-releases (shareable download link)"
         required: false
         default: "false"
+      google_early_access:
+        description: "Google early access: open every Google service before Google verification (unverified-app warning, 100-user cap). Internal/beta builds only."
+        required: false
+        default: "false"
       require_signed_mac:
         description: "Fail unless Intel installed-app acceptance uses a notarized Developer ID build"
         required: false
@@ -110,6 +114,7 @@ jobs:
       - name: Stage StarNet Google sign-in registration
         env:
           STARNET_GOOGLE_DESKTOP_CLIENT_JSON: ${{ secrets.STARNET_GOOGLE_DESKTOP_CLIENT_JSON }}
+          STARNET_GOOGLE_EARLY_ACCESS: ${{ inputs.google_early_access == 'true' && '1' || '' }}
         run: node scripts/stage-google-client.mjs --optional
 
       - name: Stage bundled Node sidecar runtime

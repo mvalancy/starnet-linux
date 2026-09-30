@@ -1,0 +1,42 @@
+{
+  "charId": "4c28ccfd-68b7-46ce-9bc0-db9d73d7563c",
+  "template": "walking-8-frames",
+  "rotT": "1",
+  "anims": {
+    "south": [
+      "staged",
+      "1"
+    ],
+    "south-east": [
+      "staged",
+      "1"
+    ],
+    "east": [
+      "staged",
+      "1"
+    ],
+    "north-east": [
+      "staged",
+      "1"
+    ],
+    "north": [
+      "staged",
+      "1"
+    ],
+    "north-west": [
+      "staged",
+      "1"
+    ],
+    "west": [
+      "staged",
+      "1"
+    ],
+    "south-west": [
+      "staged",
+      "1"
+    ]
+  },
+  "mirror": {
+    "west": "east"
+  }
+}

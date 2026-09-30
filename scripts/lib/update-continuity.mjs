@@ -14,6 +14,29 @@ export function normalizeLegacyWorkstreamDefaults(streams) {
   });
 }
 
+// Roster hydration since 0.12.5 (security audit 2026-09-23, 97a7b612e): a saved agent colour lands in style
+// attributes, so an agent whose save has no valid hex colour is given a crew palette suit instead of carrying
+// undefined. Must equal frontend/app/app.js SUITS (test/update-continuity.test.js pins the two together).
+export const CREW_SUITS = Object.freeze(['#6fb3bf', '#7bc88a', '#d99a5a', '#a888c0', '#cf7d96', '#ffd34a']);
+const HEX_COLOR = /^#[0-9a-f]{3,8}$/i;
+
+// A copy of the `before` projection in which an agent whose colour was missing or non-hex takes the palette suit
+// the upgraded app assigned it (same save, same agent id). A valid colour is never touched, so a real colour
+// change, or a missing colour replaced by anything outside the palette, still fails the comparison.
+export function adoptAssignedSuitColors(before, after) {
+  const out = structuredClone(before);
+  for (const key of ['local', 'durable']) {
+    const prior = out && out[key], next = after && after[key];
+    if (!prior || !next || !Array.isArray(prior.agents) || !Array.isArray(next.agents)) continue;
+    for (const agent of prior.agents) {
+      if (!agent || HEX_COLOR.test(String(agent.color || ''))) continue;
+      const match = next.agents.find(candidate => candidate && candidate.id === agent.id);
+      if (match && CREW_SUITS.includes(String(match.color || '').toLowerCase())) agent.color = match.color;
+    }
+  }
+  return out;
+}
+
 export function stableJson(value) {
   if (Array.isArray(value)) return '[' + value.map(stableJson).join(',') + ']';
   if (value && typeof value === 'object') {

@@ -23,7 +23,12 @@
             atomic, just not power-loss durable — same capability-guard as savestore.js).
      path : node:path (for dirname).
      randomTmpId : optional () -> string nonce; defaults to crypto.randomBytes hex. Combined with the pid
-            so two concurrent writers (or two writes by this process) never collide on the same .tmp. */
+            so two concurrent writers (or two writes by this process) never collide on the same .tmp.
+     mode : optional file mode for the new file; defaults to 0o600 (owner read/write only). Every caller is a
+            private sidecar store and several hold credentials (codex/grok/kimi tokens, channels/secrets.json,
+            connectors/servicekeys.json, the connector vault when no OS key exists). Without an explicit mode the
+            temp file took 0o666 & ~umask — typically 0644, i.e. readable by every local user on Linux/macOS —
+            and the rename carried that mode onto the store. Windows ignores all but the read-only bit. */
 'use strict';
 
 function defaultNonce() {
@@ -41,6 +46,7 @@ function writeFileDurable(deps, file, data) {
   // per-PID + random suffix: two concurrent writers (or a CRUD save racing an advance) pick DISTINCT temp
   // names, so neither truncates the other's in-flight temp before its own rename.
   const tmp = file + '.' + process.pid + '.' + nonce + '.tmp';
+  const mode = Number.isInteger(d.mode) ? d.mode : 0o600;
 
   const canFsync = typeof fs.openSync === 'function' && typeof fs.writeSync === 'function'
     && typeof fs.fsyncSync === 'function' && typeof fs.closeSync === 'function';
@@ -50,7 +56,7 @@ function writeFileDurable(deps, file, data) {
     // rename, then close. fsync precedes rename so the rename can never expose an un-flushed / zero-length file.
     let fd = null;
     try {
-      fd = fs.openSync(tmp, 'w');
+      fd = fs.openSync(tmp, 'w', mode);
       // writeSync is allowed to make partial progress (disk pressure, interrupted/network filesystems, injected
       // fault tests). A single unchecked call can therefore fsync + rename a JSON prefix as the authoritative
       // store. Write a Buffer to make offsets byte-accurate for non-ASCII data, and refuse zero/invalid progress.
@@ -75,7 +81,7 @@ function writeFileDurable(deps, file, data) {
     }
   } else {
     // in-memory / test fs without fsync: still atomic (temp+rename), just not power-loss durable.
-    fs.writeFileSync(tmp, data);
+    fs.writeFileSync(tmp, data, { mode });
   }
 
   fs.renameSync(tmp, file);               // atomic replace of the real path (never seen half-written)

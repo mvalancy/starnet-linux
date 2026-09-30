@@ -12,6 +12,10 @@
      pass yields parseable JSON it degrades to '{}'  (recovery of intent, NOT a schema bypass — a tool
      whose schema requires args still correctly fails validation downstream).
 
+   repairToolCallArgumentsDetailed(raw) -> { text, pass, closedOpenString }
+     The same repair plus which pass won and whether it had to close a dangling STRING — i.e. whether a
+     value was cut off mid-generation. The loop refuses to dispatch those (see loop.js repairCalls).
+
    This module is wired into the loop in L2.S2 (behind a new `tool.args.repaired` event); this commit
    ships the pure module + its test only. No clock, no rng, no IO — bounded loops cap at 50 iterations
    so a pathological payload can never spin. */
@@ -87,19 +91,49 @@
     ['composed', (s) => stripTrailingCommas(balanceDelimiters(escapeControlsInStrings(s)))]
   ];
 
-  function repairToolCallArguments(raw) {
+  // Does the payload END inside a string literal? Same escape-aware scan balanceDelimiters uses, so it agrees with
+  // it exactly about when a closing quote gets appended. escapeControlsInStrings never changes string state, so the
+  // answer is identical for the raw input and for any pass's intermediate form.
+  function endsInsideString(s) {
+    let inStr = false, esc = false;
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (ch === '\\') esc = true;
+        else if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') inStr = true;
+    }
+    return inStr;
+  }
+
+  /* repairToolCallArgumentsDetailed(raw) -> { text, pass, closedOpenString }
+     The same ladder, plus the one fact a caller needs before it lets the result DRIVE A TOOL: whether the repair
+     had to close a dangling string. That is not a syntax slip, it is a value that was CUT OFF — a stream or a
+     router ended the arguments mid-generation ('{"path":"src/app.js","content":"function main() {\n  startServ').
+     Closing the quote yields JSON that parses and a call that validates, carrying a truncated file body as if it
+     were the whole thing. A missing closing brace or a trailing comma loses nothing; a closed string always has.
+     Any pass that parses an input ending inside a string must have closed it (nothing else can make it parse), so
+     `closedOpenString` is simply "a pass succeeded AND the input ended inside a string". */
+  function repairToolCallArgumentsDetailed(raw) {
     let s = String(raw == null ? '' : raw).trim();
-    if (s === '' || s === 'None' || s === 'null' || s === 'undefined') return '{}';   // empties / python-ish nulls
+    if (s === '' || s === 'None' || s === 'null' || s === 'undefined') return { text: '{}', pass: 'empty', closedOpenString: false };   // empties / python-ish nulls
     for (let i = 0; i < PASSES.length; i++) {
       let cand;
       try { cand = PASSES[i][1](s); } catch (e) { continue; }
-      if (tryParse(cand).ok) return cand;
+      if (tryParse(cand).ok) return { text: cand, pass: PASSES[i][0], closedOpenString: endsInsideString(s) };
     }
-    return '{}';   // unrepairable — recover intent as an empty object, NOT a validation bypass
+    return { text: '{}', pass: 'unrepairable', closedOpenString: false };   // unrepairable — recover intent as an empty object, NOT a validation bypass
   }
+
+  // The original string-returning contract, unchanged for every existing caller.
+  function repairToolCallArguments(raw) { return repairToolCallArgumentsDetailed(raw).text; }
 
   return {
     repairToolCallArguments,
-    _internals: { tryParse, escapeControlsInStrings, balanceDelimiters, stripTrailingCommas, PASSES, MAX_ITERS }
+    repairToolCallArgumentsDetailed,
+    _internals: { tryParse, escapeControlsInStrings, balanceDelimiters, stripTrailingCommas, endsInsideString, PASSES, MAX_ITERS }
   };
 });

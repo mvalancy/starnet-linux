@@ -92,7 +92,7 @@ function boot(port, env, attemptsLeft) {
 function attachStationPage(B, token, sessions) {
   const seen = [];
   const ctrl = new AbortController();
-  const ready = fetch(B + '/api/channels/events?token=' + encodeURIComponent(token), { signal: ctrl.signal }).then(async res => {
+  const ready = fetch(B + '/api/channels/events?' + require('./_httpToken.js').sseQuery(token), { signal: ctrl.signal }).then(async res => {
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = '';

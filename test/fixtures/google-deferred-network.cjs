@@ -9,3 +9,5 @@ globalThis.fetch = (raw, options) => {
   }
   return original(raw, options);
 };
+// Deferral is the post-verification / non-early-access shape; early access is ON in source until approval.
+require('../../sidecar/mcp/google-client.js').EARLY_ACCESS = false;

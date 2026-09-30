@@ -57,7 +57,7 @@ async function drain(res) { const rd = res.body.getReader(); const dec = new Tex
     A.ok(ref.ok && ref.kind === 'image' && /^\.attachments\/.+\.png$/.test(ref.path), 'upload returns an image reference under .attachments/ — ' + JSON.stringify(ref));
 
     // 2. FETCH the photo back through the jailed /api/file route (proves the thumbnail path is real + serves bytes).
-    const fileRes = await fetch(B + '/api/file?agent=e2e&path=' + encodeURIComponent(ref.path) + '&token=' + encodeURIComponent(token), { headers: { Origin: B } });
+    const fileRes = await fetch(B + '/api/file?agent=e2e&path=' + encodeURIComponent(ref.path), { headers: { 'X-StarNet-Token': token, Origin: B } });   // the master token rides the header, never the URL (2026-09-25)
     A.eq(fileRes.status, 200, 'GET /api/file serves the uploaded attachment');
     A.eq(String(fileRes.headers.get('content-type') || '').indexOf('image/png'), 0, 'served with an image/png content-type');
     const gotBytes = Buffer.from(await fileRes.arrayBuffer());
@@ -121,7 +121,7 @@ async function drain(res) { const rd = res.body.getReader(); const dec = new Tex
     // 6. DELETE the attachment (composer remove-before-send) prunes the workspace file.
     const del = await fetch(B + '/api/attachments', { method: 'POST', headers: H, body: JSON.stringify({ op: 'delete', agent: 'e2e', path: ref.path }) });
     A.eq(del.status, 200, 'POST /api/attachments {op:delete} -> 200');
-    const after = await fetch(B + '/api/file?agent=e2e&path=' + encodeURIComponent(ref.path) + '&token=' + encodeURIComponent(token), { headers: { Origin: B } });
+    const after = await fetch(B + '/api/file?agent=e2e&path=' + encodeURIComponent(ref.path), { headers: { 'X-StarNet-Token': token, Origin: B } });   // the master token rides the header, never the URL (2026-09-25)
     A.eq(after.status, 404, 'the deleted attachment is gone (404)');
   } finally {
     await fixture.dispose();

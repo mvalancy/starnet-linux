@@ -263,6 +263,27 @@ const ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
   A.ok(C.get('cloudflare-docs').name !== C.get('cloudflare-bindings').name, 'the two Cloudflare cards have distinct names');
 }
 
+// M — Hermes-catalog parity rows (2026-09-22): endpoints read out of the Hermes plugins' pinned source, DCR mint
+// live-proven through the sidecar's own oauth/start. Covision (no DCR) is deliberately absent.
+{
+  for (const id of ['financial-datasets', 'youcom', 'xmemo', 'replaid', 'markifact', 'adspirer']) {
+    const e = C.get(id);
+    A.ok(e, id + ' is in the catalog');
+    A.eq(e.authType, 'oauth', id + ' is an oauth connector');
+    A.ok(/^https:\/\/\S+/.test(e.url), id + ' has a concrete https endpoint');
+    A.eq(e.staticOauth, null, id + ' rides dynamic registration');
+    A.eq(C.installConfig(id), null, id + ' is stood up by the sign-in flow');
+    A.ok(e.aliases.length >= 2, id + ' carries the names a Commander actually types');
+  }
+  const corpus = C.get('corpus-law');
+  A.eq(corpus.authType, 'none', 'Corpus is zero-setup');
+  A.eq(corpus.installable, true, 'Corpus installs with no key');
+  A.ok(!C.get('covision'), 'Covision has no DCR — not listed');
+  // outward-spend rows must SAY so on the card — a Commander should never find out from the ad bill.
+  A.ok(/REAL ad budget/.test(C.get('adspirer').blurb), 'Adspirer warns it spends real budget');
+  A.ok(/LIVE campaigns/.test(C.get('markifact').blurb), 'Markifact warns it edits live campaigns');
+}
+
 // report() LAST — it is what calls process.exit(fail?1:0). This file used to end in a bare
 // console.log, so every assertion failure printed FAIL and STILL exited 0: the fast gate scored
 // it green no matter what broke. Never end an _assert.js test any other way.

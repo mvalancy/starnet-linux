@@ -50,7 +50,7 @@ try {
   assert.ok(identity.props.views.length > 100 && identity.enabledProp);
   assert.equal(identity.revision, 'bridge-remaster');
   assert.equal(identity.sprites.preview, false, 'installed proof must not opt into a review mode');
-  assert.equal(identity.sprites.catalog.length, 37);
+  assert.equal(identity.sprites.catalog.length, 51);
   const selected = JSON.parse(fs.readFileSync('frontend/assets/skin-study-0914/runtime-motion.json'));
   for (const skin of selected.skins) {
     const live = identity.sprites.catalog.find(s=>s.id===skin.skin);

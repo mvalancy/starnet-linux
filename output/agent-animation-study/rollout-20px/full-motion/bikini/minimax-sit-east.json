@@ -1,0 +1,10 @@
+{
+  "id": "bikini",
+  "track": "sit",
+  "dir": "east",
+  "job": "03a32de4-d948-4498-abfa-a96f88fc5c1e",
+  "result": "frames: 5\nhttps://api.pixellab.ai/mcp/images/03a32de4-d948-4498-abfa-a96f88fc5c1e/download?index=0",
+  "packed": true,
+  "lastRaw": "output/agent-animation-study/rollout-20px/full-motion/bikini/minimax/sit-east/03a32de4-d948-4498-abfa-a96f88fc5c1e/4.png",
+  "frameCount": 5
+}

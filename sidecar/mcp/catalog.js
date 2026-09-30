@@ -157,6 +157,13 @@
       aliases: ['google', 'gmail', 'google mail', 'email', 'gsuite', 'g suite', 'google workspace'],
       staticOauth: GOOGLE_OAUTH(['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.compose']),
       blurb: 'Search and read Gmail, create drafts, and send approved drafts. Sign in with Google to connect your account.' },
+    // gmail.send is a SENSITIVE scope (Gmail read/compose are RESTRICTED), so this card can release on Google's
+    // app verification alone, without waiting on the security assessment the full Gmail card needs.
+    { id: 'gmail-send', name: 'Gmail (send only)', category: 'Productivity', authType: 'oauth', transport: 'http',
+      url: 'https://gmail.googleapis.com/gmail/v1/users/me#send-only', googleApi: true, official: false, homepage: 'https://mail.google.com',
+      aliases: ['gmail send', 'send email', 'email', 'gmail'],
+      staticOauth: GOOGLE_OAUTH(['https://www.googleapis.com/auth/gmail.send']),
+      blurb: 'Send plain-text email from your Gmail account after you approve each message. Cannot read, search, or draft mail. Sign in with Google to connect your account.' },
     { id: 'google-drive', name: 'Google Drive', category: 'Productivity', authType: 'oauth', transport: 'http',
       url: 'https://www.googleapis.com/drive/v3', googleApi: true, official: false, homepage: 'https://drive.google.com',
       aliases: ['google', 'google drive', 'gdrive', 'drive', 'gsuite', 'g suite', 'google workspace'],
@@ -369,7 +376,39 @@
     { id: 'ramp', name: 'Ramp', category: 'Payments & Finance', authType: 'oauth', transport: 'http',
       url: 'https://mcp.ramp.com/mcp', official: true, homepage: 'https://ramp.com',
       aliases: ['ramp', 'corporate cards', 'expenses', 'spend'],
-      blurb: 'Query Ramp transactions, cards, and spend programs. Needs Ramp sign-in (OAuth).' }
+      blurb: 'Query Ramp transactions, cards, and spend programs. Needs Ramp sign-in (OAuth).' },
+
+    // ── Hermes-catalog parity (2026-09-22) — the hosted MCP servers the Hermes Agent plugin catalog wraps,
+    //    read out of each plugin's pinned source (mcp.json / plugin code), then probed + mint-proven here.
+    //    Hermes ships these as Python/npx plugin packages; StarNet only needs the endpoint row.
+    { id: 'corpus-law', name: 'Corpus (US law)', category: 'Docs & Knowledge', authType: 'none', transport: 'http',
+      url: 'https://corpuslaw.us/api/mcp', official: true, homepage: 'https://corpuslaw.us',
+      aliases: ['corpus', 'law', 'legal', 'statutes', 'us code', 'llc formation'],
+      blurb: 'Search 571k+ US legal provisions and get LLC / nonprofit formation requirements. No key for search.' },
+    { id: 'financial-datasets', name: 'Financial Datasets', category: 'Payments & Finance', authType: 'oauth', transport: 'http',
+      url: 'https://mcp.financialdatasets.ai/mcp', official: true, homepage: 'https://financialdatasets.ai',
+      aliases: ['financial datasets', 'stocks', 'stock market', 'sec filings', 'financial statements', 'earnings'],
+      blurb: 'Stock prices, financial statements, SEC filings, insider trades, and a screener. Needs Financial Datasets sign-in (OAuth).' },
+    { id: 'youcom', name: 'You.com', category: 'Search & Research', authType: 'oauth', transport: 'http',
+      url: 'https://api.you.com/mcp', official: true, homepage: 'https://you.com',
+      aliases: ['you', 'you.com', 'web search', 'research', 'cited research'],
+      blurb: 'Live web search, page extraction, and cited research from You.com. Needs You.com sign-in (OAuth).' },
+    { id: 'xmemo', name: 'XMemo', category: 'Docs & Knowledge', authType: 'oauth', transport: 'http',
+      url: 'https://xmemo.dev/mcp', official: true, homepage: 'https://xmemo.dev',
+      aliases: ['xmemo', 'cloud memory', 'memory', 'long term memory'],
+      blurb: 'Cloud memory with semantic search across sessions. Whatever the agent saves is sent to xmemo.dev. Needs XMemo sign-in (OAuth).' },
+    { id: 'replaid', name: 'Replaid', category: 'Social', authType: 'oauth', transport: 'http',
+      url: 'https://mcp.replaid.pro', official: true, homepage: 'https://replaid.pro',
+      aliases: ['replaid', 'social inbox', 'dms', 'comments', 'replies'],
+      blurb: 'Read, triage, and draft replies in your social inbox. Needs Replaid sign-in (OAuth).' },
+    { id: 'markifact', name: 'Markifact', category: 'Marketing', authType: 'oauth', transport: 'http',
+      url: 'https://api.markifact.com/mcp', official: true, homepage: 'https://markifact.com',
+      aliases: ['markifact', 'google ads', 'meta ads', 'ga4', 'ads reporting', 'marketing'],
+      blurb: 'Google Ads, Meta Ads, GA4, Shopify, HubSpot and 50+ marketing platforms. Can edit LIVE campaigns. Needs Markifact sign-in (OAuth).' },
+    { id: 'adspirer', name: 'Adspirer', category: 'Marketing', authType: 'oauth', transport: 'http',
+      url: 'https://mcp.adspirer.com/mcp', official: true, homepage: 'https://adspirer.com',
+      aliases: ['adspirer', 'ad campaigns', 'google ads', 'meta ads', 'tiktok ads', 'paid media'],
+      blurb: 'Create and optimize ad campaigns across Google, Meta, TikTok, LinkedIn and Amazon. Spends REAL ad budget. Needs Adspirer sign-in (OAuth).' }
   ];
 
   // ── selectors (pure) ────────────────────────────────────────────────────────────────────────────────

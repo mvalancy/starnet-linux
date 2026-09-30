@@ -166,7 +166,7 @@
       id: r.id || '', kind: r.kind || 'note',
       title: String(r.title || ''), body: String(text || ''),
       scope: r.scope || 'global', streamId: r.streamId || null,
-      ...(r.projectRoot ? { projectRoot: r.projectRoot } : {}),
+      projectRoot: r.projectRoot || null,   // the project tier a 'project'-scoped belief is keyed to (memory-compound lane)
       sourceRunId: r.sourceRunId || null,
       // an untagged legacy record predates unattended memory, so it can only have come from the Commander's own
       // COMMS run — 'commander' is the honest default, not a guess.

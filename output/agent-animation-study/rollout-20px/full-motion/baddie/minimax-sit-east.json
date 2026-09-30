@@ -1,0 +1,10 @@
+{
+  "id": "baddie",
+  "track": "sit",
+  "dir": "east",
+  "job": "86a752d7-131c-4dfa-b272-57c9bff7d2c9",
+  "result": "frames: 5\nhttps://api.pixellab.ai/mcp/images/86a752d7-131c-4dfa-b272-57c9bff7d2c9/download?index=0",
+  "packed": true,
+  "lastRaw": "output/agent-animation-study/rollout-20px/full-motion/baddie/minimax/sit-east/86a752d7-131c-4dfa-b272-57c9bff7d2c9/4.png",
+  "frameCount": 5
+}

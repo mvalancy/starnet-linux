@@ -27,6 +27,7 @@ const path = require('path');
 
 const src = f => fs.readFileSync(path.join(__dirname, '..', 'frontend', 'app', f), 'utf8');
 const build = src('build.js');
+const panel = src('workflowpanel.js');   // the docked Workflow panel (2026-09-22) — the step/flow cards' saves live here now
 /* The "must NOT appear" assertions below run against a COMMENT-STRIPPED slice: this file documents the
    bugs it prevents, and a comment naming markSeen()/removeChild() is not a call to them. */
 const strip = s => s.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/.*/g, ' ');
@@ -52,15 +53,20 @@ A.ok(/const dismiss = \(\) => \{ markSeen\(\);/.test(guideBlock), 'the first-run
 A.ok(/cardRegister\(g, dismiss\)/.test(guideBlock), '…and registers THAT as its close path, so ESC on it does the same thing');
 
 /* ---------- 2. the cards that SAVE something close through the save ---------- */
-const stepBlock = build.slice(build.indexOf('function openStepCard'), build.indexOf('function openWorkstationPicker'));
-A.ok(/const closeP = \(\) => \{ saveBrief\(\);/.test(stepBlock), "the step card's close path saves the job brief");
-A.ok(/cardRegister\(g, closeP\)/.test(stepBlock), '…and it is registered, so ESC saves the brief instead of discarding it');
+/* THE STEP + FLOW CARDS BECAME THE DOCKED WORKFLOW PANEL (2026-09-22). The saves they were held to moved
+   with them: the panel's ONE close path saves every open field (brief + hand-off, line name, LINE BUDGET,
+   gate config) — and every way out (✕, ✓ DONE, ESC, REFIT close) goes through it. */
+const stepBlock = build.slice(build.indexOf('function openStepCard'), build.indexOf('function openWorkflowPanel'));
 A.ok(/cardCloseAll\(\)/.test(stepBlock), 'opening the step card REPLACES whatever card was up (FINISH ① CREW / the world nag)');
-A.ok(!/querySelector\('\.refit-step-card'\)\) return/.test(stepBlock), '…and never silently no-ops on an already-open card');
-
+A.ok(/openWorkflowPanel\(bayId\)/.test(stepBlock), '…and opens the docked panel on that BAY (never silently no-ops)');
 const flowBlock = build.slice(build.indexOf('function openFlowCard'), build.indexOf('function openBeltCard'));
-A.ok(/const closeP = \(\) => \{ saveName\(\);/.test(flowBlock), "the flow card's close path saves the line name");
-A.ok(/cardRegister\(g, closeP\)/.test(flowBlock), '…and it is registered too');
+A.ok(/openWorkflowPanel\(propId\)/.test(flowBlock), 'the INBOX / gate door opens the same panel');
+const pClose = panel.slice(panel.indexOf('  function close() {'), panel.indexOf('  const isOpen'));
+A.ok(/saveOpenFields\(\);/.test(pClose), "the panel's close path saves its open fields first");
+const pSave = panel.slice(panel.indexOf('  function saveOpenFields() {'), panel.indexOf('/* ===== BAY'));
+for (const k of ['_saveName', '_saveBay', '_saveLimits', '_saveGate']) A.ok(pSave.indexOf(k) > 0, 'saveOpenFields saves ' + k);
+A.ok(/WorkflowPanel\.isOpen\(\)\) \{ WorkflowPanel\.close\(\); return; \}/.test(build), 'ESC closes the docked panel THROUGH its close path (saving) before it leaves REFIT');
+A.ok(/if \(typeof WorkflowPanel !== 'undefined' && WorkflowPanel\.isOpen\(\)\) WorkflowPanel\.close\(\);/.test(build.slice(build.indexOf('  function close() {'), build.indexOf('  const toggle'))), 'closing REFIT closes the panel through its save path while the station is still ours');
 
 const roomBlock = build.slice(build.indexOf('function openRoomCard'), build.indexOf('function doDeleteRoom'));
 A.ok(/const closeC = \(\) => \{ saveName\(\);/.test(roomBlock), "the room card's close path saves the rename");
@@ -74,8 +80,8 @@ for (const fn of ['openStepCard', 'openWorkstationPicker', 'openFlowCard', 'open
   A.ok(build.slice(i, i + 700).indexOf('cardCloseAll()') > 0, fn + ' replaces the open card instead of no-opping');
 }
 // …and every card registers SOME close path (8 cards; a new one that forgets is the bug this counts)
-A.ok((build.match(/cardRegister\(g, /g) || []).length >= 9,
-  'every mounted card registers its close path (first-run + eight editors)');
+A.ok((build.match(/cardRegister\(g, /g) || []).length >= 8,
+  'every mounted card registers its close path (first-run + the modal editors; the step/flow cards are the docked panel now)');
 
 /* ---------- 3. a mounted card owns the keyboard ---------- */
 const keyBlock = build.slice(build.indexOf('function onKey(ev)'), build.indexOf('function onKeyUp(ev)'));

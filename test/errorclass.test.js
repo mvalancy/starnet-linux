@@ -37,6 +37,21 @@ const R = (err, ctx) => classifyApiError(err, ctx || {});
   A.eq(R(httpErr(404)).shouldFallback, true, 'model_not_found -> fallback');
 }
 
+// ---- A2. xAI's own shapes (live-probed 2026-09-27): a REJECTED KEY arrives as 400, an UNFUNDED team as 403 ----
+{
+  // the adapter's own sentence, with the provider body kept for its code (err.ownMessage), exactly as openai-compatible throws it
+  const xaiErr = (status, body) => Object.assign(new Error('openai-compatible http ' + status + ' - ' + JSON.stringify(body)), { status: status, body: body, ownMessage: true });
+  const badKey = xaiErr(400, { code: 'invalid-argument', error: 'Incorrect API key provided. You can obtain an API key from https://console.x.ai.' });
+  A.eq(R(badKey).reason, 'auth', 'xAI bad-key 400 -> auth (was format_error: "Something went wrong")');
+  A.eq(R(badKey).shouldRotateCredential, true, 'a rejected key rotates to the next pooled key');
+  const broke = xaiErr(403, { code: 'The caller does not have permission to execute the specified operation', error: 'Your newly created team doesn\'t have any credits yet. You can purchase credits on https://console.x.ai/team/x.' });
+  A.eq(R(broke).reason, 'billing', 'xAI no-credits 403 -> billing (was auth: "No model is connected yet")');
+  A.eq(R(xaiErr(403, { error: 'Your team has either used all available credits or reached its monthly spending limit.' })).reason, 'billing', 'xAI spent-credits 403 -> billing');
+  A.eq(R(xaiErr(403, { error: 'The caller does not have permission to execute the specified operation' })).reason, 'auth', 'a plain permission 403 stays auth');
+  A.ok(R(new Error('An interrupted run has unsettled spend; reconcile its provider usage before continuing with spending limits.')).reason !== 'billing', 'a local spend-ledger error is not provider billing');
+  A.eq(R(httpErr(400, 'Invalid value for messages[0].role')).reason, 'format_error', 'an ordinary malformed 400 is still format_error');
+}
+
 // ---- B. 400 ambiguity: context vs format, gated by the cold-catalog guard ----
 {
   A.eq(R(httpErr(400, 'maximum context length is 8192 tokens')).reason, 'context_overflow', '400 w/ context message -> context_overflow');
@@ -306,7 +321,19 @@ const F = (err, status, opts) => friendlyError(err, status, opts);
   // the new pre-flight misconfig mapping must hold on the browser path too (points at Settings, not a retry).
   A.eq(B(new Error('no API key set')).kind, 'auth', 'browser: "no API key set" -> auth');
   A.eq(B(new Error('no API key set')).action, 'settings', 'browser: missing key points at Settings');
-  A.eq(B(new Error('no model selected')).kind, 'auth', 'browser: "no model selected" -> auth');
+  // a connected provider with no MODEL picked is its own kind: the door is the model dock, not a key or sign-in
+  A.eq(B(new Error('no model selected')).kind, 'no_model', 'browser: "no model selected" -> no_model');
+  A.eq(B(new Error('no model selected')).action, 'settings', 'browser: no_model is a fix-it door, not a blind retry');
+  A.eq(B(new Error('sidecar HTTP 400 — no model selected — pick a model for GROK OAUTH first')).kind, 'no_model',
+    'browser: the /api/run no-model guard -> no_model');
+  A.eq(B(new Error('sidecar HTTP 400 — missing key/model — sign in to GROK OAUTH first - a signed-in subscription + model are required')).kind, 'oauth',
+    'browser: the /api/run guard for a signed-out GROK OAUTH -> the grok sign-in class, not the key/ChatGPT door');
+  A.eq(B(new Error('sidecar HTTP 400 — missing key/model — connect a XAI API key')).kind, 'auth', 'browser: keyed guard stays auth');
+  // xAI (live-probed 2026-09-27): a bad key is a 400, an unfunded team a 403 naming credits
+  A.eq(B(new Error('openai-compatible http 400 - {"code":"invalid-argument","error":"Incorrect API key provided. You can obtain an API key from https://console.x.ai."}')).kind, 'auth',
+    'browser: xAI bad-key 400 -> auth, not an unknown retry');
+  A.eq(B(new Error('openai-compatible http 403 - {"code":"The caller does not have permission to execute the specified operation","error":"Your newly created team doesn\'t have any credits yet. You can purchase credits on https://console.x.ai/team/x."}')).kind, 'billing',
+    'browser: xAI no-credits 403 -> billing, not "no model connected"');
 }
 
 /* ---- a TRANSPORT status beats a policy WORD in the message ----

@@ -31,9 +31,11 @@ for (const required of [
 const ignore = read('.gitleaksignore').split(/\r?\n/).filter(line => /^[0-9a-f]{40}:/.test(line));
 // 25 pre-publication fingerprints + two reviewed loopback mock-provider fixtures
 // + the 2026-09-11 Git commit hash in verification evidence (not a credential)
-// + eleven reviewed 0.12.0 mock-provider and generated-art fingerprints.
+// + eleven reviewed 0.12.0 mock-provider and generated-art fingerprints
+// + two SHA-256 digests in 0.12.4/0919 release evidence (reviewed 2026-09-26)
+// + five secret-shaped synthetic test fixtures and the allowlist comment that first quoted one (reviewed 2026-09-27).
 // Bump ONLY with a reviewed .gitleaksignore entry.
-assert.equal(ignore.length, 39, 'the reviewed historical baseline is finite and exact');
+assert.equal(ignore.length, 47, 'the reviewed historical baseline is finite and exact');
 assert.equal(new Set(ignore).size, ignore.length, 'baseline fingerprints must be unique');
 
 const workflow = read('.github/workflows/secret-history.yml');

@@ -215,7 +215,7 @@ function twoStagePlan() {
     /* ---- 3. HAPPY PATH through a posted two-stage floor ---- */
     const posted = await fetch(B + '/api/routing', { method: 'POST', headers, body: JSON.stringify(twoStagePlan()) });
     A.eq(posted.status, 200, 'the two-stage floor deploys');
-    sse = await startSseCollector(B + '/api/channels/events?token=' + encodeURIComponent(token));
+    sse = await startSseCollector(B + '/api/channels/events?' + require('./_httpToken.js').sseQuery(token));
 
     const happy = await post({});
     A.eq(happy.status, 200, 'the sample answers 200 after the line delivered');

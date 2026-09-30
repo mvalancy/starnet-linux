@@ -402,7 +402,18 @@ if (INVOKED_DIRECTLY) {
     writeFinding(finding) {
       fs.mkdirSync(FINDINGS_DIR, { recursive: true });
       const safe = String(finding.id).replace(/[^A-Za-z0-9._-]/g, '_');   // filesystem-safe id
-      fs.writeFileSync(path.join(FINDINGS_DIR, safe + '.json'), JSON.stringify(finding, null, 2) + '\n', 'utf8');
+      // Temp + rename: a failed write (disk full, crash) must never leave a torn <id>.json. Three
+      // 0-byte findings from the 2026-09-19 disk-full event made every strict read (qa:ready) fail
+      // for a week. The temp name does not end in .json, so readers never see it.
+      const file = path.join(FINDINGS_DIR, safe + '.json');
+      const tmp = file + '.tmp-' + process.pid;
+      try {
+        fs.writeFileSync(tmp, JSON.stringify(finding, null, 2) + '\n', 'utf8');
+        fs.renameSync(tmp, file);
+      } catch (error) {
+        try { fs.rmSync(tmp, { force: true }); } catch (_) { /* best effort; the .tmp name is never read */ }
+        throw error;
+      }
     },
     knownFingerprints() { return readKnownFingerprints(); }
   });

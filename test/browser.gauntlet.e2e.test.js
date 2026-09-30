@@ -121,6 +121,10 @@ const ROUTES = {
   const driver = T.makeCdpDriver({
     chrome, forceHeadless: true, syntheticInputOnly: true, cdpPort: 0, profileDir, timeoutMs: 20000, downloadDir
   });
+  // This fixture intentionally tests local development pages. Grant the two
+  // loopback origins it owns, as browser.test_navigate does for a real session.
+  driver.allowLocal(base);
+  driver.allowLocal(base.replace('127.0.0.1', 'localhost'));
 
   try {
     // Modern cards can be clickable without an HTML onclick attribute or a native button.
@@ -294,6 +298,8 @@ const ROUTES = {
       } else {
         const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'starnet-gauntlet-oopif-'));
         const d2 = T.makeCdpDriver({ chrome: fullPath, forceHeadless: true, syntheticInputOnly: true, cdpPort: 0, profileDir: dir2, timeoutMs: 20000 });
+        d2.allowLocal(base);
+        d2.allowLocal(base.replace('127.0.0.1', 'localhost'));
         try {
           const t0 = Date.now();
           await d2.navigate(base + '/crossframe');

@@ -84,6 +84,7 @@ async function run() {
   {
     const store = fakeStore(); const sends = []; let ran = false; const rr = fakeRoster();
     const hub = makeChannelHub({
+      isOwner: () => true,   // these scenarios are the paired owner (the non-owner gate: channels.owner-gates.test.js)
       runOnce: async () => { ran = true; }, store, send: (c, t) => { sends.push(t); return Promise.resolve({ ok: true }); },
       secrets: () => ({ key: 'k', model: 'm', agentId: 'ultron' }), classify: () => false, newId: idGen(),
       roster: () => rr.list(), setModel: rr.setModel
@@ -100,6 +101,7 @@ async function run() {
     const store = fakeStore(); const sends = []; let lastRun = null; const rr = fakeRoster();
     const runOnce = async (o) => { lastRun = o; o.emit('agent.run.start', { runId: o.runId }); o.emit('agent.token', { delta: 'hi' }); o.emit('agent.run.end', { reason: 'done' }); };
     const hub = makeChannelHub({
+      isOwner: () => true,   // these scenarios are the paired owner (the non-owner gate: channels.owner-gates.test.js)
       runOnce, store, send: (c, t) => { sends.push(t); return Promise.resolve({ ok: true }); },
       secrets: () => ({ key: 'k', model: 'm', agentId: 'ultron' }), classify: () => false, newId: idGen(),
       roster: () => rr.list(), setModel: rr.setModel
@@ -110,6 +112,7 @@ async function run() {
     // simulate a hub "reload": a brand-new hub instance over the SAME store must read the binding back
     const sends2 = [];
     const hub2 = makeChannelHub({
+      isOwner: () => true,   // these scenarios are the paired owner (the non-owner gate: channels.owner-gates.test.js)
       runOnce, store, send: (c, t) => { sends2.push(t); return Promise.resolve({ ok: true }); },
       secrets: () => ({ key: 'k', model: 'm', agentId: 'ultron' }), classify: () => false, newId: idGen(),
       roster: () => rr.list(), setModel: rr.setModel
@@ -123,6 +126,7 @@ async function run() {
   {
     const store = fakeStore(); const sends = []; const rr = fakeRoster();
     const hub = makeChannelHub({
+      isOwner: () => true,   // these scenarios are the paired owner (the non-owner gate: channels.owner-gates.test.js)
       runOnce: async () => {}, store, send: (c, t) => { sends.push(t); return Promise.resolve({ ok: true }); },
       secrets: () => ({ key: 'k', model: 'm' }), classify: () => false, newId: idGen(), roster: () => rr.list(), setModel: rr.setModel
     });
@@ -135,6 +139,7 @@ async function run() {
   {
     const store = fakeStore(); const sends = []; const rr = fakeRoster();
     const hub = makeChannelHub({
+      isOwner: () => true,   // these scenarios are the paired owner (the non-owner gate: channels.owner-gates.test.js)
       runOnce: async () => {}, store, send: (c, t) => { sends.push(t); return Promise.resolve({ ok: true }); },
       secrets: () => ({ key: 'k', model: 'm', agentId: 'ultron' }), classify: () => false, newId: idGen(),
       roster: () => rr.list(), setModel: rr.setModel
@@ -150,6 +155,7 @@ async function run() {
   {
     const store = fakeStore(); const sends = []; const rr = fakeRoster();
     const hub = makeChannelHub({
+      isOwner: () => true,   // these scenarios are the paired owner (the non-owner gate: channels.owner-gates.test.js)
       runOnce: async () => {}, store, send: (c, t) => { sends.push(t); return Promise.resolve({ ok: true }); },
       secrets: () => ({ key: 'k', model: 'm', agentId: 'ultron' }), classify: () => false, newId: idGen(),
       roster: () => rr.list(), setModel: rr.setModel,
@@ -166,6 +172,7 @@ async function run() {
   {
     const store = fakeStore(); const sends = [];
     const hub = makeChannelHub({
+      isOwner: () => true,   // these scenarios are the paired owner (the non-owner gate: channels.owner-gates.test.js)
       runOnce: async () => {}, store, send: (c, t) => { sends.push(t); return Promise.resolve({ ok: true }); },
       secrets: () => ({ key: 'k', model: 'm', agentId: 'ultron' }), classify: () => false, newId: idGen(),
       roster: () => [{ agentId: 'ultron', name: 'Ultron', model: 'x', provider: 'openrouter' }],
@@ -188,6 +195,7 @@ async function run() {
   {
     const store = fakeStore(); const sends = [];
     const hub = makeChannelHub({
+      isOwner: () => true,   // these scenarios are the paired owner (the non-owner gate: channels.owner-gates.test.js)
       runOnce: async () => {}, store, send: (c, t) => { sends.push(t); return Promise.resolve({ ok: true }); },
       secrets: () => ({ key: 'k', model: 'm' }), classify: () => false, newId: idGen()   // no roster/setModel injected
     });

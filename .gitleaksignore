@@ -76,3 +76,17 @@ eef21c982c9cacd73e6db3e24baf5e2d798cbeee:dev/industrial-textures/coordinated-bat
 eef21c982c9cacd73e6db3e24baf5e2d798cbeee:dev/industrial-textures/coordinated-batch03-recipes.json:generic-api-key:356
 3d445dbcc5b3b927c1fe148d9ceca2dc11e0a075:dev/industrial-textures/prop-structure-manifest.json:generic-api-key:142
 3d445dbcc5b3b927c1fe148d9ceca2dc11e0a075:dev/industrial-textures/prop-structure-manifest.json:generic-api-key:158
+
+# SHA-256 digests in release evidence (installer hash, log-file hash) — hex, not credentials. Reviewed 2026-09-26.
+2e7d5e71d079c3ea7bab03df2853548806a08e02:docs/releases/0.12.4/NATIVE_RESULTS.md:generic-api-key:12
+f74ba86aafee94930c1509692edda568ce96a7cd:qa/evidence/systemic-bugs-0919/validation.json:generic-api-key:70
+
+# Deliberately secret-SHAPED test fixtures (redaction, keychain migration, process-fault and shell-ledger tests):
+# synthetic token-shaped strings built from sequential digits and letters. Reviewed 2026-09-27.
+49be8d8de7c6bd7e103d562086b533ef45ecff4e:test/channels.keychain-all.e2e.test.js:slack-app-token:30
+ff00d7ccdb6cad7c0dbf0aefee41d7401f9ee84d:test/process-fault.test.js:generic-api-key:38
+ff00d7ccdb6cad7c0dbf0aefee41d7401f9ee84d:test/process-fault.test.js:generic-api-key:44
+eae4248a82dbe17c4a1eebada1c3759cb0402f61:test/redact.known-values.test.js:slack-app-token:24
+99a6dccb9a947be703515dd39c1502900932e28a:test/shell.fg-ledger.test.js:curl-auth-header:102
+# The comment above first quoted one of those fixtures, which the history scan then read as a key in this file.
+1b01aae6c5aa7224b92a1ce029c73ff9aa99a4ea:.gitleaksignore:generic-api-key:85

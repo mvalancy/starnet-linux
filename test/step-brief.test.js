@@ -131,13 +131,16 @@ const lineGeo = withBriefs => ({
 
   // a plan with BLOCKING errors is refused for ROUTING but the brief — a fact about the PLACED floor —
   // still serves (same capsPlan precedence as stationFor: a broken belt graph must not strip the duty line).
+  // (the fixture used to be a duplicate-binding floor; one agent may crew many bays since 2026-09-22, so the
+  //  blocking error is now a belt CYCLE drawn beside the briefed dock)
   const dup = P.compileRoutingPlan({
     props: [{ id: 'i', t: 'intake', x: 0, y: 0, w: 1, h: 1 },
             { id: 'b1', t: 'bay', x: 3, y: 0, w: 1, h: 1, agentId: 'twin', brief: 'First twin duty.' },
             { id: 'b2', t: 'bay', x: 6, y: 0, w: 1, h: 1, agentId: 'twin' }],
-    belts: [belt(1, 0, 'E'), belt(2, 0, 'E'), belt(4, 0, 'E'), belt(5, 0, 'E')]
+    belts: [belt(1, 0, 'E'), belt(2, 0, 'E'), belt(4, 0, 'E'), belt(5, 0, 'E'),
+            belt(20, 0, 'E'), belt(21, 0, 'S'), belt(21, 1, 'W'), belt(20, 1, 'N')]
   });
-  A.ok(!P.ok(dup), 'fixture: the duplicate-binding floor has a blocking error');
+  A.ok(!P.ok(dup), 'fixture: the cyclic floor has a blocking error');
   const r2 = makeRouter();
   A.ok(!r2.setPlan(dup).ok, 'the router refuses it for routing');
   A.eq(r2.resolveTarget({ tag: 'general' }), null, 'and routes nothing from it');

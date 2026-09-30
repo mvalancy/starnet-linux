@@ -50,12 +50,41 @@
     // like the upload that created it; otherwise a poisoned document can bypass the web/MCP taint boundary.
     const name = String((tool && tool.name) || '');
     const p = String((call && call.args && call.args.path) || '');
-    return name === 'fs.read' && /(?:^|[\\/])\.attachments(?:[\\/]|$)/i.test(p);
+    if (name === 'fs.read' && /(?:^|[\\/])\.attachments(?:[\\/]|$)/i.test(p)) return true;
+    // PARKED UNTRUSTED OUTPUT. The host parks over-cap output into .output/; a park made from untrusted bytes (a web
+    // or connector result, a tainted worker's text, anything a tainted run produced) is named `untrusted-*` by the
+    // host. Reading it back — in a LATER run, where the original tool result no longer latches anything — carries
+    // the same provenance as the result that made it. fs.search rooted inside .output/ or .attachments/ returns the
+    // same bytes as snippets (a workspace-root search already skips those hidden folders).
+    if (name === 'fs.read' && UNTRUSTED_PARK.test(p)) return true;
+    return name === 'fs.search' && /(?:^|[\\/])\.(?:attachments|output)(?:[\\/]|$)/i.test(p);
+  }
+  const UNTRUSTED_PARK = /(?:^|[\\/])\.output[\\/]untrusted-[^\\/]*$/i;
+  const UNTRUSTED_PARK_PREFIX = 'untrusted-';
+
+  /* A tool RESULT may carry `taintedBy`: the host-proven taint of content that tool relays from ANOTHER run (a
+     delegated worker's text, a background subagent record). The tool is not itself a web/connector source, so
+     isUntrustedSource cannot see it — the relayed run's own latch is the proof. Returns the reason the INGESTING
+     run should latch, or null. Pure. */
+  function relayedTaint(result) {
+    const src = result && typeof result.taintedBy === 'string' ? result.taintedBy.trim() : '';
+    return src ? 'worker output (tainted by ' + src.slice(0, 120) + ')' : null;
+  }
+  // First taint across rows (worker rows / subagent records). null when none carries one.
+  function firstTaint(rows) {
+    for (const r of (Array.isArray(rows) ? rows : [])) {
+      const t = r && typeof r.taintedBy === 'string' ? r.taintedBy.trim() : '';
+      if (t) return t;
+    }
+    return null;
   }
 
   // Once the run is tainted, may this tool still be called?
   function allowedWhenTainted(tool) {
     if (!tool) return true;                                  // unknown name -> let the ordinary unknown-tool path answer
+    // a tool that PERSISTS text a later run obeys (team.configure rewrites a crew member's standing orders) would
+    // launder this run's taint into every future run of that agent — past the per-run fence entirely
+    if (tool.taintLocked === true) return false;
     const impact = impactOfTool(tool);
     if (impact === 'workspace-process') return false;        // shell.exec / verify.run
     if (impact === 'external-credentialed') return false;    // web_request — spends a stored key outward
@@ -73,12 +102,17 @@
     if (!opts.taintedBy || allowedWhenTainted(tool)) return { allow: true, needsConfirmation: false, oneShot: false };
     // FULL ACCESS is the Commander's explicit zero-prompt posture. Taint still remains latched and fenced, but it
     // cannot silently downgrade Full Access into ASK mode. Hardline floors live outside this policy and still win.
-    if (opts.fullAccess === true) return { allow: true, needsConfirmation: false, oneShot: false };
+    // EXCEPT when the run's ENTRY was untrusted third-party content (sec-taint2 09-25, owner decision): a webhook /
+    // watched-folder trigger payload, a forwarded message or a chat attachment — and every hop and delegated worker
+    // downstream of such an entry (host-minted, sidecar/run-origin.js entryUntrusted). There the Commander never
+    // typed the job at all, so "zero prompts" would hand the payload's author the terminal. Owner-typed runs keep
+    // the override exactly as before, including one that later read a web page.
+    if (opts.fullAccess === true && opts.untrustedEntry !== true) return { allow: true, needsConfirmation: false, oneShot: false };
     if (opts.surface !== 'interactive' || opts.hasPrompt !== true) return { allow: false, needsConfirmation: false, oneShot: false };
     if (opts.decision == null) return { allow: false, needsConfirmation: true, oneShot: false };
     const allow = /^(?:once|session|always|full)$/i.test(String(opts.decision || ''));
     return { allow, needsConfirmation: false, oneShot: allow };
   }
 
-  return { isUntrustedSource, allowedWhenTainted, postTaintBoundary, CONNECTOR_CAP };
+  return { isUntrustedSource, allowedWhenTainted, postTaintBoundary, relayedTaint, firstTaint, CONNECTOR_CAP, UNTRUSTED_PARK_PREFIX };
 });

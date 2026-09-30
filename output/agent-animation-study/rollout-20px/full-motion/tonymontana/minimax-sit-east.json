@@ -1,0 +1,10 @@
+{
+  "id": "tonymontana",
+  "track": "sit",
+  "dir": "east",
+  "job": "89de72d1-9c97-4595-80a1-c25c21cfc2e5",
+  "result": "frames: 5\nhttps://api.pixellab.ai/mcp/images/89de72d1-9c97-4595-80a1-c25c21cfc2e5/download?index=0",
+  "packed": true,
+  "lastRaw": "output/agent-animation-study/rollout-20px/full-motion/tonymontana/minimax/sit-east/89de72d1-9c97-4595-80a1-c25c21cfc2e5/4.png",
+  "frameCount": 5
+}

@@ -1,0 +1,10 @@
+{
+  "id": "animegirl",
+  "track": "sit",
+  "dir": "north",
+  "job": "55d5d3ec-a653-4699-b4c0-acf6b997c0dd",
+  "result": "frames: 5\nhttps://api.pixellab.ai/mcp/images/55d5d3ec-a653-4699-b4c0-acf6b997c0dd/download?index=0",
+  "packed": true,
+  "lastRaw": "output/agent-animation-study/rollout-20px/full-motion/animegirl/minimax/sit-north/55d5d3ec-a653-4699-b4c0-acf6b997c0dd/4.png",
+  "frameCount": 5
+}

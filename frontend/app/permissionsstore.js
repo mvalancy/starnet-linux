@@ -138,7 +138,12 @@ const PermissionsStore = (() => {
   async function setLevel(level) {
     if (!ready()) return snapshot();
     const lv = Permissions.normalizeLevel(level);
-    try { if (typeof deps.applyPreset === 'function') deps.applyPreset(Permissions.levelPlan(lv).preset); } catch (_) {}
+    try {
+      if (typeof deps.applyPreset === 'function') {
+        const result = await deps.applyPreset(Permissions.levelPlan(lv).preset);
+        if (result === false || (result && result.ok === false)) { error = result.error || 'Autonomy setting was not confirmed'; return snapshot(); }
+      }
+    } catch (e) { error = (e && e.message) || 'Autonomy setting was not confirmed'; return snapshot(); }
     const diff = Permissions.reconcileToLevel(lv, grants);
     for (const k of diff.toGrant) await grant(k);
     for (const k of diff.toRevoke) await revoke(k);

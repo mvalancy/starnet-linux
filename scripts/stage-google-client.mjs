@@ -24,13 +24,16 @@ try {
     try { parsed = JSON.parse(raw); } catch (_) { throw new Error('Google Desktop registration must be valid JSON'); }
     const client = desktopClient(parsed);
     // Strip unrelated project fields; only Google's installed client metadata ships.
-    const output = JSON.stringify({ installed: { client_id: client.clientId, client_secret: client.clientSecret } });
+    // EARLY ACCESS (opt-in internal builds only; release-train never sets it): open every Google service before
+    // Google verification. Carried in the bundled registration so no user or env setting can flip it later.
+    const earlyAccess = process.env.STARNET_GOOGLE_EARLY_ACCESS === '1';
+    const output = JSON.stringify(Object.assign({ installed: { client_id: client.clientId, client_secret: client.clientSecret } }, earlyAccess ? { earlyAccess: true } : {}));
     // Native client metadata is public. Bundled resources must remain readable
     // when an installer places the app under a different OS account.
     fs.writeFileSync(target, output + '\n', { mode: 0o644 });
     fs.chmodSync(target, 0o644);
     if (fs.readFileSync(target, 'utf8').trim() !== output) throw new Error('Google registration staging read-back failed');
-    console.log('StarNet Google Desktop registration staged and verified.');
+    console.log('StarNet Google Desktop registration staged and verified.' + (earlyAccess ? ' EARLY ACCESS: every Google service opens before verification.' : ''));
   }
 } catch (e) {
   console.error('Google sign-in release configuration failed: ' + e.message);

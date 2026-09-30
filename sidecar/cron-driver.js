@@ -155,6 +155,17 @@
     if (typeof newId !== 'function' || typeof newAbort !== 'function' || typeof now !== 'function') throw new Error('cron-driver: newId/newAbort/now are required');
 
     const leases = new Map();   // jobId -> { runId, startedAt, heartbeatAt, ac, isOnce, durableAt } — one-run-per-job in-flight lock
+    /* runIds whose OWNED settlement already committed + emitted cron.result (bounded, oldest evicted). A reclaim
+       (stale-lease sweep, a contained fireJob throw) settles the run ON ITS OWNER'S BEHALF; the aborted host's late
+       finishFire then arrives UNOWNED for the same runId and used to emit a SECOND cron.result{(stale-lease)} —
+       one run, two outcomes on the bus. One runId reports once. */
+    const settledRunIds = new Set();
+    const SETTLED_RUN_IDS_MAX = 256;
+    function noteSettled(runId) {
+      if (runId == null) return;
+      settledRunIds.add(String(runId));
+      while (settledRunIds.size > SETTLED_RUN_IDS_MAX) settledRunIds.delete(settledRunIds.values().next().value);
+    }
     // G4.3 in-process reentrancy guard: a tick re-entered at the SAME instant (e.g. the boot resume
     // reconcile racing the first timer tick, or a fire's run host synchronously re-entering applyTick)
     // must be a NO-OP — the outer pass has not yet persisted its advance, so a re-entrant pass would
@@ -167,31 +178,48 @@
     // goes away, the key changes / is pruned and a fresh disabled window can report again. Keyed jobId->dueKey.
     const disabledNotified = new Map();
 
-    async function deliverFinalization(job) {
-      const f = job && job.finalization;
-      if (!f || f.state !== 'pending') return false;
-      if (!deliverResult) {
-        setJobs(cronStore.markDelivery(getJobs(), job.id, { ok: true, runId: f.runId }, { now: now() }));
-        return true;
-      }
-      // Use the destination snapshot committed with the result, not an edited job's newer routing fields.
-      const deliveryJob = Object.assign({}, job, { deliver: f.deliver, origin: f.origin });
-      let out;
-      try { out = await deliverResult(deliveryJob, { runId: f.runId, outcome: f.outcome, text: f.result || '', error: f.error || null }); }
-      catch (e) { out = { ok: false, error: (e && e.message) || String(e) }; }
-      const live = cronStore.getJob(getJobs(), job.id);
-      const deliveryOk = !out || out.ok !== false;
-      if (live && live.finalization && live.finalization.state === 'pending' && live.finalization.runId === f.runId) {
-        setJobs(cronStore.markDelivery(getJobs(), job.id, { ok: deliveryOk, error: out && out.error, runId: f.runId }, { now: now() }));
-      }
-      return deliveryOk;
+    const deliveries = new Map(); // job/run -> one in-flight send across boot, ticks and completion
+    const deliveryReceipts = new Map(); // send finished but its acknowledgement has not reached disk
+    async function deliverFinalization(job, receipt) {
+      const f = receipt || (job && job.finalization);
+      if (!job || !f || f.state !== 'pending') return false;
+      const key = job.id + '/' + f.runId;
+      if (deliveries.has(key)) return false;
+      if (!deliveryReceipts.has(key) && Date.parse(f.nextAttemptAt) > now()) return false;
+      deliveries.set(key, true);
+      try {
+        const current = cronStore.getJob(getJobs(), job.id);
+        if (!cronStore.pendingDeliveries(current).some(p => p.runId === f.runId)) {
+          deliveryReceipts.delete(key); return false;
+        }
+        let out = deliveryReceipts.get(key);
+        if (!out) {
+          // The committed routing/context snapshot wins over subsequent edits to the routine.
+          const deliveryJob = Object.assign({}, job, f.deliveryContext || {}, { deliver: f.deliver, origin: f.origin });
+          try { out = deliverResult ? await deliverResult(deliveryJob, { runId: f.runId, outcome: f.outcome, text: f.result || '', error: f.error || null, deliveredTargets: f.deliveredTargets || [] }) : { ok: true }; }
+          catch (e) { out = { ok: false, error: (e && e.message) || String(e) }; }
+          out = { ok: !out || out.ok !== false, error: out && out.error, deliveredTargets: out && out.deliveredTargets };
+          deliveryReceipts.set(key, out);
+        }
+        if (setJobs(cronStore.markDelivery(getJobs(), job.id, Object.assign({ runId: f.runId }, out), { now: now() })) === false) return false;
+        deliveryReceipts.delete(key);
+        return out.ok;
+      } finally { deliveries.delete(key); }
     }
 
     async function recoverFinalizations() {
       let count = 0;
-      for (const job of getJobs().slice()) if (job && job.finalization && job.finalization.state === 'pending') {
-        if (await deliverFinalization(job)) count++;
+      // Bound each pass; an unreachable destination must not flood transports on every tick.
+      const work = [];
+      for (const job of getJobs().slice()) {
+        for (const f of cronStore.pendingDeliveries(job)) {
+          if (work.length + deliveries.size >= 4) break;
+          const key = job.id + '/' + f.runId;
+          if (deliveries.has(key) || (!deliveryReceipts.has(key) && Date.parse(f.nextAttemptAt) > now())) continue;
+          work.push([job, f]);
+        }
       }
+      await Promise.all(work.map(async ([job, f]) => { if (await deliverFinalization(job, f)) count++; }));
       return count;
     }
 
@@ -220,6 +248,9 @@
     function finishFire(jobId, runId, state, threw) {
       const currentLease = leases.get(jobId);
       const pending = currentLease && currentLease.runId === runId ? currentLease.settlement : null;
+      // A reclaimed/finished run awaiting disk recovery has already chosen its outcome.
+      // A late resolution from the aborted host must not replace that receipt.
+      if (pending) { state = pending.state; threw = pending.threw; }
       const at = pending ? pending.at : now();
       const reply = (state.buf || '').trim();
       const terminalReason = String(state.reason || '');
@@ -244,7 +275,7 @@
             reason: state.reason || (ok ? 'done' : 'error'),
             error: errMsg || undefined, transient: transient, output: ok ? reply : undefined, usd: state.usd || 0,
             monitorHash: ok ? state.monitorHash : undefined
-          }, { now: at, maxConsecutiveFailures: maxConsecutiveFailures });
+          }, { now: at, defaultTz: defaultTz, maxConsecutiveFailures: maxConsecutiveFailures });
           committed = setJobs(next) !== false;
         } catch (_) { committed = false; }
         if (!committed) {
@@ -270,7 +301,10 @@
           baseReason = baseReason + ' (paused: consecutive-failures x' + settled.consecutiveFailures + ')';
         }
       }
-      if (!owned || committed) try { emit('cron.result', { jobId: jobId, runId: runId, outcome: outcome, reason: owned ? baseReason : (baseReason + ' (stale-lease)') }); } catch (_) {}
+      // an UNOWNED settle whose runId already reported (its reclaim settled it) stays silent: one run, one cron.result
+      const alreadyReported = !owned && runId != null && settledRunIds.has(String(runId));
+      if ((!owned || committed) && !alreadyReported) try { emit('cron.result', { jobId: jobId, runId: runId, outcome: outcome, reason: owned ? baseReason : (baseReason + ' (stale-lease)') }); } catch (_) {}
+      if (owned && committed) noteSettled(runId);
       const continueAfterCommit = !(owned && committed && afterFinalizationCommitted && afterFinalizationCommitted(cronStore.getJob(getJobs(), jobId)) === false);
       if (owned && committed && continueAfterCommit) {
         const liveJob = cronStore.getJob(getJobs(), jobId) || { id: jobId };
@@ -308,7 +342,7 @@
       } catch (e) {
         const blockedRunId = newId();
         const msg = 'context pipeline unavailable: ' + ((e && e.message) || e);
-        try { setJobs(cronStore.markRun(getJobs(), job.id, { runId: blockedRunId, status: 'error', reason: 'context-error', error: msg, transient: false }, { now: nowMs })); } catch (e) { failNote('cron.markRun', e); }
+        try { setJobs(cronStore.markRun(getJobs(), job.id, { runId: blockedRunId, status: 'error', reason: 'context-error', error: msg, transient: false }, { now: nowMs, defaultTz: defaultTz })); } catch (e) { failNote('cron.markRun', e); }
         try { emit('cron.result', { jobId: job.id, runId: blockedRunId, outcome: 'failed', reason: 'context-error' }); } catch (_) {}
         return false;
       }
@@ -322,7 +356,7 @@
           try {
             setJobs(cronStore.markRun(getJobs(), job.id, {
               runId: blockedRunId, status: 'error', reason: 'blocked', error: scan.error, transient: false
-            }, { now: nowMs }));
+            }, { now: nowMs, defaultTz: defaultTz }));
           } catch (e) { failNote('cron.markRun', e); }
           try { emit('cron.result', { jobId: job.id, runId: blockedRunId, outcome: 'failed', reason: 'blocked: ' + scan.patternId }); } catch (_) {}
           return false;
@@ -399,7 +433,7 @@
       try { emit('cron.fire', { jobId: job.id, runId: runId, scheduledFor: scheduledFor }); } catch (_) {}
       // ride the routine's instruction onto the CONVEYOR as a box bound for this agent — only NOW (past the
       // capability gate, lease taken), so a crate appears on the floor iff a run is genuinely firing.
-      try { placeWorkitem(job.agentId, assembledPrompt, runId); } catch (e) { failNote('cron.placeWorkitem', e); }
+      try { placeWorkitem(job.agentId, assembledPrompt, runId, job.dockId || undefined); } catch (e) { failNote('cron.placeWorkitem', e); }
 
       // in-process emit sink: assemble the reply from agent.token deltas (the SAME contract harness.js/hub.js use —
       // there is no agent.message event), capture the end reason / error / transient flag off the RAW payload
@@ -434,7 +468,8 @@
       // runs use (hub.js), so a routine's agent is briefed exactly like a routed message's agent. Null-safe:
       // no seam / no floor / no brief composes the exact pre-brief system string.
       let dockBrief = null;
-      if (stageBriefFor) { try { dockBrief = stageBriefFor(job.agentId); } catch (_) { dockBrief = null; } }
+      // (multi-bay) a routine that FIRES AT one of several bays is briefed with THAT bay's brief (job.dockId)
+      if (stageBriefFor) { try { dockBrief = job.dockId ? stageBriefFor(job.agentId, job.dockId) : stageBriefFor(job.agentId); } catch (_) { dockBrief = null; } }
       const system = ((ident.system && String(ident.system)) || personaOf(job.agentId, job))
         + (dockBrief ? '\n\nYOUR STANDING BRIEF FOR THIS STATION:\n' + String(dockBrief).slice(0, 2000) : '');
 
@@ -475,6 +510,7 @@
           scriptTimeoutMs: job.scriptTimeoutMs,
           noAgent: job.noAgent === true,
           runsLine: job.runsLine === true,
+          dockId: job.dockId || undefined,   // (multi-bay) the bay it fires at decides which line — and so which project — the entry stage runs in
           workdir: job.workdir || null,
           enabledToolsets: Array.isArray(job.enabledToolsets) ? job.enabledToolsets.slice() : null,
           initialTaint: !!(job.contextFrom && job.contextFrom.length),
@@ -483,7 +519,7 @@
           recipeId: (job.meta && job.meta.recipeId) || undefined,
           // per-bay capability isolation (B5): a bay-docked agent's routine runs with ITS room's objects,
           // never the default office — same contract as a routed channel message. undefined -> office.
-          station: (resolveStation ? resolveStation(job.agentId) : null) || undefined
+          station: (resolveStation ? (job.dockId ? resolveStation(job.agentId, job.dockId) : resolveStation(job.agentId)) : null) || undefined
         });
       } catch (e) { p = Promise.reject(e); }
       Promise.resolve(p).then(
@@ -496,7 +532,7 @@
           // hops ride the ROUTINE'S OWN stream so its session reads as one multi-stage job, and each hop renews
           // the lease — a line that outran the heartbeat would be declared a zombie and re-fired mid-work.
           Promise.resolve(advanceChain({
-            agentId: job.agentId, text: state.buf, originalText: String(job.prompt || ''),
+            agentId: job.agentId, dockId: job.dockId || undefined, text: state.buf, originalText: String(job.prompt || ''),
             signal: ac.signal, streamId: 'cron-' + runId, key: key, model: model, provider: provider,
             // the entry run's reconciled spend: the chain's $ ceiling covers the WHOLE line, stage one
             // included (2026-08-10 audit — the entry run rode outside its own line's cap on every path).
@@ -554,6 +590,7 @@
 
     function applyTickInner(nowMs) {
       let skips = 0, fires = 0;
+      Promise.resolve(recoverFinalizations()).catch(e => warn('[cron] delivery recovery failed: ' + ((e && e.message) || e)));
 
       // Retry completed-but-not-yet-durable outcomes before planning new work. These leases are settlement
       // receipts, not live processes: they must never enter the stale-run reclaim path and re-execute the job.
@@ -576,21 +613,18 @@
         const beatAge = nowMs - (lease.heartbeatAt != null ? lease.heartbeatAt : lease.startedAt);
         if (beatAge > heartbeatStaleMs) {
           try { lease.ac.abort(); } catch (_) {}
-          leases.delete(jobId);
           /* A RECLAIM IS A REAL OUTCOME (bug-sweep 2026-08-28): the aborted run's late finishFire is UNOWNED
              (generation fence) and never writes markRun — so before this, a reclaimed ONE-SHOT kept its
              persisted fireClaim + null lastRunAt and re-executed the work every ~maxRunMs FOREVER (real spend
              per cycle), and a reliably-hanging recurring routine never advanced consecutiveFailures toward
              the auto-disable ceiling built for exactly that case. Record the reclaim as a TRANSIENT failure:
              markRun clears the claim/heartbeat, re-arms via the bounded backoff, and the retry ceiling turns
-             a permanent hang into a terminal, visible failure. The unowned settle still emits its honest
-             cron.result{(stale-lease)} when the aborted run winds down — no double event here. */
-          try {
-            setJobs(cronStore.markRun(getJobs(), jobId, {
-              runId: lease.runId, status: 'error', reason: 'stale-lock-reclaimed',
-              error: 'run reclaimed: no progress for ' + Math.round(heartbeatStaleMs / 1000) + 's', transient: true
-            }, { now: nowMs, defaultTz: defaultTz, maxConsecutiveFailures: maxConsecutiveFailures }));
-          } catch (e) { failNote('cron.markRun', e); }
+             a permanent hang into a terminal, visible failure. THIS settle is the run's one cron.result: the
+             aborted run's late finishFire arrives unowned for the same runId and is silenced (settledRunIds). */
+          finishFire(jobId, lease.runId, {
+            reason: 'stale-lock-reclaimed',
+            errMsg: 'run reclaimed: no progress for ' + Math.round(heartbeatStaleMs / 1000) + 's', transient: true
+          }, null);
           try { emit('cron.skipped', { jobId: jobId, reason: 'stale-lock-reclaimed' }); } catch (_) {}
           skips++;
         }
@@ -670,6 +704,11 @@
         const job = cronStore.getJob(getJobs(), f.jobId);
         if (!job) continue;
         if (leases.has(job.id)) continue;                  // already-running: not attempted, not deferred (advances)
+        if (cronStore.pendingDeliveries(job).length >= cronStore.MAX_PENDING_DELIVERIES) {
+          deferred.push(job.id); deferredSet.add(job.id);
+          try { emit('cron.skipped', { jobId: job.id, reason: 'at-capacity' }); } catch (e) { failNote('cron.delivery.defer', e); }
+          skips++; continue;
+        }
         if (slotsLeft > 0) { slotsLeft--; }                // reserve a concurrency slot for this attempt
         else {                                             // over the cap -> defer (stays due, not advanced)
           deferred.push(job.id); deferredSet.add(job.id);
@@ -747,14 +786,11 @@
           failNote('cron.fireJob', e);
           const orphan = leases.get(job.id);
           const failRunId = orphan ? orphan.runId : newId();
-          if (orphan) { try { orphan.ac.abort(); } catch (_) {} leases.delete(job.id); }
-          try {
-            setJobs(cronStore.markRun(getJobs(), job.id, {
-              runId: failRunId, status: 'error', reason: 'fire-error',
-              error: 'fire failed: ' + ((e && e.message) || e), transient: true
-            }, { now: nowMs, defaultTz: defaultTz, maxConsecutiveFailures: maxConsecutiveFailures }));
-          } catch (e2) { failNote('cron.markRun', e2); }
-          try { emit('cron.result', { jobId: job.id, runId: failRunId, outcome: 'failed', reason: 'fire-error' }); } catch (_) {}
+          if (orphan) { try { orphan.ac.abort(); } catch (_) {} }
+          else leases.set(job.id, { runId: failRunId, startedAt: nowMs, heartbeatAt: nowMs, ac: newAbort() });
+          finishFire(job.id, failRunId, {
+            reason: 'fire-error', errMsg: 'fire failed: ' + ((e && e.message) || e), transient: true
+          }, null);
           skips++;
         }
       }
@@ -781,9 +817,24 @@
       return n;
     }
 
-    return { applyTick: applyTick, leases: leases, abortAllLeases: abortAllLeases, recoverFinalizations: recoverFinalizations,
+    return { applyTick: applyTick, leases: leases, abortAllLeases: abortAllLeases, recoverFinalizations: recoverFinalizations, deliverFinalization: deliverFinalization, settleRun: finishFire,
       _internals: { fireJob: fireJob, finishFire: finishFire, deliverFinalization: deliverFinalization } };
   }
 
-  return { makeCronDriver: makeCronDriver, SILENT_MARKER: SILENT_MARKER };
+  /* A routine script that THROWS (shell.exec's TIMEOUT / CANCELLED error) carries its whole captured output — up
+     to 64KB — in the message, which then rides the run record and the routine's error line. Clip it the same way the
+     non-zero-exit path clips its output (last SCRIPT_ERROR_TAIL chars), keeping the explanatory head intact. */
+  const SCRIPT_ERROR_TAIL = 4000;
+  function clipScriptError(message, max) {
+    const msg = String(message == null ? '' : message);
+    max = Number(max) > 0 ? Math.floor(Number(max)) : SCRIPT_ERROR_TAIL;
+    const MARK = 'Output captured before the kill:\n';
+    const at = msg.indexOf(MARK);
+    const head = at >= 0 ? msg.slice(0, at + MARK.length) : '';
+    const body = at >= 0 ? msg.slice(at + MARK.length) : msg;
+    const headClip = head.length > 1000 ? head.slice(0, 999) + '…' : head;
+    return headClip + (body.length > max ? '…' + body.slice(-max) : body);
+  }
+
+  return { makeCronDriver: makeCronDriver, SILENT_MARKER: SILENT_MARKER, clipScriptError: clipScriptError, SCRIPT_ERROR_TAIL: SCRIPT_ERROR_TAIL };
 });

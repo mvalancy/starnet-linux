@@ -345,18 +345,18 @@ const CloudSave = (() => {
   // code then treated sendBeacon's `true` ("queued for dispatch") as a confirmed 200: it nulled `pending` and
   // stamped health OK, so the newest save silently evaporated on EVERY desktop close/minimize while the
   // save-dot claimed "backed up". Three rules now:
-  //   1. The beacon aims at the ABSOLUTE sidecar endpoint and authenticates via ?token= (the sidecar accepts
-  //      the query token for POST /api/save exactly like GET /api/file — apiauth.queryTokenRoute).
+  //   1. The beacon aims at the ABSOLUTE sidecar endpoint and authenticates via a SINGLE-USE save ticket
+  //      (?ticket=, minted synchronously per beacon by ApiTicket — the master token never rides a URL).
   //   2. The blob is text/plain so the cross-origin beacon stays a CORS-simple request (an application/json
   //      blob demands a preflight sendBeacon never performs); the sidecar parses body BYTES, not content type.
   //   3. Dispatch is NEVER success: `pending` stays queued and health stays untouched. The beacon is purely a
   //      bonus copy for the dying-page case; the confirmable fetch flush below is the only path allowed to
   //      claim the write landed (a duplicate landing twice is harmless — the store accepts an equal updatedAt).
   function beaconUrl() {
-    let base = '', token = '';
+    if (typeof ApiTicket !== 'undefined' && ApiTicket.saveBeaconUrl) return ApiTicket.saveBeaconUrl();
+    let base = '';
     try { if (typeof window !== 'undefined' && window.__STARNET_API__) base = String(window.__STARNET_API__); } catch (_) {}
-    try { if (typeof window !== 'undefined' && window.__STARNET_API_TOKEN__) token = String(window.__STARNET_API_TOKEN__); } catch (_) {}
-    return base + ENDPOINT + (token ? '?token=' + encodeURIComponent(token) : '');
+    return base + ENDPOINT;   // no ticket minter loaded: an unauthenticated beacon (refused) beats a leaked master token
   }
   function installUnloadFlush() {
     const beacon = () => {

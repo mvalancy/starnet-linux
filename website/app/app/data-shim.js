@@ -56,6 +56,20 @@ DATA.SKINS = {
   pikachu: {"name":"Pikachu","set":"pikachu","scale":0.41304347826086957,"sourceStandingHeight":46},
   caseyjones: {"name":"Casey Jones","set":"approved_caseyjones","scale":0.25,"sourceStandingHeight":76},
   finn: {"name":"Finn","set":"approved_finn","scale":0.25,"sourceStandingHeight":76},
+  baddie: {"name":"Baddie","set":"approved_baddie","scale":0.25,"sourceStandingHeight":76},
+  candyprincess: {"name":"Candy Princess","set":"approved_candyprincess","scale":0.25,"sourceStandingHeight":76},
+  bunnycutie: {"name":"Bunny Cutie","set":"approved_bunnycutie","scale":0.25,"sourceStandingHeight":76},
+  tylerdurden: {"name":"Tyler Durden","set":"approved_tylerdurden","scale":0.25,"sourceStandingHeight":76},
+  tonymontana: {"name":"Tony Montana","set":"approved_tonymontana","scale":0.25,"sourceStandingHeight":76},
+  gothgirl: {"name":"Goth Girl","set":"approved_gothgirl","scale":0.25,"sourceStandingHeight":76},
+  bikini: {"name":"Beach Babe","set":"approved_bikini","scale":0.25,"sourceStandingHeight":76},
+  catwoman: {"name":"Catwoman","set":"approved_catwoman","scale":0.25,"sourceStandingHeight":76},
+  animegirl: {"name":"Anime Girl","set":"approved_animegirl","scale":0.25,"sourceStandingHeight":76},
+  harrypotter: {"name":"Harry Potter","set":"approved_harrypotter","scale":0.25,"sourceStandingHeight":76},
+  rickybobby: {"name":"Ricky Bobby","set":"approved_rickybobby","scale":0.25,"sourceStandingHeight":76},
+  catinthehat: {"name":"Cat in the Hat","set":"approved_catinthehat","scale":0.25,"sourceStandingHeight":76},
+  reptilian: {"name":"Reptilian","set":"approved_reptilian","scale":0.25,"sourceStandingHeight":76},
+  elonmusk: {"name":"Elon Musk","set":"approved_elonmusk","scale":0.25,"sourceStandingHeight":76},
 };
 // Keep the retired duplicate readable in old saves without offering it in the picker.
 Object.defineProperty(DATA.SKINS, 'minionchar', { value: DATA.SKINS.station_minion });

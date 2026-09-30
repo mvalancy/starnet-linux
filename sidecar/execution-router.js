@@ -211,6 +211,11 @@ function makeExecutionRouter(deps) {
     writeBackground: (agentId, bgId, opts) => callAgent('writeBackground', agentId, [bgId, opts]),
     closeBackgroundStdin: (agentId, bgId) => callAgent('closeBackgroundStdin', agentId, [bgId]),
     killBackground: (agentId, bgId) => callAgent('killBackground', agentId, [bgId]),
+    // null when the agent's backend has no event-driven wait: the shell.bg.wait tool falls back to polling status
+    waitBackground: (agentId, bgId, opts) => {
+      const env = forAgent(agentId);
+      return env && typeof env.waitBackground === 'function' ? env.waitBackground(agentId, bgId, opts) : null;
+    },
     spawnStdio: opts => fromOpts(opts).spawnStdio(opts),
     killAllBackground,
     _environments: environments

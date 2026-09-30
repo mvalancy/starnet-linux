@@ -1,6 +1,6 @@
 {
   "standingHeight": 19,
-  "redesigned": 36,
+  "redesigned": 50,
   "retained": 1,
   "rows": [
     {
@@ -403,6 +403,160 @@
       "typingFrames": 4,
       "minWalkHeight": 73,
       "maxWalkHeight": 79
+    },
+    {
+      "id": "bikini",
+      "status": "complete",
+      "standingHeight": 19,
+      "rotations": 8,
+      "walkFrames": 64,
+      "seats": 4,
+      "typingFrames": 4,
+      "minWalkHeight": 70,
+      "maxWalkHeight": 79
+    },
+    {
+      "id": "catwoman",
+      "status": "complete",
+      "standingHeight": 19,
+      "rotations": 8,
+      "walkFrames": 64,
+      "seats": 4,
+      "typingFrames": 4,
+      "minWalkHeight": 70,
+      "maxWalkHeight": 77
+    },
+    {
+      "id": "animegirl",
+      "status": "complete",
+      "standingHeight": 19,
+      "rotations": 8,
+      "walkFrames": 64,
+      "seats": 4,
+      "typingFrames": 4,
+      "minWalkHeight": 69,
+      "maxWalkHeight": 76
+    },
+    {
+      "id": "harrypotter",
+      "status": "complete",
+      "standingHeight": 19,
+      "rotations": 8,
+      "walkFrames": 64,
+      "seats": 4,
+      "typingFrames": 4,
+      "minWalkHeight": 73,
+      "maxWalkHeight": 78
+    },
+    {
+      "id": "rickybobby",
+      "status": "complete",
+      "standingHeight": 19,
+      "rotations": 8,
+      "walkFrames": 64,
+      "seats": 4,
+      "typingFrames": 4,
+      "minWalkHeight": 70,
+      "maxWalkHeight": 76
+    },
+    {
+      "id": "catinthehat",
+      "status": "complete",
+      "standingHeight": 19,
+      "rotations": 8,
+      "walkFrames": 64,
+      "seats": 4,
+      "typingFrames": 4,
+      "minWalkHeight": 73,
+      "maxWalkHeight": 82
+    },
+    {
+      "id": "reptilian",
+      "status": "complete",
+      "standingHeight": 19,
+      "rotations": 8,
+      "walkFrames": 64,
+      "seats": 4,
+      "typingFrames": 4,
+      "minWalkHeight": 70,
+      "maxWalkHeight": 77
+    },
+    {
+      "id": "elonmusk",
+      "status": "complete",
+      "standingHeight": 19,
+      "rotations": 8,
+      "walkFrames": 64,
+      "seats": 4,
+      "typingFrames": 4,
+      "minWalkHeight": 73,
+      "maxWalkHeight": 80
+    },
+    {
+      "id": "tonymontana",
+      "status": "complete",
+      "standingHeight": 19,
+      "rotations": 8,
+      "walkFrames": 64,
+      "seats": 4,
+      "typingFrames": 4,
+      "minWalkHeight": 72,
+      "maxWalkHeight": 80
+    },
+    {
+      "id": "gothgirl",
+      "status": "complete",
+      "standingHeight": 19,
+      "rotations": 8,
+      "walkFrames": 64,
+      "seats": 4,
+      "typingFrames": 4,
+      "minWalkHeight": 70,
+      "maxWalkHeight": 79
+    },
+    {
+      "id": "baddie",
+      "status": "complete",
+      "standingHeight": 19,
+      "rotations": 8,
+      "walkFrames": 64,
+      "seats": 4,
+      "typingFrames": 4,
+      "minWalkHeight": 71,
+      "maxWalkHeight": 78
+    },
+    {
+      "id": "candyprincess",
+      "status": "complete",
+      "standingHeight": 19,
+      "rotations": 8,
+      "walkFrames": 64,
+      "seats": 4,
+      "typingFrames": 4,
+      "minWalkHeight": 70,
+      "maxWalkHeight": 77
+    },
+    {
+      "id": "bunnycutie",
+      "status": "complete",
+      "standingHeight": 19,
+      "rotations": 8,
+      "walkFrames": 64,
+      "seats": 4,
+      "typingFrames": 4,
+      "minWalkHeight": 69,
+      "maxWalkHeight": 76
+    },
+    {
+      "id": "tylerdurden",
+      "status": "complete",
+      "standingHeight": 19,
+      "rotations": 8,
+      "walkFrames": 64,
+      "seats": 4,
+      "typingFrames": 4,
+      "minWalkHeight": 71,
+      "maxWalkHeight": 77
     }
   ]
 }

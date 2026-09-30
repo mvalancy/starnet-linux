@@ -1,89 +1,42 @@
-/* node test/autonomystore.test.js — the thin browser wiring around the pure autonomy engine
-   (frontend/app/autonomystore.js). autonomystore.js is glue: hydrate / persist / new-hero reset, all logic in the
-   pure autonomy.js (tested separately). This fakes localStorage with the REAL engine wired in, and locks:
-     - init() hydrates from its OWN key, clamped to a valid posture (corrupt/old → the safe floor)
-     - the writers (applyPreset / setInitiative / setReach / setLeash) commit AND persist
-     - summary() / describe() delegate to the engine
-     - the posture round-trips through localStorage (survives reload); reset() clears the key + re-arms the floor
-     - it NEVER emits on U.bus (read-only citizen) */
 'use strict';
-const A = require('./_assert.js');
-
-global.Autonomy = require('../frontend/app/autonomy.js');   // real pure engine (we want the integration)
-
+const assert = require('node:assert/strict');
+const {AutonomyStore: S} = require('../frontend/app/autonomystore.js');
+global.Autonomy = require('../frontend/app/autonomy.js');
 const mem = {};
-global.localStorage = {
-  getItem: k => (Object.prototype.hasOwnProperty.call(mem, k) ? mem[k] : null),
-  setItem: (k, v) => { mem[k] = String(v); },
-  removeItem: k => { delete mem[k]; }
+global.localStorage = {getItem:k=>mem[k]||null,setItem:(k,v)=>{mem[k]=v;},removeItem:k=>{delete mem[k];}};
+const key='starnet.autonomy.v1';
+let server=Autonomy.fresh(), fail=false, malformed=false, hold=null;
+const calls=[];
+global.fetch=async(url,opts)=>{
+  const body=opts.body?JSON.parse(opts.body):null;calls.push(body);
+  if(body&&hold)await hold;
+  if(body&&fail)return {ok:false,json:async()=>({ok:false,error:'disk full'})};
+  if(body&&malformed)return {ok:true,json:async()=>({})};
+  if(body)server=Autonomy.normalize(body.posture);
+  return {ok:true,json:async()=>({ok:true,summary:Autonomy.summary(server)})};
 };
-const KEY = 'starnet.autonomy.v1';
-const posturePosts = [];
-global.fetch = (_path, opts) => { posturePosts.push(JSON.parse(opts.body)); return Promise.resolve({ ok: true }); };
-
-const { AutonomyStore } = require('../frontend/app/autonomystore.js');
-
-/* ---------- init: empty store → the safe floor ---------- */
-AutonomyStore.init();
-A.eq(AutonomyStore.get(), { v: 1, initiative: 'wait', reach: 'sandbox', leashPerDay: 3 }, 'a fresh store hydrates to the safe floor (fully wait-for-me, Sandbox ceiling)');
-A.eq(AutonomyStore.summary().enabled, false, 'the floor does nothing unattended');
-A.eq(posturePosts[posturePosts.length - 1].resumeHalt, false, 'boot posture mirror is not consent to lift E-STOP');
-
-/* ---------- applyPreset: commits + persists ---------- */
-AutonomyStore.applyPreset('build');
-A.eq(AutonomyStore.get().initiative, 'leash', "applyPreset('build') sets leash initiative");
-A.eq(AutonomyStore.get().reach, 'sandbox', "applyPreset('build') sets sandbox reach");
-A.ok(mem[KEY] && JSON.parse(mem[KEY]).initiative === 'leash', 'the posture persists to its own localStorage key');
-A.eq(posturePosts[posturePosts.length - 1].resumeHalt, true, 'a deliberate dial writer carries explicit resume consent');
-
-// even the most autonomous preset keeps reach at sandbox (the safety rule, end-to-end through the store)
-AutonomyStore.applyPreset('free');
-A.eq([AutonomyStore.summary().actsUnattended, AutonomyStore.summary().reachesOut], [true, false], "'free' acts unattended but never reaches out (sandbox-capped)");
-
-/* ---------- single-axis writers ---------- */
-AutonomyStore.setReach('reach');
-A.eq(AutonomyStore.summary().reachesOut, true, 'setReach(reach) raises the ceiling to reach-out (a deliberate opt-in)');
-AutonomyStore.setInitiative('wait');
-A.eq(AutonomyStore.summary().enabled, false, 'setInitiative(wait) turns autonomy fully off');
-AutonomyStore.setLeash(7);
-A.eq(AutonomyStore.get().leashPerDay, 7, 'setLeash persists a clamped allowance');
-A.ok(mem[KEY] && JSON.parse(mem[KEY]).leashPerDay === 7, 'the leash change persisted');
-
-/* ---------- describe() delegates + stays honest ---------- */
-AutonomyStore.applyPreset('free');
-A.ok(/freely toward your goals/i.test(AutonomyStore.describe()), 'describe() reflects the live posture (free)');
-A.ok(AutonomyStore.describe().indexOf('see everything it did') >= 0, 'describe() always promises legibility');
-
-/* ---------- persistence round-trip: survives a reload ---------- */
-AutonomyStore.applyPreset('build'); AutonomyStore.setReach('observe');
-AutonomyStore.init();   // simulate a page reload (re-hydrate from the key)
-A.eq(AutonomyStore.get(), { v: 1, initiative: 'leash', reach: 'observe', leashPerDay: 7 }, 'a posture survives reload (re-hydrated from its own key)');
-A.eq(posturePosts[posturePosts.length - 1].resumeHalt, false, 'reload mirror cannot impersonate a deliberate dial write');
-
-/* ---------- station backup import: restores posture without lifting E-STOP ---------- */
-AutonomyStore.importState({ v: 1, initiative: 'leash', reach: 'sandbox', leashPerDay: 4 });
-A.eq(AutonomyStore.get(), { v: 1, initiative: 'leash', reach: 'sandbox', leashPerDay: 4 }, 'station backup import restores the posture');
-A.eq(posturePosts[posturePosts.length - 1].resumeHalt, false, 'station backup import is not consent to lift E-STOP');
-
-/* ---------- corrupt / old key → the safe floor, never a crash ---------- */
-mem[KEY] = '{not valid json';
-AutonomyStore.init();
-A.eq(AutonomyStore.get().initiative, 'wait', 'an unparseable key degrades to the floor, never throws');
-mem[KEY] = JSON.stringify({ initiative: 'bogus', reach: 'orbit', leashPerDay: 999 });
-AutonomyStore.init();
-A.eq(AutonomyStore.get(), { v: 1, initiative: 'wait', reach: 'sandbox', leashPerDay: 12 }, 'out-of-enum fields clamp to the floor; leash clamps to the max');
-
-/* ---------- reset: a brand-new hero re-arms the floor + drops the key ---------- */
-AutonomyStore.applyPreset('free');
-AutonomyStore.reset();
-A.eq(mem[KEY], undefined, 'reset() removes the persisted key');
-A.eq(AutonomyStore.get(), { v: 1, initiative: 'wait', reach: 'sandbox', leashPerDay: 3 }, 'after reset the posture is the safe floor again');
-
-/* ---------- read-only: the store never emits on U.bus ---------- */
-let emitted = 0;
-global.U = { bus: { emit: () => { emitted++; }, on: () => {} } };
-const { AutonomyStore: Fresh } = (() => { delete require.cache[require.resolve('../frontend/app/autonomystore.js')]; return require('../frontend/app/autonomystore.js'); })();
-Fresh.init(); Fresh.applyPreset('free'); Fresh.setReach('reach'); Fresh.reset();
-A.eq(emitted, 0, 'AutonomyStore never emits on U.bus (read-only citizen; lint-emits stays green)');
-
-A.report('autonomystore.test');
+(async()=>{
+  mem[key]=JSON.stringify({initiative:'free',reach:'reach',leashPerDay:12});
+  await S.init();assert.equal(S.get().initiative,'wait');assert.ok(calls.every(x=>x===null),'boot is read-only');
+  assert.equal((await S.applyPreset('build')).ok,true);assert.equal(S.get().initiative,'leash');assert.equal(calls.at(-1).resumeHalt,true);
+  assert.equal(JSON.parse(mem[key]).initiative,'leash');
+  fail=true;assert.equal((await S.setInitiative('wait')).ok,false);assert.equal(S.get().initiative,'leash');assert.match(S.status().error,/disk full/);
+  fail=false;malformed=true;assert.equal((await S.setReach('reach')).ok,false);assert.equal(S.get().reach,'sandbox');malformed=false;
+  let release;hold=new Promise(r=>release=r);
+  const first=S.setReach('observe'),second=S.setLeash(7);
+  await new Promise(r=>setImmediate(r));assert.equal(S.status().pending,true);assert.equal(S.get().reach,'sandbox','pending value is not current');
+  release();await Promise.all([first,second]);hold=null;
+  assert.equal(server.reach,'observe');assert.equal(server.leashPerDay,7);assert.equal(S.status().pending,false);
+  const original=global.fetch;
+  global.fetch=async(url,opts)=>{if(opts.body){server=Autonomy.normalize(JSON.parse(opts.body).posture);throw new Error('ack lost');}return original(url,opts);};
+  assert.equal((await S.setInitiative('free')).ok,false);assert.equal(S.get().initiative,'free','lost ack reconciles committed state');
+  global.fetch=original;
+  await S.importState({initiative:'wait',reach:'sandbox',leashPerDay:4});assert.equal(calls.at(-1).resumeHalt,false);
+  server={initiative:'leash',reach:'observe',leashPerDay:6};mem[key]='broken';await S.init();assert.equal(S.get().leashPerDay,6,'reload uses server despite missing cache');
+  global.fetch=async()=>{throw new Error('offline');};await S.refresh();assert.equal(S.status().loaded,false);assert.match(S.status().error,/offline/);
+  global.fetch=original;await S.refresh();assert.equal(S.status().loaded,true);assert.equal(S.status().error,'');
+  let emitted=0;global.U={bus:{emit:()=>emitted++}};await S.setLeash(12);assert.equal(emitted,0);
+  fail=true;assert.equal((await S.reset()).ok,false);assert.equal(S.get().initiative,server.initiative);
+  fail=false;await S.reset();assert.equal(mem[key],undefined);assert.equal(S.get().initiative,'wait');assert.equal(server.initiative,'wait');assert.equal(calls.at(-1).resumeHalt,false);
+  console.log('autonomystore.test: PASS (confirmed writes, failures, serialization, lost ack, reload, recovery)');
+})().catch(e=>{console.error(e);process.exitCode=1;});

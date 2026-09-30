@@ -102,6 +102,11 @@ function rotateIfLarge(deps, file, maxBytes) {
 // Append exactly one JSONL row. writeSync may write fewer bytes than requested; treating any positive return
 // as complete silently truncates a row while still fsyncing and reporting success. Keep writing until the
 // Buffer is complete and restore the original boundary if progress stops.
+//
+// TORN TAIL (H2). A crash mid-append can leave the file ending in a partial row with no newline; appending straight
+// after it glued the new row onto the fragment, and both became one unparsable line (readers skip it — the NEW row
+// was lost while this function reported success). A lone '\n' first isolates the fragment on its own line, and the
+// fsync'd row is then read back and proven to be a complete, newline-bounded, parseable LINE of the file.
 function appendJsonlDurable(deps, file, entry) {
   const fs = deps.fs;
   const note = typeof deps.note === 'function' ? deps.note : () => {};
@@ -110,7 +115,14 @@ function appendJsonlDurable(deps, file, entry) {
     fd = fs.openSync(file, 'a+');
     start = fs.fstatSync(fd).size;
     startKnown = true;
-    const row = Buffer.from(JSON.stringify(entry) + '\n', 'utf8');
+    const json = Buffer.from(JSON.stringify(entry) + '\n', 'utf8');
+    let sep = 0;
+    if (start > 0) {
+      const last = Buffer.alloc(1);
+      if (fs.readSync(fd, last, 0, 1, start - 1) !== 1) throw new Error('JSONL tail byte unreadable');
+      if (last[0] !== 0x0a) sep = 1;
+    }
+    const row = sep ? Buffer.concat([Buffer.from('\n', 'utf8'), json]) : json;
     let offset = 0;
     while (offset < row.length) {
       const wrote = fs.writeSync(fd, row, offset, row.length - offset);
@@ -118,6 +130,13 @@ function appendJsonlDurable(deps, file, entry) {
       offset += wrote;
     }
     fs.fsyncSync(fd);
+    // read-back: the row starts a line (file start or a preceding '\n'), ends one, and parses on its own.
+    const rowStart = start + sep;
+    const lead = rowStart > 0 ? 1 : 0;
+    const check = Buffer.alloc(json.length + lead);
+    const got = fs.readSync(fd, check, 0, check.length, rowStart - lead);
+    if (got !== check.length || (lead && check[0] !== 0x0a) || check[check.length - 1] !== 0x0a) throw new Error('JSONL append read-back is not a complete line');
+    JSON.parse(check.toString('utf8', lead, check.length - 1));
   } catch (e) {
     // Windows refuses truncation through an append-open handle. Close it, restore by path, then fsync the
     // restored file before surfacing the failed append.

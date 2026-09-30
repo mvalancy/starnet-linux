@@ -1,0 +1,7 @@
+{
+  "id": "elonmusk",
+  "skin": "elonmusk",
+  "targetStandingHeight": 19,
+  "characterId": "32127aba-0ebc-46d8-87ba-5668385b5ff8",
+  "detail": "status: completed\nid: 32127aba-0ebc-46d8-87ba-5668385b5ff8\nrotations:\n  south: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/32127aba-0ebc-46d8-87ba-5668385b5ff8/rotations/south.png?t=1\n  east: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/32127aba-0ebc-46d8-87ba-5668385b5ff8/rotations/east.png?t=1\n  north: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/32127aba-0ebc-46d8-87ba-5668385b5ff8/rotations/north.png?t=1\n  west: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/32127aba-0ebc-46d8-87ba-5668385b5ff8/rotations/west.png?t=1\n  south-east: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/32127aba-0ebc-46d8-87ba-5668385b5ff8/rotations/south-east.png?t=1\n  north-east: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/32127aba-0ebc-46d8-87ba-5668385b5ff8/rotations/north-east.png?t=1\n  north-west: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/32127aba-0ebc-46d8-87ba-5668385b5ff8/rotations/north-west.png?t=1\n  south-west: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/32127aba-0ebc-46d8-87ba-5668385b5ff8/rotations/south-west.png?t=1\n\n"
+}

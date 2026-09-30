@@ -167,5 +167,19 @@ const DOCX = (body) => zip({ '[Content_Types].xml': '<x/>', 'word/document.xml':
     } finally { await fsp.rm(ROOT, { recursive: true, force: true }); }
   }
 
+  // ---- ZIP BOMB (security audit 2026-09-25): inflate output is capped per entry and per document ----
+  {
+    const seen = [];
+    const spy = makeDocExtract({ inflateRaw: (b, o) => { seen.push(o && o.maxOutputLength); return zlib.inflateRawSync(b, o); } });
+    spy.extract(zip({ 'word/document.xml': '<w:document><w:body><w:p><w:r><w:t>hi</w:t></w:r></w:p></w:body></w:document>' }), 'docx');
+    A.ok(seen.length === 1 && seen[0] > 0 && seen[0] <= 32 * 1024 * 1024, 'every inflate is called with a bounded maxOutputLength');
+    const huge = '<w:document><w:body><w:p><w:r><w:t>' + 'a'.repeat(33 * 1024 * 1024) + '</w:t></w:r></w:p></w:body></w:document>';
+    const bomb = zip({ 'word/document.xml': huge });
+    A.ok(bomb.length < 200 * 1024, 'the bomb is small on disk (' + bomb.length + ' bytes)');
+    let threw = null;
+    try { doc.extract(bomb, 'docx'); } catch (e) { threw = e; }
+    A.ok(!!threw, 'a document inflating past the ceiling is refused, not expanded (' + (threw && (threw.code || threw.message)) + ')');
+  }
+
   A.report('docextract.test');
 })().catch(e => { console.log('FAIL: docextract.test threw -- ' + (e && e.stack || e)); process.exit(1); });

@@ -21,12 +21,23 @@
    Honesty: a replay is visible in the tool result ('[idempotent replay]' + summary 'idempotent-replay'), in the
    agent.tool_result telemetry, and in the ledger file — never a silent no-op.
 
+   UNCERTAIN WRITES (h1 audit 2026-09-22). "Only successes" left one hole: a write that TIMED OUT (or was cancelled
+   after it was sent) may have landed remotely, yet nothing was recorded — so the model's retry (which the failure-
+   recovery nudge encourages) sent it a second time (probe: mcp__crm__create_invoice timed out, the invoice existed,
+   the retry created another). The host records such a call as status 'uncertain' under the SAME key, and an
+   identical retry in the same scope is HELD (heldResult: not sent, isError, summary 'held-uncertain') until the
+   model has made a successful read/observe call on that connector (noteObserved stamps verifiedAt) — verify first,
+   then retry only what is really missing. A success recorded later replaces the uncertain row; differing args are a
+   different key and are never held; read calls are never recorded.
+
    Pure + injected-I/O (fs/path/clock), determinism-clean, node-testable against an in-memory fs. The Node host
    composes it with the real fs and the shared durable-store primitives exactly like its sibling stores.
 
    makeIdempotencyLedger({ fs, path, workspaces, clock, writeDurable?, classify?, onRecover?, onCorrupt?, ttlMs?, maxRows? })
-     -> { scopeFor(o), keyFor(scope, name, argsRaw), isWrite(name), lookup(key, now?) -> entry|null,
-          record(key, entry) -> Promise, replayResult(entry) -> tool result, size(), file } */
+     -> { scopeFor(o), keyFor(scope, name, argsRaw), isWrite(name), isObserve(name), connectorOf(name),
+          lookup(key, now?) -> entry|null   (entry.status === 'uncertain' for a held write; verifiedAt once released),
+          record(key, entry) -> Promise, recordUncertain(key, entry) -> Promise, noteObserved(scope, connector) -> Promise<n>,
+          replayResult(entry) -> tool result, heldResult(entry) -> tool result, size(), file } */
 'use strict';
 
 const crypto = require('crypto');
@@ -117,6 +128,8 @@ function makeIdempotencyLedger(deps) {
   }
 
   function isWrite(name) { return !isCommandExecution(name) && classify(name) === 'mutate'; }
+  // an observation/read-back on a connector — the evidence that releases a held uncertain write on that connector
+  function isObserve(name) { return classify(name) === 'observe'; }
 
   function lookup(key, now) {
     const s = state();
@@ -139,11 +152,41 @@ function makeIdempotencyLedger(deps) {
       summary: String(entry && entry.summary || '').slice(0, 200),
       content: String(entry && entry.content == null ? '' : entry.content).slice(0, CONTENT_MAX)
     };
+    // absent status = a SUCCESS (every row written before 2026-09-22 reads exactly as it did)
+    if (entry && entry.status === 'uncertain') row.status = 'uncertain';
     return durable.update(KEY, cur => {
       const s = (cur && typeof cur === 'object' && cur.rows && typeof cur.rows === 'object') ? cur : { v: 1, rows: {} };
       s.rows[String(key)] = row;
       return prune(s, now);
     });
+  }
+
+  // record a write whose outcome is UNKNOWN (timed out / cancelled after it was sent). Same key, same row shape.
+  function recordUncertain(key, entry) {
+    return record(key, Object.assign({}, entry || {}, { status: 'uncertain' }));
+  }
+
+  // A successful read/observe call on that connector inside that scope is the verification a held write asks for: stamp
+  // every still-held uncertain row of that connector+scope so ONE identical retry may go out. No held row = no write.
+  function noteObserved(scope, connector) {
+    scope = String(scope || ''); connector = String(connector || '');
+    if (!scope || !connector) return Promise.resolve(0);
+    const held = (s) => Object.keys(s.rows).filter(k => {
+      const e = s.rows[k];
+      return e && e.status === 'uncertain' && !e.verifiedAt && e.scope === scope && e.connector === connector;
+    });
+    if (!held(state()).length) return Promise.resolve(0);
+    const now = clock();
+    let n = 0;
+    return durable.update(KEY, cur => {
+      const s = (cur && typeof cur === 'object' && cur.rows && typeof cur.rows === 'object') ? cur : null;
+      if (!s) return undefined;
+      const keys = held(s);
+      if (!keys.length) return undefined;
+      for (const k of keys) s.rows[k] = Object.assign({}, s.rows[k], { verifiedAt: now });
+      n = keys.length;
+      return s;
+    }).then(() => n);
   }
 
   // the synthetic tool result the host returns INSTEAD of re-executing. ok:true because the effect DID happen
@@ -160,9 +203,53 @@ function makeIdempotencyLedger(deps) {
     };
   }
 
+  // the result for an identical retry of an UNCERTAIN write: NOT sent. isError because nothing executed; the text
+  // names the one way forward (verify on this connector, then retry only if the effect is really missing).
+  function heldResult(entry) {
+    const when = entry && entry.at ? new Date(Number(entry.at)).toISOString() : 'earlier';
+    const tool = String(entry && entry.tool || 'connector');
+    return {
+      ok: false, isError: true, summary: 'held-uncertain',
+      content: '[held — effect unknown] This exact ' + tool + ' call already went out for this work item at ' + when
+        + (entry && entry.runId ? ' (run ' + entry.runId + ')' : '') + ' and did not come back with a result (it timed out or was cancelled), '
+        + 'so it MAY ALREADY HAVE TAKEN EFFECT. The host did NOT send it again. Verify first: use a read/list/get/search tool of the '
+        + (entry && entry.connector ? '"' + entry.connector + '" ' : '') + 'connector to check whether the effect is already in place. '
+        + 'If it is, do not repeat it. If your check shows it is missing, this exact call will be allowed once more after that check. '
+        + 'If there is no way to check, tell the Commander the outcome is unconfirmed instead of repeating it.'
+    };
+  }
+
+  /* THE DISPATCH SEAM, in one place (index.js calls exactly these two, so the unit test drives the host's real rule):
+       before(scope, name, argsRaw) -> gate { scope, key, connector, observe, result }
+         result non-null = return it INSTEAD of dispatching (a success replay, or a held uncertain write);
+       after(gate, result, { runId, tool }) -> Promise   — AWAITED by the host before the loop advances:
+         success of a write -> record; effectUnknown write -> recordUncertain; a successful observe -> noteObserved. */
+  function before(scope, name, argsRaw) {
+    const gate = { scope: String(scope || ''), key: null, connector: '', observe: false, result: null };
+    if (!gate.scope) return gate;
+    if (isWrite(name)) {
+      gate.key = keyFor(gate.scope, name, argsRaw);
+      const prior = lookup(gate.key);
+      if (prior && prior.status === 'uncertain') { if (!prior.verifiedAt) gate.result = heldResult(prior); }
+      else if (prior) gate.result = replayResult(prior);
+    } else if (isObserve(name)) {
+      gate.observe = true;
+      gate.connector = connectorOf(name);
+    }
+    return gate;
+  }
+  async function after(gate, r, meta) {
+    if (!gate || !r) return;
+    meta = meta || {};
+    const entry = { scope: gate.scope, runId: meta.runId, tool: meta.tool, summary: r.summary, content: r.content };
+    if (gate.key && r.ok && !r.isError) await record(gate.key, entry);            // only successes protect a replay
+    else if (gate.key && r.effectUnknown) await recordUncertain(gate.key, entry);  // may have landed: hold the re-send
+    if (gate.observe && gate.connector && r.ok && !r.isError) await noteObserved(gate.scope, gate.connector);
+  }
+
   function size() { return Object.keys(state().rows).length; }
 
-  return { scopeFor, keyFor, isWrite, lookup, record, replayResult, size, file, _internals: { state, prune, ttlMs, maxRows } };
+  return { scopeFor, keyFor, isWrite, isObserve, connectorOf, lookup, record, recordUncertain, noteObserved, replayResult, heldResult, before, after, size, file, _internals: { state, prune, ttlMs, maxRows } };
 }
 
 module.exports = { makeIdempotencyLedger, scopeFor, keyFor, connectorOf, defaultClassify, _internals: { FILE, DEFAULT_TTL_MS, DEFAULT_MAX_ROWS, CONTENT_MAX } };

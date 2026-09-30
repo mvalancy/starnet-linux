@@ -81,4 +81,26 @@ for (const marker of ['+', '-', '*', '1.', '1)']) {
     A.eq(copySource(body), raw, 'list copy preserves the original marker and spacing');
   }
 }
+const loose = renderMarkdown('Intro\n\n1. **First** details\n\n2. Second\n\n3. Third\n\nConclusion');
+A.eq((loose.match(/<ol /g)||[]).length,1,'blank-separated ordered items share one semantic list');
+A.eq((loose.match(/<li>/g)||[]).length,3,'loose list retains every item');
+A.ok(!/<\/ol>\n|\n<ol/.test(loose),'block boundaries do not emit pre-wrap whitespace rows');
+A.ok(loose.startsWith('<span class="md-p">Intro</span>'),'intro has its own paragraph');
+A.ok(loose.endsWith('<span class="md-p">Conclusion</span>'),'closing prose stays outside the list');
+const nestedLoose=renderMarkdown('1. Parent\n\n   - Child\n\n   - Sibling\n\n2. Next');
+A.ok(/<li>Parent<ul[\s\S]*<li>Child<\/li><li>Sibling<\/li><\/ul><\/li><li>Next/.test(nestedLoose),'blank lines retain nested list ownership');
+const mixed=renderMarkdown('- Bullet\n\n1. Number\n\nParagraph\nline two\n\n\n## Heading');
+A.ok(mixed.includes('</ul><ol'),'switching list type starts a separate list');
+A.ok(mixed.includes('<span class="md-p">Paragraph\nline two</span>'),'intentional paragraph line breaks survive');
+A.ok(!mixed.includes('\n\n'),'extra blank separators do not add empty rendered rows');
+const whitespaceCode=renderMarkdown('Before\n\n```\n  one\n\n\n  two\n```\n\nAfter');
+A.ok(whitespaceCode.includes('<span class="md-pre">  one\n\n\n  two</span>'),'code indentation and empty lines remain exact');
+A.eq(renderMarkdown('1. One\r\n\r\n2. Two'),renderMarkdown('1. One\n\n2. Two'),'CRLF lists match LF lists');
+for (const separator of ['\n\n', '\r\n\r\n', '\n   \n']) {
+  const raw = 'First paragraph' + separator + 'Second paragraph';
+  const body = { textContent: '', innerHTML: '' };
+  renderProse(body, raw);
+  A.eq((body.innerHTML.match(/class="md-p"/g) || []).length, 2, 'plain prose uses the same paragraph structure: ' + JSON.stringify(separator));
+  A.eq(copySource(body), raw, 'paragraph copy preserves original line endings and spaces');
+}
 A.report('chat-report-structure');

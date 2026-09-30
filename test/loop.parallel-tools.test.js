@@ -27,9 +27,14 @@ function batchFixture(names) {
   turn.push({ type: 'done', finishReason: 'tool_calls' });
   return { turns: [turn, [{ type: 'text', delta: 'ok' }, { type: 'done', finishReason: 'stop' }]] };
 }
-function registry(order) {
+function registry(order, overlap) {
   const reg = makeRegistry();
-  const slow = (name) => async (a) => { await sleep(Number(a.ms) || 50); order.push(name); return name + ':' + a.path; };
+  const slow = (name) => async (a) => {
+    overlap.active++;
+    overlap.max = Math.max(overlap.max, overlap.active);
+    try { await sleep(Number(a.ms) || 50); order.push(name); return name + ':' + a.path; }
+    finally { overlap.active--; }
+  };
   for (const n of ['read_a', 'read_b', 'read_c', 'write_x']) reg.register({ name: n, schema: SCHEMA, run: slow(n) });
   return reg;
 }
@@ -39,8 +44,8 @@ async function run(o) {
   const emit = makeEmitter(bus, () => {});
   const provider = makeReplayProvider(o.fixture);
   const order = [];
-  const reg = registry(order);
-  const t0 = Date.now();
+  const overlap = { active: 0, max: 0 };
+  const reg = registry(order, overlap);
   const res = await runAgentLoop({
     messages: [{ role: 'user', content: 'go' }], provider, emit,
     cost: makeCostEngine({ priceOf: provider.priceOf }),
@@ -50,18 +55,18 @@ async function run(o) {
     clock: { now: () => Date.now() },
     parallelSafe: o.parallelSafe
   });
-  return { res, seq, order, ms: Date.now() - t0 };
+  return { res, seq, order, maxInFlight: overlap.max };
 }
 const namesOf = (seq, type) => seq.filter(e => e.name === type).map(e => e.payload.callId);
 
 (async () => {
   const readsOnly = (n) => /^read_/.test(n);
 
-  // ---- 1. AN ALL-SAFE BATCH OVERLAPS. Three 60ms reads must not cost 180ms. ----
+  // ---- 1. AN ALL-SAFE BATCH OVERLAPS. Observe active work, not wall time on a busy host. ----
   {
-    const { res, ms } = await run({ fixture: batchFixture(['read_a', 'read_b', 'read_c']), parallelSafe: readsOnly });
+    const { res, maxInFlight } = await run({ fixture: batchFixture(['read_a', 'read_b', 'read_c']), parallelSafe: readsOnly });
     A.eq(res.reason, 'done', 'the run completes normally');
-    A.ok(ms < 150, 'three 60ms read-only calls overlap (' + ms + 'ms, sequential would be >=180ms)');
+    A.eq(maxInFlight, 3, 'all three read-only calls are in flight together');
   }
 
   // ---- 2. THE EMIT STREAM STAYS IN CALL ORDER even though the work finished out of order. ----
@@ -84,16 +89,16 @@ const namesOf = (seq, type) => seq.filter(e => e.name === type).map(e => e.paylo
 
   // ---- 3. ONE UNSAFE CALL SENDS THE WHOLE BATCH DOWN THE SEQUENTIAL PATH ----
   {
-    const { order, ms } = await run({ fixture: batchFixture(['read_a', 'write_x', 'read_b']), parallelSafe: readsOnly });
+    const { order, maxInFlight } = await run({ fixture: batchFixture(['read_a', 'write_x', 'read_b']), parallelSafe: readsOnly });
     A.eq(order.join(','), 'read_a,write_x,read_b', 'a mixed batch runs strictly in order');
-    A.ok(ms >= 170, 'a mixed batch is not overlapped (' + ms + 'ms)');
+    A.eq(maxInFlight, 1, 'a mixed batch has only one active call');
   }
 
   // ---- 4. NO PREDICATE = the old behavior, byte-identical. Every existing caller lands here. ----
   {
-    const { order, ms } = await run({ fixture: batchFixture(['read_a', 'read_b', 'read_c']) });
+    const { order, maxInFlight } = await run({ fixture: batchFixture(['read_a', 'read_b', 'read_c']) });
     A.eq(order.join(','), 'read_a,read_b,read_c', 'with no parallelSafe injected the batch stays sequential');
-    A.ok(ms >= 170, 'and pays the sequential cost (' + ms + 'ms)');
+    A.eq(maxInFlight, 1, 'with no predicate only one call is active');
   }
 
   // ---- 5. the pure planner, directly ----

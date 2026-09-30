@@ -16,8 +16,8 @@ const decisions = fs.readFileSync(path.join(__dirname, '../docs/DECISIONS.md'), 
 
 A.ok(/core\.invoke\('starnet_open_artifact', \{ path: String\(title \|\| ''\), agentId: agentId \|\| 'agent' \}\)/.test(chat),
   'desktop filename click sends artifact identity + owner to the native host');
-A.ok(/core\.invoke\('open_external_url', \{ url: a\.href \}\)/.test(chat),
-  'the jailed browser preview remains the desktop fallback');
+A.ok(/core\.invoke\('open_external_url', \{ url: fileUrl\(title, agentId\) \}\)/.test(chat),
+  'the jailed browser preview remains the desktop fallback (a freshly minted file ticket, never a stale href or the master token)');
 A.ok(/core\.invoke\('starnet_reveal_path', \{ path: String\(relPath \|\| ''\), agentId: agentId \|\| 'agent' \}\)/.test(chat),
   'folder click reveals the artifact path itself, not the default workspace root');
 A.ok(/function absoluteArtifactPath[\s\S]{0,700}workspaceDir\(agentId\)/.test(chat),

@@ -156,6 +156,11 @@ const { makeClock } = require('../shared/clock-rng.js');
   A.eq(rec.trust, 0, 'trust starts at 0 — it rides the memory.feedback event log, never seeded');
   A.eq(rec.useCount, 0, 'useCount starts at 0');
   A.eq(rec.pinned, false, 'not pinned by default');
+  A.eq(rec.projectRoot, null, 'no project root on the proposal -> a global record (projectRoot null)');
+  // PROJECT TIER (memory-compound lane): a project-scoped proposal keeps its root on the record so rank() can key it
+  const projRec = recordFromProposal({ id: 'prop_9', kind: 'fact', content: 'the registry rate-limits pushes', scope: 'project', projectRoot: 'C:\\Proj\\A' }, { now: 1, id: 'note_9' });
+  A.eq(projRec.scope, 'project', 'project scope carried from the proposal');
+  A.eq(projRec.projectRoot, 'C:\\Proj\\A', 'projectRoot carried verbatim onto the record');
   // an Edit supplies replacement content; an unknown kind falls back to a Note label
   const edited = recordFromProposal(prop, { now: 1, id: 'note_4', content: '  fixed up text  ' });
   A.eq(edited.content, 'fixed up text', 'edited content used + trimmed');

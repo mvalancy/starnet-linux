@@ -95,7 +95,7 @@
 
   // fields a Commander may edit. id / timestamps / run-state / ledger are NOT patchable here.
   const EDITABLE = ['name', 'objective', 'agentId', 'model', 'provider', 'gate',
-    'queueCap', 'maxIterations', 'dryStopAfter', 'workdir', 'branch', 'baseCommit',
+    'queueCap', 'maxIterations', 'dryStopAfter', 'stallStopAfter', 'workdir', 'branch', 'baseCommit',
     'checkCmd', 'checkTimeoutMs', 'checkPaths', 'exitOn', 'redStopAfter'];
 
   function isValidId(id) { return typeof id === 'string' && ID_RE.test(id); }
@@ -149,6 +149,8 @@
       queueCap: LJ.queueCapOf({ queueCap: spec.queueCap }),
       maxIterations: maxIters,
       dryStopAfter: LJ.dryStopOf({ dryStopAfter: spec.dryStopAfter }),
+      // the STALL BREAKER ceiling: passes in a row that changed nothing before the loop parks (loopjob.stallSignal).
+      stallStopAfter: LJ.stallStopOf({ stallStopAfter: spec.stallStopAfter }),
       // workdir = the blessed project root this loop works in (git loop). null => the loop produces
       // workshop deliverables instead of commits, and `branch` stays null. The HOST validates blessedness;
       // this reducer only records what it was told (never trusts it as a path).
@@ -179,6 +181,7 @@
       dryStreak: 0,
       failStreak: 0,
       noDigestStreak: 0,
+      stallStreak: 0,
       iterations: [],
       budget: {
         // 0 = ungoverned, matching budgetcaps.js semantics (never "block everything").
@@ -218,6 +221,7 @@
       if (Object.prototype.hasOwnProperty.call(patch, 'checkPaths')) next.checkPaths = Array.isArray(patch.checkPaths) ? patch.checkPaths.slice(0, 20).map(x => str(x, 200)).filter(Boolean) : [];
       if (Object.prototype.hasOwnProperty.call(patch, 'queueCap')) next.queueCap = LJ.queueCapOf({ queueCap: patch.queueCap });
       if (Object.prototype.hasOwnProperty.call(patch, 'dryStopAfter')) next.dryStopAfter = LJ.dryStopOf({ dryStopAfter: patch.dryStopAfter });
+      if (Object.prototype.hasOwnProperty.call(patch, 'stallStopAfter')) next.stallStopAfter = LJ.stallStopOf({ stallStopAfter: patch.stallStopAfter });
       if (Object.prototype.hasOwnProperty.call(patch, 'maxIterations')) {
         next.maxIterations = patch.maxIterations == null ? null : Math.max(1, parseInt(patch.maxIterations, 10) || 1);
       }
@@ -246,7 +250,7 @@
   function resumeLoop(loops, id, ctx) {
     const now = (ctx && ctx.now) || 0;
     return mapLoop(loops, id, (loop) => Object.assign({}, loop, {
-      enabled: true, state: 'idle', stopReason: null, dryStreak: 0, failStreak: 0, redStreak: 0, noDigestStreak: 0, updatedAt: iso(now)
+      enabled: true, state: 'idle', stopReason: null, dryStreak: 0, failStreak: 0, redStreak: 0, noDigestStreak: 0, stallStreak: 0, updatedAt: iso(now)
     }));
   }
 
@@ -392,8 +396,11 @@
         settled.verdictNote = 'auto-applied (this loop has full access to merge)';
         settled.verdictAt = iso(now);
         settled.diff = null;   // self-approved: there is no review to hold a diff for
-
       }
+      /* THE STALL BREAKER reads the settled row against the loop's history (before this row is folded in) and
+         stamps the verdict ON THE ROW, so the panel can label "#7 changed nothing" from the record itself. */
+      const stall = LJ.stallSignal(loop, settled);
+      if (stall) settled.stall = stall;
       its[idx] = settled;
 
       const rolled = LJ.rollBudgetDay(loop, { now: now });
@@ -460,6 +467,22 @@
       } else if (outcome === 'candidate') {
         next.dryStreak = 0;
         next.failStreak = 0;
+        /* A candidate that changed nothing is not progress, and three of them in a row is the runaway this
+           counter exists for. 'paused' (not 'dormant'): the loop did NOT concede — it kept claiming work — so
+           the honest label is "parked for the Commander to look at", and RESUME clears the streak like every
+           other quiet state. The reason names the count so the panel needs no guesswork. */
+        if (stall) {
+          next.stallStreak = (loop.stallStreak || 0) + 1;
+          const stallMax = LJ.stallStopOf(loop);
+          if (next.stallStreak >= stallMax) {
+            next.state = 'paused';
+            next.enabled = false;
+            next.stopReason = next.stallStreak + ' passes in a row changed nothing — no file touched, nothing committed. Parked before it spends more; resume once you know why.';
+            return next;
+          }
+        } else {
+          next.stallStreak = 0;
+        }
       }
 
       /* REPORTING COMPLIANCE. A loop whose exit condition is "N empty digests" can only ever finish if the
@@ -599,6 +622,9 @@
         iterationCount: isNum(l.iterationCount) ? l.iterationCount : 0,
         dryStreak: isNum(l.dryStreak) ? l.dryStreak : 0,
         failStreak: isNum(l.failStreak) ? l.failStreak : 0,
+        // a pre-breaker record (no stallStreak / stallStopAfter) loads with the shipped ceiling and a clean streak
+        stallStreak: isNum(l.stallStreak) ? l.stallStreak : 0,
+        stallStopAfter: LJ.stallStopOf({ stallStopAfter: l.stallStopAfter }),
         budget: l.budget && typeof l.budget === 'object' ? {
           perDayUsd: posNumOr(l.budget.perDayUsd, 0),
           perIterationUsd: posNumOr(l.budget.perIterationUsd, 0),

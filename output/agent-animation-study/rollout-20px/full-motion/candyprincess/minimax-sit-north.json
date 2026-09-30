@@ -1,0 +1,10 @@
+{
+  "id": "candyprincess",
+  "track": "sit",
+  "dir": "north",
+  "job": "c3964b48-bcc3-4e00-a9be-c398ef7930eb",
+  "result": "frames: 5\nhttps://api.pixellab.ai/mcp/images/c3964b48-bcc3-4e00-a9be-c398ef7930eb/download?index=0",
+  "packed": true,
+  "lastRaw": "output/agent-animation-study/rollout-20px/full-motion/candyprincess/minimax/sit-north/c3964b48-bcc3-4e00-a9be-c398ef7930eb/4.png",
+  "frameCount": 5
+}

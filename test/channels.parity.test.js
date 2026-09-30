@@ -32,7 +32,8 @@ function build(over) {
   const base = {
     runOnce: async () => {}, store: fakeStore(), send: (c, t) => { sends.push(t); return Promise.resolve({ ok: true }); },
     secrets: () => ({ key: 'k', model: 'm', agentId: 'ultron' }), classify: () => false, newId: idGen(),
-    roster: roster, now: () => 1000
+    roster: roster, now: () => 1000,
+    isOwner: () => true   // the paired owner (the non-owner gate: channels.owner-gates.test.js)
   };
   const hub = makeChannelHub(Object.assign(base, over || {}));
   return { hub, sends, store: (over && over.store) || base.store };

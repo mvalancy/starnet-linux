@@ -126,4 +126,28 @@ const ENV = { perRun: 3, perAgent: 5, perDay: 40, global: 100 };   // a fully-go
   A.ok(/#budget-form .set-row/.test(css) && /input\[type=number\]\.key-input/.test(css), 'budget panel styles present (number-input phosphor + row layout)');
 }
 
+// ---- the SHIPPED defaults (2026-09-17): a fresh install is no longer ungoverned on the day pool ----------------
+// A customer's loop burned ~$98 overnight with every cap at 0. perDay now ships as a soft rail; everything else
+// stays off. The rail must be (a) a real cap the governor blocks on, (b) overridable to 0 from the UI, and
+// (c) beaten by an explicit env value — the same precedence every other cap already has.
+{
+  const shipped = bc.shippedDefaults();
+  A.eq(shipped, { perRun: 0, perAgent: 0, perDay: 25, global: 0 }, 'perDay ships at $25; the other three stay off');
+  A.eq(bc.DEFAULT_PER_DAY_USD, 25, 'the constant the sidecar wires is the same number');
+  A.ok(bc.shippedDefaults() !== bc.shippedDefaults(), 'each call is a fresh copy (a caller cannot mutate the shipped table)');
+  A.eq(bc.resolveCaps(shipped, {}), shipped, 'with nothing saved, the shipped defaults ARE the effective caps');
+  A.eq(bc.resolveCaps(shipped, { perDay: 0 }).perDay, 0, 'a saved 0 dials the shipped rail OFF (the Commander\'s explicit choice wins)');
+  A.eq(bc.resolveCaps(shipped, { perDay: 100 }).perDay, 100, 'a saved value raises it');
+  A.eq(bc.resolveCaps(Object.assign({}, shipped, { perDay: 40 }), {}).perDay, 40, 'an env value (SKYNET_BUDGET_PER_DAY) replaces the shipped default');
+  // the governor actually blocks on it — this is the number that stops the overnight burn
+  const B = require('../sidecar/budget.js');
+  const ev = B.evaluate({ day: shipped.perDay }, { day: 25.5 });
+  A.eq(ev.blocked, 'day', 'the day pool blocks once spend reaches the shipped cap');
+  A.eq(B.evaluate({ day: shipped.perDay }, { day: 24 }).blocked, null, 'and not before');
+  A.eq(B.evaluate({ day: shipped.perDay }, { day: 21 }).warn, ['day'], 'with the 80% warn band ahead of it');
+  // the SETTINGS → BUDGET copy still tells the truth: a value that is not saved reads as the environment default
+  const station = require('fs').readFileSync(require('path').join(__dirname, '..', 'frontend', 'app', 'stationui.js'), 'utf8');
+  A.ok(/environment default/.test(station), 'the panel badges an unsaved cap as the default, so $25 never reads as something the user set');
+}
+
 A.report('budget-caps');

@@ -1,0 +1,10 @@
+{
+  "id": "bunnycutie",
+  "track": "type",
+  "dir": "north",
+  "job": "3644452a-08c8-4c94-a45c-9236d2ed7976",
+  "result": "frames: 5\nhttps://api.pixellab.ai/mcp/images/3644452a-08c8-4c94-a45c-9236d2ed7976/download?index=0",
+  "packed": true,
+  "lastRaw": "output/agent-animation-study/rollout-20px/full-motion/bunnycutie/minimax/type-north/3644452a-08c8-4c94-a45c-9236d2ed7976/4.png",
+  "frameCount": 5
+}

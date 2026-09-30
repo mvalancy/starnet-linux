@@ -51,6 +51,8 @@
     // reach 1, plus the heavier scan/grain — A/B the whole glow-up against what shipped before it
     'Light: pre-09-02': { light: { ambient: 0.82, pool: 0.85, room: 0.48, corridor: 0.34, door: 0.42, floor: 0.2, reach: 1, falloff: 0, cool: 0, warm: 0, spill: 0 }, crt: { scan: 0.43, grain: 0.24, aberr: 0.35 } },
     // the pre-2026-09-03 world: no bloom, no prop light, no cast shadows' worth of light, thin film, faint dither — A/B the whole overhaul
+    // the pre-2026-09-22 key light: no surface gain, pools at their old cut, heavier film — A/B phase 1 lighting
+    'World: pre-09-22': { industrial: { cut: 1, key: 0, keyProps: 1, shadeCool: 0 }, crt: { film: 0.38 } },
     'World: pre-09-03': { light: { warm: 0.14, floor: 0.26 }, depth: { dither: 0.15 }, crt: { bloom: 0, emit: 0 } },
     // the tube before the 'old TV' pass — A/B the whole CRT treatment
     'CRT: pre-09-03':  { crt: { scan: 0.38, pitch: 1, curve: 0.09, vig: 0.30, aberr: 0.2, bloom: 0, mask: 0, bleed: 0, roll: 0 } },
@@ -169,6 +171,7 @@
     if (p.wall) { Object.assign(wall(), p.wall); scheduleRebake(); }
     if (p.depth) { Object.assign(depth(), p.depth); scheduleRebake(); }
     if (p.shape) { Object.assign(shape(), p.shape); scheduleRebake(); }
+    if (p.industrial && industrial()) { Object.assign(industrial(), p.industrial); scheduleRebake(); }
     syncAll();
   }
 
@@ -275,6 +278,12 @@
       sliders.push(buildSlider(body, industrial, 'floorGain', .65, 1.2, .01, scheduleRebake));
       sliders.push(buildSlider(body, industrial, 'wallGain', .65, 1.2, .01, scheduleRebake));
       sliders.push(buildSlider(body, industrial, 'contact', 0, .6, .01, scheduleRebake));
+      sliders.push(buildSlider(body, industrial, 'cut', 0, 3, .05, scheduleRebake));          // how far a lamp pool opens the ambient film (1 = the pre-09-22 station)
+      sliders.push(buildSlider(body, industrial, 'key', 0, 2, .05, scheduleRebake));          // warm gain landed ON the surface inside each pool (0 = off)
+      sliders.push(buildSlider(body, industrial, 'keyReach', .2, 1, .02, scheduleRebake));    // key radius as a fraction of the cut — tighter = distinct pools, wider = haze
+      sliders.push(buildSlider(body, industrial, 'keyProps', 0, 4, .1, scheduleRebake));      // screen/beacon colour splashed onto what surrounds them
+      sliders.push(buildSlider(body, industrial, 'keyPropReach', .2, 2, .05, scheduleRebake));
+      sliders.push(buildSlider(body, industrial, 'shadeCool', 0, .3, .01, scheduleRebake));   // unlit deck leans blue, lamp pools warm
     }
     section(body, 'PRESETS');
     const presetWrap = document.createElement('div');

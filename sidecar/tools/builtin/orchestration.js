@@ -77,6 +77,166 @@
     return '';
   }
 
+  /* EVERY WORKER STAYS VISIBLE (Step 2 wave 2, Hermes audit 2026-09-22). team.dispatch returned every worker's full
+     text as ONE JSON array, and the registry's per-result cap then cut that string head+tail: probed with 4 workers
+     x 30k characters, worker 3's row — its agentId, its status, all of it — was simply gone from what the lead saw,
+     so the lead could not even tell a worker had run. The fit now happens HERE, row-aware, before the registry ever
+     sees the string: every row keeps all of its identity/status fields, and only the long text field is shortened,
+     each row offered a FAIR SHARE of the result budget (water-filled: a short answer keeps all of its text and hands
+     the surplus to the long ones), head + tail with a marker in the middle. A shortened text is first saved WHOLE
+     through the host parker (ctx.parkOutput, the same one the registry uses) into a per-worker file, and the row
+     names it: additive fields `resultChars` (full length), `resultTruncated: true`, `resultPath` (null if the save
+     failed — the marker then says the text was NOT saved). The budget is ctx.outputMax (the registry hands every
+     tool the per-result cap it will enforce, window-scaled by the host), else the registry's 80k default. A result
+     that already fits is returned untouched (byte-identical). If identity alone would crowd the texts out, bulky
+     metadata (validation detail, long artifact lists, event tails, prompts) is compacted first and says so. */
+  const AGG_DEFAULT_BUDGET = 80000;   // tools/registry.js OUTPUT_MAX's default: the budget when no host figure arrives
+  const AGG_SHORT_ROOM = 200;         // below this much kept text a shortened row carries the SHORT marker
+  const { note: failNote } = (typeof require === 'function') ? require('../../failopen.js') : { note: function (tag, e) { console.warn('[failopen] ' + tag + ':', (e && e.message) || e); } };
+  function aggregateBudget(ctx) {
+    const n = Number(ctx && ctx.outputMax);
+    return (Number.isFinite(n) && n > 0) ? Math.floor(n) : AGG_DEFAULT_BUDGET;
+  }
+  function escLen(s) { return JSON.stringify(String(s)).length - 2; }   // the text's length INSIDE the JSON result
+  function cutMarker(fullChars, keptChars, path, what, short) {
+    const dropped = fullChars - keptChars;
+    if (short) return '\n[... ' + dropped + ' of ' + fullChars + ' chars elided' + (path ? '; full text saved to ' + path : '; full text NOT saved') + ' ...]\n';
+    return '\n\n[... ' + dropped + ' of ' + fullChars + ' characters of ' + what + ' elided so every row fits in this result. '
+      + (path ? 'THE FULL TEXT WAS SAVED to ' + path + ' — read that file for the missing part; do not re-run the work to recover it.'
+        : 'The full text could NOT be saved; do not present the elided part as something you saw.')
+      + ' The end follows ...]\n\n';
+  }
+  // One text -> head + marker + tail within `allowEsc` JSON-escaped characters (best effort; fitAggregate verifies).
+  function cutText(text, allowEsc, path, what) {
+    const ratio = text.length / Math.max(1, escLen(text));   // raw chars per escaped char (<= 1)
+    const short = allowEsc - escLen(cutMarker(text.length, 0, path, what, false)) < AGG_SHORT_ROOM;
+    const draft = cutMarker(text.length, 0, path, what, short);
+    const room = Math.min(text.length, Math.max(0, Math.floor((allowEsc - escLen(draft) - 8) * ratio)));
+    const head = Math.floor(room * 0.7), tail = room - head;
+    return text.slice(0, head) + cutMarker(text.length, room, path, what, short) + text.slice(text.length - tail);
+  }
+  // Bulky, non-identity metadata, trimmed only when identity alone would crowd the texts out. Says what it dropped.
+  function compactRow(r) {
+    const c = Object.assign({}, r);
+    if (c.validation && typeof c.validation === 'object' && c.validation.attempts) c.validation = { state: c.validation.state };
+    if (Array.isArray(c.artifacts) && c.artifacts.length > 8) { c.artifactsOmitted = c.artifacts.length - 8; c.artifacts = c.artifacts.slice(0, 8); }
+    if (c.structuredResult != null && JSON.stringify(c.structuredResult).length > 2000) { c.structuredResult = null; c.structuredResultOmitted = true; }
+    for (const k of ['prompt', 'context']) if (typeof c[k] === 'string' && c[k].length > 400) c[k] = c[k].slice(0, 400) + '…';
+    for (const k of ['events', 'steerHistory']) if (Array.isArray(c[k]) && c[k].length > 5) c[k] = c[k].slice(-5);
+    return c;
+  }
+  // rows -> { rows, cut, saved }. opts: { budget, what(row) -> label, park(text, row) -> Promise<path|null> }.
+  async function fitAggregate(rows, opts) {
+    const o = opts || {};
+    const budget = Number(o.budget) > 0 ? Math.floor(Number(o.budget)) : AGG_DEFAULT_BUDGET;
+    if (!Array.isArray(rows) || !rows.length || JSON.stringify(rows).length <= budget) return { rows: rows, cut: 0, saved: 0 };
+    const isRow = r => r && typeof r === 'object';
+    let work = rows.map(r => isRow(r) ? Object.assign({}, r) : r);
+    const texts = work.map(r => (isRow(r) && typeof r.result === 'string') ? r.result : null);
+    const emptied = () => work.map((r, i) => texts[i] != null ? Object.assign({}, r, { result: '' }) : r);
+    let overhead = JSON.stringify(emptied()).length;
+    if (overhead > budget / 2) { work = work.map(r => isRow(r) ? compactRow(r) : r); overhead = JSON.stringify(emptied()).length; }
+    const idx = [];
+    for (let i = 0; i < work.length; i++) if (texts[i]) idx.push(i);
+    const lens = idx.map(i => escLen(texts[i]));
+    const parked = new Map();
+    async function parkFor(i) {
+      if (parked.has(i)) return parked.get(i);
+      let p = null;
+      if (typeof o.park === 'function') {
+        try { p = await o.park(texts[i], work[i]); } catch (e) { failNote('orchestration.fit.park', e); p = null; }
+      }
+      p = p ? String(p) : null;
+      parked.set(i, p);
+      return p;
+    }
+    // Per-row additions (resultChars/resultTruncated/resultPath) and markers are not in `overhead`: the first pass
+    // measures them and each retry shrinks the text pool by the overshoot, so the result converges UNDER budget.
+    let pool = Math.max(0, budget - overhead - idx.length * 64);
+    let out = work, cut = 0;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const order = idx.map((_, k) => k).sort((a, b) => lens[a] - lens[b]);
+      const allow = new Array(idx.length);
+      let remaining = pool, left = order.length;
+      for (const k of order) { const share = Math.floor(remaining / left); allow[k] = Math.min(lens[k], share); remaining -= allow[k]; left--; }
+      out = work.slice(); cut = 0;
+      for (let k = 0; k < idx.length; k++) {
+        const i = idx[k];
+        if (allow[k] >= lens[k]) { out[i] = Object.assign({}, work[i], { result: texts[i] }); continue; }
+        const path = await parkFor(i);
+        const what = typeof o.what === 'function' ? o.what(work[i]) : 'this row\'s result';
+        out[i] = Object.assign({}, work[i], { result: cutText(texts[i], allow[k], path, what), resultChars: texts[i].length, resultTruncated: true, resultPath: path });
+        cut++;
+      }
+      const total = JSON.stringify(out).length;
+      if (total <= budget || pool === 0) break;
+      pool = Math.max(0, pool - (total - budget) - 32);
+    }
+    let saved = 0;
+    for (const p of parked.values()) if (p) saved++;
+    return { rows: out, cut: cut, saved: saved };
+  }
+  // The per-worker spill: the host parker (ctx.parkOutput) writes the worker's WHOLE text into the lead's own
+  // workspace (.output/<tool>-<worker>-…txt), where fs.read can page it back. No parker = no file, said plainly.
+  /* IDEMPOTENT PARKING. team.subagents is a read the lead POLLS: every list call re-parked every long worker result,
+     so a lead checking on its crew each turn wrote a fresh .output file per worker per poll — identical copies piling
+     up in its workspace. The same text for the same worker now reuses the file it was already saved to. Scoped to
+     the host parker (one per run: capCtx.parkOutput), keyed by tool + worker id + a digest of the text, bounded. */
+  const parkedByParker = (typeof WeakMap === 'function') ? new WeakMap() : null;
+  const PARK_MEMO_MAX = 256;
+  function textDigest(s) {
+    let h1 = 0x811c9dc5, h2 = 0x01000193;   // two FNV-1a lanes (different seeds) + the length: ~2^-64 collisions
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+      h2 = Math.imul(h2 ^ c, 0x01000193) >>> 0;
+    }
+    return h1.toString(16) + h2.toString(16) + ':' + s.length;
+  }
+  function workerParker(ctx, tool) {
+    if (!ctx || typeof ctx.parkOutput !== 'function') return null;
+    let memo = parkedByParker ? parkedByParker.get(ctx.parkOutput) : null;
+    if (parkedByParker && !memo) { memo = new Map(); parkedByParker.set(ctx.parkOutput, memo); }
+    return async (text, row) => {
+      const who = String((row && (row.agentId || row.label)) || 'worker').replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 24);
+      const key = tool + '\u0000' + String((row && (row.id || row.agentId || row.label)) || 'worker') + '\u0000' + textDigest(String(text));
+      if (memo && memo.has(key)) return memo.get(key);
+      const meta = { tool: tool + '-' + who, reason: 'aggregate-fair-share' };
+      if (row && typeof row.taintedBy === 'string' && row.taintedBy) meta.taintedBy = row.taintedBy;   // parked as untrusted-*
+      const p = await ctx.parkOutput(text, meta);
+      const path = p && p.path ? String(p.path) : null;
+      if (memo && path) {   // a failed save is not remembered: the next call may succeed
+        if (memo.size >= PARK_MEMO_MAX) memo.delete(memo.keys().next().value);
+        memo.set(key, path);
+      }
+      return path;
+    };
+  }
+  function fitNote(fit) {
+    return fit && fit.cut ? ' — ' + fit.cut + ' result(s) shortened to fit (' + fit.saved + ' saved in full, see resultPath)' : '';
+  }
+
+  /* WHY THE HOST STOPPED A REGISTRY WORKER (Step 2 F2/F3). subagents.js aborts a worker's own controller with a
+     coded reason: 'parent_cancelled' (the run that started it was cancelled) or 'worker_stalled' (the liveness
+     check saw no progress). The run itself only knows it was cancelled; the row the lead receives must say which,
+     so a stalled worker never reads as a Commander stop and neither reads as finished work. '' = not a host stop. */
+  function hostStopCode(signal) {
+    const r = signal && signal.aborted ? signal.reason : null;
+    const code = r && typeof r === 'object' ? String(r.code || '') : '';
+    return (code === 'parent_cancelled' || code === 'worker_stalled') ? code : '';
+  }
+  function hostStopRow(code, partial) {
+    return {
+      reason: code === 'worker_stalled' ? 'stalled' : 'cancelled',
+      result: (partial ? partial + '\n\n' : '')
+        + (code === 'worker_stalled'
+          ? '[STOPPED — this worker made no progress (no tokens, tool activity or cost) for longer than the liveness threshold, so the host stopped it'
+          : '[STOPPED — the run that started this worker was cancelled, so the host stopped the worker too')
+        + (partial ? '; the text above is its PARTIAL work' : ' before it returned any text')
+        + '. Do not present it as complete.]'
+    };
+  }
+
   function resultSchemaOf(raw) {
     if (raw == null) return {ok:true,schema:null};
     if (!schemaLib) return {ok:false,error:'Result contract validator is unavailable'};
@@ -133,6 +293,27 @@
     const authority = ctx && ctx.connectorAuthority;
     return authority ? { connectorAuthority: authority, initialTaint: typeof authority.taintedBy === 'function' ? authority.taintedBy() : null } : {};
   }
+
+  /* RELAYED TAINT (sec-taint 09-25). A worker's text is only as trustworthy as what the worker read. runOnce reports
+     the worker run's host-proven latch as result.taintedBy; every row / record that carries worker text carries it
+     too, and every tool result that relays such rows reports the first one — registry.js passes it through and the
+     run host latches the LEAD (taint.relayedTaint). Rows are host-built, never model-authored. */
+  function taintOfRun() {
+    for (let i = 0; i < arguments.length; i++) {
+      const r = arguments[i];
+      const t = r && typeof r.taintedBy === 'string' ? r.taintedBy.trim() : '';
+      if (t) return t.slice(0, 200);
+    }
+    return '';
+  }
+  function taintOfRows(rows) {
+    for (const r of (Array.isArray(rows) ? rows : [])) {
+      const t = r && typeof r.taintedBy === 'string' ? r.taintedBy.trim() : '';
+      if (t) return t.slice(0, 200);
+    }
+    return '';
+  }
+  function withTaint(res, taint) { if (taint) res.taintedBy = taint; return res; }
 
   function makeOrchestrationTools(deps) {
     deps = deps || {};
@@ -449,7 +630,8 @@
                 + '[STOPPED — this worker used up its ' + Math.round(wallMs / 1000) + 's slice of the dispatch wall clock'
                 + (partial ? '; the text above is its PARTIAL work' : ' before returning any text')
                 + '. Do not present it as complete: either re-dispatch this subtask alone, or tell the Commander this part is unfinished.]',
-              usd: (res && res.usd) || 0
+              usd: (res && res.usd) || 0,
+              taintedBy: taintOfRun(res) || undefined
             };
           };
           let result;
@@ -554,6 +736,8 @@
             durationMs: (Number(result.durationMs) || 0) + (Number(repaired && repaired.durationMs) || 0),
             tokens: (Number(result.tokens) || 0) + (Number(repaired && repaired.tokens) || 0)
           };
+          const rowTaint = taintOfRun(result, repaired);
+          if (rowTaint) row.taintedBy = rowTaint;
           if (wire.note) row.note = wire.note;   // honest credential-fallback disclosure (never silent)
           /* Show it where the Commander asked for it. Only a COMPLETED worker delivers: every other outcome
              (error / refused / timeout) returned above, so a partial or failed run is reported to the lead but
@@ -573,10 +757,13 @@
           if (!subagents || typeof subagents.start !== 'function') return { content: 'background subagents unavailable (no subagent manager)', summary: 'error' };
           const started = jobs.map(job => {
             if (job.error) return { agentId: job.agentId, reason: 'error', result: job.error };
-            return subagents.start({ ...projectOptions(job.sessionContext || ctx), leadId, parentStreamId: deps.coordinateResults === true && ctx && ctx.streamId !== 'global' ? ctx.streamId : '', streamId: job.streamId || '', agentId: job.agentId, prompt: job.prompt, context: job.context, runId: newId(), resultSchema: job.resultSchema }, async (h) => {
+            // parentRunId: a CANCELLED lead run cancels this worker too (subagents.cancelChildren); a lead that ends
+            // normally leaves it running — outliving the call is what background:true is for.
+            return subagents.start({ ...projectOptions(job.sessionContext || ctx), leadId, parentRunId: (ctx && ctx.runId) || '', parentStreamId: deps.coordinateResults === true && ctx && ctx.streamId !== 'global' ? ctx.streamId : '', streamId: job.streamId || '', agentId: job.agentId, prompt: job.prompt, context: job.context, runId: newId(), resultSchema: job.resultSchema }, async (h) => {
               const r = await runWorker(job, { runId: h.runId, signal: h.signal, emit: h.emit, steer: h.steer });
               return { status: r.reason === 'done' ? 'done' : 'error', reason: r.reason, result: r.result, usd: r.usd || 0,
-                structuredResult: r.structuredResult, validation: r.validation, repairRunId: r.repairRunId, artifacts: r.artifacts };
+                structuredResult: r.structuredResult, validation: r.validation, repairRunId: r.repairRunId, artifacts: r.artifacts,
+                taintedBy: r.taintedBy || '' };
             });
           });
           const startedRows = started.concat(overflowRows());
@@ -628,13 +815,15 @@
         const ok = out.filter(r => r.reason === 'done').length;
         const late = out.filter(r => r.reason === 'timeout').length;
         const unrun = out.filter(r => r.reason === 'not-dispatched').length - overflow.length;
-        return {
-          content: JSON.stringify(out),
+        // every worker's row survives the result cap: fair-share its text, spill the whole text per worker
+        const fit = await fitAggregate(out, { budget: aggregateBudget(ctx), what: r => 'worker ' + r.agentId + '\'s result', park: workerParker(ctx, 'team.dispatch') });
+        return withTaint({
+          content: JSON.stringify(fit.rows),
           summary: 'dispatched ' + jobs.length + ' worker(s), ' + ok + ' done'
             + (late ? ', ' + late + ' out of time' : '')
             + (unrun > 0 ? ', ' + unrun + ' never started (wall clock)' : '')
-            + overflowNote
-        };
+            + overflowNote + fitNote(fit)
+        }, taintOfRows(out));
       }
     };
 
@@ -736,8 +925,18 @@
                 steer: h.steer
               });
             } catch (e) {
-              const r = { label, agentId: ephemeralId, reason: 'error', result: 'subagent run failed: ' + ((e && e.message) || e), usd: 0 };
-              settle(r); return { status: 'error', reason: 'error', result: r.result, usd: 0 };
+              const stopped = hostStopCode(h.signal);
+              const r = stopped ? Object.assign({ label, agentId: ephemeralId, usd: 0 }, hostStopRow(stopped, ''))
+                : { label, agentId: ephemeralId, reason: 'error', result: 'subagent run failed: ' + ((e && e.message) || e), usd: 0 };
+              settle(r); return { status: 'error', reason: r.reason, result: r.result, usd: 0 };
+            }
+            // Stopped by the HOST (its parent run was cancelled, or the liveness check found it hung): say which,
+            // with whatever partial text it produced — never a clean-looking 'cancelled'/'done' row.
+            const hostStopped = hostStopCode(h.signal);
+            if (hostStopped) {
+              const r = Object.assign({ label, agentId: ephemeralId, usd: (result && result.usd) || 0 }, hostStopRow(hostStopped, result ? lastAssistant(result.messages) : ''));
+              if (taintOfRun(result)) r.taintedBy = taintOfRun(result);
+              settle(r); return { status: 'error', reason: r.reason, result: r.result, usd: r.usd, taintedBy: r.taintedBy || '' };
             }
             if (!result) {
               const r = { label, agentId: ephemeralId, reason: 'refused', result: 'subagent could not start — the concurrency cap (STARNET_MAX_CONCURRENT_AGENTS) is full or a sign-in is needed. Try fewer at once.', usd: 0 };
@@ -777,11 +976,13 @@
             };
             // ghost-file fix (same as runWorker): the clone's proven outputs, stamped with the owning workspace.
             if (artifacts.length) r.artifacts = artifacts.map(a => Object.assign({}, a, { agentId: ephemeralId, workspace: ephemeralId }));
+            if (taintOfRun(result, repaired)) r.taintedBy = taintOfRun(result, repaired);
             settle(r);
             return { status: r.reason === 'done' ? 'done' : 'error', reason: r.reason, result: r.result, usd: r.usd,
-              structuredResult: r.structuredResult, validation: r.validation, repairRunId: r.repairRunId, artifacts: r.artifacts };
+              structuredResult: r.structuredResult, validation: r.validation, repairRunId: r.repairRunId, artifacts: r.artifacts,
+              taintedBy: r.taintedBy || '' };
           };
-          const view = subagents.start({ ...projectOptions(ctx), leadId, parentStreamId: deps.coordinateResults === true && ctx && ctx.streamId !== 'global' ? ctx.streamId : '', agentId: ephemeralId, prompt: prompt, context: task.context, runId: newId(), resultSchema: task.resultSchema }, runner);
+          const view = subagents.start({ ...projectOptions(ctx), leadId, parentRunId: (ctx && ctx.runId) || '', parentStreamId: deps.coordinateResults === true && ctx && ctx.streamId !== 'global' ? ctx.streamId : '', agentId: ephemeralId, prompt: prompt, context: task.context, runId: newId(), resultSchema: task.resultSchema }, runner);
           return { label, view, done, started: true };
         };
 
@@ -792,7 +993,8 @@
         }
         const results = (await Promise.all(spawned.map(s => s.done))).concat(overflowRows());
         const ok = results.filter(r => r.reason === 'done').length;
-        return { content: JSON.stringify(results), summary: 'spawned ' + spawned.filter(s => s.started).length + ' subagent(s), ' + ok + ' done' + overflowNote };
+        const fit = await fitAggregate(results, { budget: aggregateBudget(ctx), what: r => 'subagent ' + (r.label || r.agentId) + '\'s result', park: workerParker(ctx, 'team.spawn') });
+        return withTaint({ content: JSON.stringify(fit.rows), summary: 'spawned ' + spawned.filter(s => s.started).length + ' subagent(s), ' + ok + ' done' + overflowNote + fitNote(fit) }, taintOfRows(results));
       }
     };
 
@@ -864,10 +1066,11 @@
         if (args && args.id) {
           const r = subagents.get(String(args.id));
           if (!r || r.leadId !== leadId) return { content: 'No such background subagent for this lead.', summary: 'not found' };
-          return { content: JSON.stringify(r), summary: r.status };
+          return withTaint({ content: JSON.stringify(r), summary: r.status }, taintOfRows([r]));
         }
         const rows = subagents.list({ leadId, agentId: args && args.agentId, status: args && args.status });
-        return { content: JSON.stringify(rows), summary: rows.length + ' background subagent(s)' };
+        const fit = await fitAggregate(rows, { budget: aggregateBudget(ctx), what: r => (r.agentId || 'subagent') + ' (' + (r.id || '') + ')\'s result', park: workerParker(ctx, 'team.subagents') });
+        return withTaint({ content: JSON.stringify(fit.rows), summary: rows.length + ' background subagent(s)' + fitNote(fit) }, taintOfRows(rows));
       }
     };
 
@@ -957,7 +1160,8 @@
           structuredResult: rec.resultSchema && contract.ok ? contract.value : null,
           validation: contract.validation, repairRunId: contract.repairRunId || '',
           usd: (Number(result.usd) || 0) + (Number(repaired && repaired.usd) || 0),
-          artifacts: artifacts.map(a => Object.assign({}, a, { agentId: rec.agentId, workspace: rec.agentId }))
+          artifacts: artifacts.map(a => Object.assign({}, a, { agentId: rec.agentId, workspace: rec.agentId })),
+          taintedBy: taintOfRun(result, repaired)
         };
       };
     }
@@ -969,7 +1173,7 @@
       run: async (args, ctx) => {
         if (!subagents) return { content: 'background subagents unavailable', summary: 'unavailable' };
         const r = subagents.interrupt(String(args.id || ''), (ctx && ctx.agentId) || 'agent');
-        return { content: JSON.stringify(r), summary: r.ok ? (r.alreadyDone ? 'already done' : 'interrupted') : 'not interrupted' };
+        return withTaint({ content: JSON.stringify(r), summary: r.ok ? (r.alreadyDone ? 'already done' : 'interrupted') : 'not interrupted' }, taintOfRows([r && r.record]));
       }
     };
 
@@ -987,13 +1191,14 @@
           error.precondition = { code: 'inspect_before_resume', requiredTool: 'team.subagents', requiredState: 'owned_subagent_identified' };
           throw error;
         }
-        const r = subagents.resume(rec.id, resumeRunnerFor(ctx));
+        // the resumed generation follows THIS run: cancelling it cancels the worker it restarted
+        const r = subagents.resume(rec.id, resumeRunnerFor(ctx), { parentRunId: (ctx && ctx.runId) || '' });
         if (!r.ok) {
           const error = new Error(String(r.error || 'background subagent is not resumable'));
           error.precondition = { code: 'subagent_not_resumable', requiredTool: 'team.subagents', requiredState: 'stale_or_interrupted_or_failed' };
           throw error;
         }
-        return { content: JSON.stringify(r), summary: 'resumed' };
+        return withTaint({ content: JSON.stringify(r), summary: 'resumed' }, taintOfRows([r && r.record]));
       }
     };
 
@@ -1003,5 +1208,5 @@
     };
   }
 
-  return { makeOrchestrationTools };
+  return { makeOrchestrationTools, fitAggregate };
 });

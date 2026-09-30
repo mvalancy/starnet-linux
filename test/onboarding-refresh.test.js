@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(require('node:path').join(__dirname, '../frontend/app/onboarding.js'), 'utf8');
-async function quickRun(answers, stopAt, wake = false, mind = null) {
+async function quickRun(answers, stopAt, wake = false, mind = null, receipts = []) {
   const timers = new Map(), prompts = [], stages = [], writes = [], postures = [], beliefs = [];
   let timerId = 0, done = 0, taught = 0, context;
   const storage = new Map(), calls = [];
@@ -27,7 +27,7 @@ async function quickRun(answers, stopAt, wake = false, mind = null) {
       }
     },
     DossierStore: { upsert(...args) { beliefs.push(args); } },
-    AutonomyStore: { applyPreset(value) { postures.push(value); } },
+    AutonomyStore: { async applyPreset(value) { postures.push(value); return receipts.shift() || { ok: true }; } },
     opts: { name:'NOVA', wake, docs:{}, commit(patch) { writes.push(patch); }, done() { done++; }, taught() { taught++; } }
   });
   vm.runInContext(source, context);
@@ -51,6 +51,11 @@ async function quickRun(answers, stopAt, wake = false, mind = null) {
   assert(result.stages.some(([,detail]) => detail.startsWith('1 of 2')));
   assert(result.stages.some(([,detail]) => detail.startsWith('2 of 2')));
   assert(result.storage.has('starnet.interview.deferred.v1'), 'deeper profile stays available later');
+  const retried = await quickRun([{value:'quick'}, {value:'Help me build software.'}, {value:'wait'}, {value:'wait'}], null, false, null, [{ok:false,error:'Save refused'}, {ok:true}]);
+  assert.equal(retried.prompts.length, 4, 'a refused posture save repeats the question before completing setup');
+  assert.deepEqual(retried.postures, ['wait', 'wait'], 'retry uses the confirmed writer again');
+  assert.equal(retried.done, 1, 'setup completes only after a confirmed retry');
+  assert.equal(retried.taught, 1, 'a refused save does not duplicate tutorial handoff');
   const fresh = await quickRun([{value:'quick'}, {value:'Help me build software.'}, {value:'wait'}], null, true);
   assert.equal(fresh.done, 1, 'fresh awakening reaches setup completion');
   assert.equal(fresh.taught, 1, 'fresh awakening hands off once');

@@ -64,6 +64,31 @@ async function rejectsAsync(p, msg) { try { await p; A.ok(false, msg + ' — did
   const got = await good.webFetch('http://example.com/article');
   A.ok(/real content here/.test(got.text) && got.source === 'direct', 'direct fallback returns cleaned text for a public page');
 
+  // The socket receives the validated address, not the original hostname for
+  // another independent DNS lookup. A third DNS answer would be loopback.
+  {
+    let lookups = 0, connectedTo = '', sentHost = '', closed = false;
+    const pinned = makeWebTools({
+      lookup: async () => [{ address: ++lookups < 3 ? '93.184.216.34' : '127.0.0.1', family: 4 }],
+      agentFactory: options => ({
+        async close() { closed = true; },
+        connect: options.connect
+      }),
+      fetchImpl: async (url, opts) => {
+        sentHost = new URL(url).hostname;
+        opts.dispatcher.connect.lookup(sentHost, {}, (error, address) => { if (error) throw error; connectedTo = address; });
+        return resp(200, { body: 'ok', ct: 'text/plain' });
+      }
+    });
+    await pinned.requestTool.run({ url: 'http://rebind.audit.test/proof' }, { agentId: 'agent' });
+    A.eq(lookups, 2, 'validation and connection share the selected DNS result; no third lookup occurs');
+    A.eq(connectedTo, '93.184.216.34', 'connection callback supplies the validated public IP');
+    A.eq(sentHost, 'rebind.audit.test', 'original hostname remains for Host and TLS identity');
+    A.ok(closed, 'per-hop dispatcher is closed after consuming the response');
+  }
+  await rejectsAsync(assertResolvedSafe(new URL('https://public.example/'), async () => { throw new Error('resolver unavailable'); }), 'DNS errors fail closed');
+  await rejectsAsync(assertResolvedSafe(new URL('https://public.example/'), async () => []), 'empty DNS answers fail closed');
+
   // ---- the FQDN root label is not an escape hatch ----
   // WHATWG strips a trailing dot for IP literals but NOT for names, so `localhost.` kept its dot and slipped
   // past every name rule. The DNS guard usually catches it downstream, but it is best-effort (a failed lookup

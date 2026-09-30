@@ -39,7 +39,10 @@ function makeFake() {
 (async () => {
   // ---- pure helpers ----
   A.ok(buildMarkedCmd('ls', false).indexOf('pwd') >= 0, 'posix marker appends a pwd printf');
-  A.ok(buildMarkedCmd('dir', true).indexOf('%CD%') >= 0 && buildMarkedCmd('dir', true).indexOf('%ERRORLEVEL%') >= 0, 'win marker appends %CD% + %ERRORLEVEL%');
+  // The caret form is the fix (h1 F5): plain %CD%/%ERRORLEVEL% are expanded when cmd.exe PARSES the line, i.e. BEFORE
+  // the command runs, so they reported the pre-command cwd and exit 0. `call` re-expands the caret form at run time.
+  A.ok(buildMarkedCmd('dir', true).indexOf('call echo __SK_CWD__%^CD%__SK_EC__%^ERRORLEVEL%__SK_END__') >= 0, 'win marker appends the run-time (caret) %^CD% + %^ERRORLEVEL%');
+  A.ok(!/%CD%|%ERRORLEVEL%/.test(buildMarkedCmd('dir', true)), 'win marker never uses the parse-time %CD%/%ERRORLEVEL% forms');
   {
     const pm = parseMarker('hello world\n__SK_CWD__/ws/a/sub__SK_EC__3__SK_END__');
     A.eq(pm.cwd, '/ws/a/sub', 'parseMarker extracts cwd');

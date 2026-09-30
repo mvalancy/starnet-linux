@@ -207,11 +207,15 @@ const WorldLight = (() => {
   function create(options) {
     options = options || {};
     let quality = QUALITY[options.quality] ? options.quality : 'high';
+    // key/keyProps/keyReach/shadeCool drive the KEY buffer: an overlay-composited
+    // light map (neutral .5 = unchanged, above = gain up to 2x). The dark film can
+    // only remove darkness; this is the one pass that puts light ON a surface.
     let config = Object.assign({ ambient: 0.82, wallAmbient: 0.28, fixtureTint: 0.17,
-      emission: 1, propLift: 0.65, propTint: 1, atmosphere: 0.25, shafts: 1, sampleCacheLimit: 512 }, options);
+      emission: 1, propLift: 0.65, propTint: 1, atmosphere: 0.25, shafts: 1, sampleCacheLimit: 512,
+      key: 0, keyProps: 1, keyReach: 0.62, keyPropReach: 1.2, shadeCool: 0, cut: 1 }, options);
     let geo = null, geometryOptions = {}, segments = [], width = 1, height = 1, ratio = 1;
     let interiorPath = null, interiorMask = null, surfaceMask = null, surfaceChunks = [];
-    let baseDark = null, baseGlow = null, frameDark = null, frameGlow = null;
+    let baseDark = null, baseGlow = null, frameDark = null, frameGlow = null, baseKey = null, frameLift = null;
     let fixtureKey = '', frameKey = '', fixtureLights = [], currentLights = [], stampPixels = 0, disposed = false;
     let preparedFrame = null, preparedLights = [], preparedConfigRevision = -1;
     const stamps = new Map(), canvasWatches = new Map(), lostCanvases = new Set(), samples = new Map();
@@ -285,7 +289,8 @@ const WorldLight = (() => {
       interiorMask = geometryOptions.interiorMask || null;
       surfaceChunks = Array.isArray(geometryOptions.surfaceChunks) ? geometryOptions.surfaceChunks : [];
       segments = buildSegments(geo, geometryOptions.tileSize);
-      for (const c of [baseDark, baseGlow, frameDark, frameGlow]) release(c);
+      for (const c of [baseDark, baseGlow, frameDark, frameGlow, baseKey, frameLift]) release(c);
+      baseKey = null; frameLift = null;
       const w = Math.max(1, Math.ceil(width * ratio)), h = Math.max(1, Math.ceil(height * ratio));
       baseDark = makeCanvas(w, h); baseGlow = makeCanvas(w, h); frameDark = makeCanvas(w, h); frameGlow = makeCanvas(w, h);
       clearStamps(); fixtureKey = ''; frameKey = ''; fixtureLights = []; currentLights = [];
@@ -345,7 +350,7 @@ const WorldLight = (() => {
         const g = c.getContext('2d');
         if (g && typeof g.isContextLost === 'function' && g.isContextLost()) lost(c);
       };
-      for (const c of [baseDark, baseGlow, frameDark, frameGlow]) inspect(c);
+      for (const c of [baseDark, baseGlow, frameDark, frameGlow, baseKey, frameLift]) inspect(c);
       for (const s of stamps.values()) inspect(s.canvas);
       if (resourcesDirty) {
         if (clock() < retryResourcesAt) return false;
@@ -435,6 +440,41 @@ const WorldLight = (() => {
       g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
     }
 
+    const keyOn = () => finite(config.key, 0) > 0 || finite(config.shadeCool, 0) > 0;
+    // The key is tighter than the cut that made room for it: a highlight film at the
+    // cut's full radius overlaps its neighbours into a haze that lifts the whole room.
+    // Screens and beacons are small emitters: they keep (or exceed) their own reach.
+    function paintKey(g, lights, amount, reach) {
+      reach = clamp(finite(reach, 0.62), 0.2, 2);
+      g.globalCompositeOperation = 'lighter';
+      for (const l of lights) {
+        const a = clamp(l.a * amount, 0, 1); if (!(a > 0)) continue;
+        const s = stamp(Object.assign({}, l, { r: Math.max(1, l.r * reach), beam: null })); if (!s) continue;
+        g.globalAlpha = a; g.drawImage(s.canvas, s.x, s.y, s.size, s.size);
+      }
+      g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+    }
+    // Neutral grey over the station silhouette only (space stays untouched): a
+    // faint blue-over-red split, so unlit deck reads cool and the lamp pools warm.
+    function rebuildKey(lights) {
+      if (!keyOn()) { release(baseKey); release(frameLift); baseKey = null; frameLift = null; return; }
+      const w = baseDark.width, h = baseDark.height;
+      if (!baseKey) baseKey = makeCanvas(w, h);
+      if (!frameLift) frameLift = makeCanvas(w, h);
+      if (!baseKey || !frameLift) return;
+      const k = reset(baseKey), cool = clamp(finite(config.shadeCool, 0), 0, 0.3);
+      if (hasSurface()) {
+        if (surfaceMask) k.drawImage(surfaceMask, 0, 0, width, height);
+        else for (const c of surfaceChunks) if (c.baseCv) drawChunk(k, c, c.baseCv);
+        k.globalCompositeOperation = 'source-in';
+      }
+      k.fillStyle = 'rgb(' + Math.round(128 * (1 - cool)) + ',' + Math.round(128 * (1 - cool * 0.35)) + ',' + Math.round(128 * (1 + cool * 0.45)) + ')';
+      if (hasSurface()) k.fillRect(0, 0, width, height);
+      else { k.save(); clipDeckFootprint(k); clipFloor(k); k.fillRect(0, 0, width, height); k.restore(); }
+      k.globalCompositeOperation = 'source-over';
+      paintKey(k, lights, 0.5 * clamp(finite(config.key, 0), 0, 2), config.keyReach);
+    }
+
     function rebuildStatic(lights) {
       const d = reset(baseDark), glow = reset(baseGlow), wall = clamp(finite(config.wallAmbient, 0.28), 0, 0.8);
       // Existing LOW/MEDIUM/HIGH room settings are .82/.72/.62. Their ordering
@@ -463,9 +503,12 @@ const WorldLight = (() => {
         d.save(); clipDeckFootprint(d); clipFloor(d); d.fillStyle = 'rgba(5,9,22,' + inside + ')';
         d.fillRect(0, 0, width, height); d.restore();
       }
-      paint(d, lights, 1, 'destination-out');
+      // cut > 1 opens a pool further; fill lamps arrive at ~.42 and left a third of
+      // the ambient film standing directly under the fixture.
+      paint(d, lights, clamp(finite(config.cut, 1), 0, 3), 'destination-out');
       paint(glow, lights, finite(config.fixtureTint, 0.17), 'screen');
       if (config.shafts > 0) paint(glow, lights, clamp(config.shafts, 0, 2), 'screen', true);
+      rebuildKey(lights);
       metrics.staticBuilds++;
     }
 
@@ -500,18 +543,25 @@ const WorldLight = (() => {
       // clears preparedFrame; explicit frames and config changes still refresh.
       if(frame !== undefined || !preparedFrame || preparedConfigRevision !== metrics.configRevision)prepare(nextFrame);
       const fixtures = fixtureLights, lights = preparedLights;
-      const fk = signature(fixtures) + '|' + config.ambient + ',' + config.ambientLift + ',' + config.wallAmbient + ',' + config.fixtureTint + ',' + config.shafts;
+      const fk = signature(fixtures) + '|' + config.ambient + ',' + config.ambientLift + ',' + config.wallAmbient + ',' + config.fixtureTint + ',' + config.shafts +
+        ',' + config.key + ',' + config.keyReach + ',' + config.shadeCool + ',' + config.cut;
       if (fk !== fixtureKey) { rebuildStatic(fixtures); fixtureKey = fk; frameKey = ''; }
-      const dk = signature(lights) + '|' + finite(config.propLift, 0.65) + '|' + finite(config.propTint, 1);
+      const dk = signature(lights) + '|' + finite(config.propLift, 0.65) + '|' + finite(config.propTint, 1) + '|' + finite(config.keyProps, 1) + '|' + finite(config.keyPropReach, 1.2);
       if (dk !== frameKey) {
         const d = reset(frameDark), glow = reset(frameGlow);
         d.drawImage(baseDark, 0, 0, width, height); glow.drawImage(baseGlow, 0, 0, width, height);
         paint(d, lights, finite(config.propLift, 0.65), 'destination-out'); paint(glow, lights, clamp(finite(config.propTint, 1), 0, 1), 'screen');
+        if (baseKey && frameLift) {
+          const k = reset(frameLift); k.drawImage(baseKey, 0, 0, width, height);
+          paintKey(k, lights, 0.5 * clamp(finite(config.key, 0), 0, 2) * clamp(finite(config.keyProps, 1), 0, 4), config.keyPropReach);
+        }
         frameKey = dk; metrics.dynamicBuilds++;
       }
       ctx.save();
       ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.imageSmoothingEnabled = ratio < 1;
-      ctx.drawImage(frameDark, 0, 0, width, height); ctx.globalCompositeOperation = 'screen';
+      ctx.drawImage(frameDark, 0, 0, width, height);
+      if (baseKey && frameLift) { ctx.globalCompositeOperation = 'overlay'; ctx.drawImage(frameLift, 0, 0, width, height); }
+      ctx.globalCompositeOperation = 'screen';
       ctx.drawImage(frameGlow, 0, 0, width, height); ctx.restore();
       metrics.frames++; metrics.lastBuildMs = +(clock() - started).toFixed(3); return true;
     }
@@ -579,8 +629,8 @@ const WorldLight = (() => {
       else { fixtureKey = ''; frameKey = ''; }
     }
     function dispose() {
-      disposed = true; for (const c of [baseDark, baseGlow, frameDark, frameGlow]) release(c);
-      baseDark = null; baseGlow = null; frameDark = null; frameGlow = null;
+      disposed = true; for (const c of [baseDark, baseGlow, frameDark, frameGlow, baseKey, frameLift]) release(c);
+      baseKey = null; frameLift = null; baseDark = null; baseGlow = null; frameDark = null; frameGlow = null;
       clearStamps(); currentLights = []; fixtureLights = []; geo = null; surfaceMask = null; interiorPath = null;
       preparedFrame = null; preparedLights = [];
       invalidateSamples();
@@ -592,7 +642,8 @@ const WorldLight = (() => {
         sampleCacheSize: samples.size, sampleCacheLimit: sampleLimit(),
         shafts: fixtureLights.filter(l => l.beam && l.beam.strength > 0 && config.shafts > 0).length,
         ambient: clamp(0.208 + finite(config.ambient, 0.82) * 0.6 - clamp(finite(config.ambientLift, 0), 0, .2), 0, 0.9),
-        cacheBytes: 4 * stampPixels + (baseDark ? baseDark.width * baseDark.height * 16 : 0), disposed }) };
+        cacheBytes: 4 * stampPixels + (baseDark ? baseDark.width * baseDark.height * (baseKey ? 24 : 16) : 0),
+        key: !!baseKey, disposed }) };
   }
   return { create, buildSegments, visibilityPolygon, visibleAt, visibilityFraction, emitterOrigins,
     rayDistance, falloff, normalizeLight, lightAt, shadowFor, QUALITY };

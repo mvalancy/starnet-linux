@@ -38,7 +38,8 @@
       computeReason: 'no compute capability — place a computer in the room',
       canUse: (call) => canAgentUse(resolved, call.name),
       approvalRules: resolved.approvalRules,
-      deferred: resolved.deferred || []   // granted-but-unadvertised names; tool.search searches exactly this
+      deferred: resolved.deferred || [],   // granted-but-unadvertised names; tool.search searches exactly this
+      unavailable: resolved.unavailable || {}   // deferred names the host PROVED cannot work this run -> { why, enable }; tool.search says so
     }, extra || {});
   }
 

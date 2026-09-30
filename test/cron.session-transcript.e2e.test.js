@@ -126,7 +126,7 @@ async function drainNdjson(res) { const reader = res.body.getReader(); const dec
     const job = (await create.json()).job;
     A.ok(job && job.id, 'routine id returned');
 
-    sse = await startSseCollector(B + '/api/channels/events?token=' + encodeURIComponent(token));
+    sse = await startSseCollector(B + '/api/channels/events?' + require('./_httpToken.js').sseQuery(token));
 
     const run = await fetch(B + '/api/cron/run', { method: 'POST', headers, body: JSON.stringify({ id: job.id }) });
     A.eq(run.status, 200, 'Run Now returns a stream');

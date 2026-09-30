@@ -24,6 +24,7 @@ sidecar/workspaces.*/
 # dev seed launcher: local secrets + the throwaway seeded workspace it materializes
 dev/.env.dev
 dev/.scratch-workspace/
+dev/.google-review-workspace/
 # mock-cron dev sidecar runtime state (roster/goals/cron json + .bak churn; never committed)
 dev/.scratch-mock-cron/
 # mock-comms dev sidecar runtime state (same shape; never committed)

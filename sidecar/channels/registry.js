@@ -87,7 +87,13 @@
       send: (chatId, text, o) => adapterRef ? adapterRef.send(chatId, text, o) : Promise.resolve({ ok: false, error: 'no adapter' }),
       // typing indicator (adapter-optional): a transport without sendChatAction answers ok:false non-retryable,
       // so the hub probes once per run and shows no bubble — exactly the old behavior on those channels.
-      chatAction: (chatId) => (adapterRef && typeof adapterRef.chatAction === 'function') ? adapterRef.chatAction(chatId) : Promise.resolve({ ok: false, error: 'no adapter', retryable: false })
+      chatAction: (chatId) => (adapterRef && typeof adapterRef.chatAction === 'function') ? adapterRef.chatAction(chatId) : Promise.resolve({ ok: false, error: 'no adapter', retryable: false }),
+      // The paired owner, as the ADAPTER knows it (owner-pairing claim, never message text). Gates the hub's
+      // owner-only control commands and Full Power inheritance. Unpaired -> nobody is the owner (fail closed).
+      isOwner: (msg) => {
+        const own = adapterRef && adapterRef._internals ? String(adapterRef._internals.owner || '') : '';
+        return !!(own && msg && String(msg.userId == null ? '' : msg.userId) === own);
+      }
     }, deps.hub));
     const adapterOpts = Object.assign({}, deps.adapter, {
       onInbound: (deps.adapter && deps.adapter.onInbound) || hub.onInbound,

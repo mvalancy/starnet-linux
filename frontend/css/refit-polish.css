@@ -40,7 +40,7 @@
 .refit-overlay .refit-dock .refit-proptile.active { border-color: var(--ph); background: rgba(var(--ph-rgb),.12); box-shadow: none; }
 .refit-overlay .refit-dock .refit-proptile.active::after { display: none; }
 .refit-overlay .refit-dock .refit-core-card { min-height: 32px; padding-block: 6px; }
-.refit-overlay :is(.refit-mattile,.refit-hue,.refit-linetile) { border-radius: 8px; border-color: var(--refit-edge); box-shadow: none; }
+.refit-overlay :is(.refit-mattile,.refit-hue,.refit-linetile,.refit-machinetile) { border-radius: 8px; border-color: var(--refit-edge); box-shadow: none; }
 /* Every nested card uses the same frame, including Room, Workstation and Portal. */
 .refit-overlay .refit-guide { background: rgba(0,0,0,.48); backdrop-filter: blur(6px); }
 .refit-overlay .refit-guide-card { box-sizing: border-box; max-height: calc(100% - 32px); overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--ph-dim) transparent; padding: 24px; border: 1px solid var(--refit-edge); border-radius: 14px; background: var(--refit-glass),var(--panel); box-shadow: 0 24px 70px rgba(0,0,0,.55),inset 0 1px rgba(var(--ph-rgb),.12); }
@@ -86,6 +86,8 @@
 .refit-overlay .refit-dock :is(.refit-prop-more .bb,.refit-preview-actions .bb) { border-radius: 6px; background: var(--refit-glass); border-color: var(--refit-edge); box-shadow: none; }
 .refit-overlay .refit-linetile { padding: 12px; background: var(--refit-glass); }
 .refit-overlay .refit-linetile.active { border-color: var(--ph); background: rgba(var(--ph-rgb),.12); box-shadow: none; }
+.refit-overlay .refit-machinetile { background: var(--refit-glass); }
+.refit-overlay .refit-machinetile.active { border-color: var(--ph); background: rgba(var(--ph-rgb),.12); box-shadow: none; }
 .refit-room-help { font-size: 14px; color: var(--ph-dim); margin: 12px 0; }
 .refit-room-help summary { cursor: pointer; padding: 8px 0; color: var(--ph); }
 

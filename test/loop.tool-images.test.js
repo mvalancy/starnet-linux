@@ -24,7 +24,9 @@ function shotFixture(n) {
   const turn = [];
   for (let i = 0; i < n; i++) {
     turn.push({ type: 'tool_start', index: i, id: 'c' + i, name: 'browser_screenshot' });
-    turn.push({ type: 'tool_args', index: i, chunk: '{}' });
+    // DISTINCT args per call: identical calls in one turn are deduped by the loop (normalizeBatch), and this
+    // fixture is about the per-turn IMAGE bound, not about repeating one capture.
+    turn.push({ type: 'tool_args', index: i, chunk: JSON.stringify({ label: 'shot' + i }) });
   }
   turn.push({ type: 'done', finishReason: 'tool_calls' });
   return { turns: [turn, [{ type: 'text', delta: 'I can see it.' }, { type: 'done', finishReason: 'stop' }]] };

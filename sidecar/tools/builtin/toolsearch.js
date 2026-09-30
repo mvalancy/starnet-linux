@@ -91,6 +91,61 @@
     return one.length > 160 ? one.slice(0, 157) + '…' : one;
   }
 
+  /* CONNECTOR DEFERRAL PLAN (w2 footprint, 2026-09-22). An MCP connector's tools used to ride EVERY request in
+     full: a big server (40 tools of JSON schema) cost more per turn than the whole CAP_REGISTRY browser shelf
+     this file was built to defer. Past a footprint threshold the LARGEST servers are deferred whole — a server
+     is one line in the prompt index, so it is all-or-nothing — until what is still advertised fits. Small
+     servers stay advertised: below the threshold nothing changes at all.
+
+       planConnectorDeferral([{ name, server, bytes }], { maxBytes, maxTools })
+         -> { deferred: [name], servers: [{ id, count, bytes }], totalBytes, totalTools }
+
+     A limit of 0 (or absent) switches that axis off; both off never defers. Pure and deterministic — ties
+     break on server id, so the same connector set always yields the same advertised list (and the same cached
+     prompt prefix). */
+  function planConnectorDeferral(entries, opts) {
+    opts = opts || {};
+    const maxBytes = Number(opts.maxBytes) > 0 ? Number(opts.maxBytes) : 0;
+    const maxTools = Number(opts.maxTools) > 0 ? Number(opts.maxTools) : 0;
+    const groups = new Map();
+    let bytes = 0, tools = 0;
+    for (const e of (entries || [])) {
+      if (!e || !e.name) continue;
+      const id = String(e.server || 'mcp');
+      if (!groups.has(id)) groups.set(id, { id, count: 0, bytes: 0, names: [] });
+      const g = groups.get(id);
+      const b = Number(e.bytes) > 0 ? Number(e.bytes) : 0;
+      g.count++; g.bytes += b; g.names.push(String(e.name));
+      tools++; bytes += b;
+    }
+    const plan = { deferred: [], servers: [], totalBytes: bytes, totalTools: tools };
+    const over = () => (maxBytes > 0 && bytes > maxBytes) || (maxTools > 0 && tools > maxTools);
+    if (!over()) return plan;
+    const order = Array.from(groups.values())
+      .sort((a, b) => (b.bytes - a.bytes) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    for (const g of order) {
+      if (!over()) break;
+      plan.deferred.push(...g.names);
+      plan.servers.push({ id: g.id, count: g.count, bytes: g.bytes });
+      bytes -= g.bytes; tools -= g.count;
+    }
+    plan.servers.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    return plan;
+  }
+
+  /* The one-line prompt index that stands in for the deferred servers' schemas: server + tool count, and the
+     way in. Names the SERVER, not every tool — the measured failure this guards against is a model that never
+     learns a capability exists; a server name is what a Commander's request actually mentions ("my github").
+     Empty for no servers, so a run below the threshold carries no new bytes. */
+  function connectorIndexLine(servers) {
+    const list = (servers || []).filter(s => s && s.id);
+    if (!list.length) return '';
+    return 'Connector tools not loaded yet (they exist and you CAN use them): '
+      + list.map(s => s.id + ' (' + s.count + ' tool' + (s.count === 1 ? '' : 's') + ')').join(', ') + '. '
+      + 'To use one, call tool_search with the service and what you want done ("' + list[0].id + ' search", '
+      + '"create an issue") and the matching tools become callable immediately. ';
+  }
+
   function makeToolSearchTool(deps) {
     const registry = (deps || {}).registry;
 
@@ -141,7 +196,15 @@
           };
         }
 
-        const lines = hits.map(h => '· ' + h.t.name + ' ' + required(h.t) + ' — ' + gist(h.t));
+        /* A tool the host PROVED cannot work this run (ctx.unavailable: name -> { why, enable }) is still found and
+           still revealed — the Commander may fix it mid-run — but its line says so, with the fix, so the model
+           reports the missing setup instead of calling it blind or claiming it worked. Absent map: unchanged. */
+        const unavailable = (ctx && ctx.unavailable && typeof ctx.unavailable === 'object') ? ctx.unavailable : null;
+        const caveat = n => {
+          const u = unavailable && Object.prototype.hasOwnProperty.call(unavailable, n) ? unavailable[n] : null;
+          return u ? ' [NOT USABLE RIGHT NOW: ' + u.why + '. To enable: ' + u.enable + '.]' : '';
+        };
+        const lines = hits.map(h => '· ' + h.t.name + ' ' + required(h.t) + ' — ' + gist(h.t) + caveat(h.t.name));
         return {
           content: 'Now available to call for the rest of this run:\n' + lines.join('\n'),
           summary: hits.length + ' revealed',
@@ -158,5 +221,5 @@
     };
   }
 
-  return { makeToolSearchTool };
+  return { makeToolSearchTool, planConnectorDeferral, connectorIndexLine };
 });

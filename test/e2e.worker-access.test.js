@@ -2,17 +2,20 @@
    Boots the REAL sidecar (Full Access lead) with a mock OpenRouter that makes the lead team.dispatch a worker,
    and makes that WORKER call fs.write — a consent-gated mutation an old autonomous worker was hard-DENIED. We then
    assert the file actually landed on disk, proving the worker inherited the lead's full-access consent broker.
-   No real key/model/browser. NOT in test:fast (child-process boot); run via `npm run test:http`. */
+   No real key/model/browser. NOT in test:fast (child-process boot); run via `npm run test:http`.
+
+   HERMETIC (sec-taint2 09-25): this suite used to spawn index.js by hand with only SKYNET_WORKSPACES set, so the
+   boot-time station recovery scanned the REAL %APPDATA%/%LOCALAPPDATA%/~ roots — the exact path that once copied a
+   real station into a test workspace. It now boots through the shared SidecarFixture (scratch APPDATA/LOCALAPPDATA/
+   XDG profile) and additionally points USERPROFILE/HOME at that scratch profile, so no profile root the sidecar
+   reads can resolve to real user data. */
 'use strict';
 const A = require('./_assert.js');
 const http = require('http');
 const path = require('path');
-const os = require('os');
-const { bootToken } = require('./_httpToken.js');
 const fs = require('fs');
-const { spawn } = require('child_process');
+const { SidecarFixture } = require('./helpers/sidecar-fixture.js');
 const HOST = '127.0.0.1';
-const INDEX = path.resolve(__dirname, '..', 'sidecar', 'index.js');
 const WORKER_MARK = 'WORKER_SYS_MARKER';
 
 // mock OpenRouter. Distinguishes the LEAD run from the WORKER run by the system-prompt marker, and the FIRST turn
@@ -56,24 +59,6 @@ function startMockOpenRouter() {
   });
 }
 
-function boot(port, env, attemptsLeft) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [INDEX], {
-      env: Object.assign({}, process.env, env, { SKYNET_PORT: String(port) }), stdio: ['ignore', 'pipe', 'pipe']
-    });
-    let out = '', settled = false;
-    const onData = d => {
-      out += d.toString();
-      if (!settled && out.indexOf('http://' + HOST + ':' + port) >= 0) { settled = true; resolve({ child, port }); }
-      else if (!settled && /already in use/i.test(out)) { settled = true; try { child.kill(); } catch (_) {}
-        if (attemptsLeft > 0) resolve(boot(port + 1, env, attemptsLeft - 1)); else reject(new Error('no free port')); }
-    };
-    child.stdout.on('data', onData); child.stderr.on('data', onData);
-    child.on('error', e => { if (!settled) { settled = true; reject(e); } });
-    setTimeout(() => { if (!settled) { settled = true; try { child.kill(); } catch (_) {} reject(new Error('boot timeout:\n' + out)); } }, 9000);
-  });
-}
-
 // recursively hunt for a file by name under dir; return its contents or null.
 function findFile(dir, name) {
   let hit = null;
@@ -87,14 +72,16 @@ function findFile(dir, name) {
 
 (async () => {
   const mock = await startMockOpenRouter();
-  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-waccess-'));
   // SKYNET_FULL_ACCESS = the lead is in full-auto; the worker shares that broker → its fs.write is allowed.
-  const env = { SKYNET_WORKSPACES: ws, SKYNET_OPENROUTER_BASE: mock.base, SKYNET_FULL_ACCESS: '1' };
-  const { child, port } = await boot(8930 + (process.pid % 50), env, 20);
-  const B = 'http://' + HOST + ':' + port;
+  const fx = new SidecarFixture({ prefix: 'sk-waccess-', env: { SKYNET_OPENROUTER_BASE: mock.base, SKYNET_FULL_ACCESS: '1' } });
+  // the fixture scrubs APPDATA/LOCALAPPDATA/XDG; USERPROFILE/HOME too, so ~/.local/share can never be a real station
+  fx.env.USERPROFILE = fx.profile; fx.env.HOME = fx.profile;
+  const ws = fx.workspace;
+  A.ok(ws.indexOf(require('os').tmpdir()) === 0 && fx.profile.indexOf(require('os').tmpdir()) === 0, 'the workspace and profile are scratch temp dirs');
   try {
-    const token = await bootToken(B, B);
-    const H = { 'Content-Type': 'application/json', 'X-StarNet-Token': token, Origin: B };
+    await fx.start();
+    const B = fx.baseUrl;
+    const H = { 'Content-Type': 'application/json', 'X-StarNet-Token': fx.token, Origin: B };
 
     // register the worker on the roster (so team.dispatch can find it) with a detectable system marker
     const roster = await fetch(B + '/api/roster', { method: 'POST', headers: H, body: JSON.stringify({ agents: [
@@ -132,7 +119,7 @@ function findFile(dir, name) {
     A.ok(proof !== null, 'the worker actually wrote proof.txt to the workspace (consent-gated write succeeded)');
     A.ok(proof && proof.indexOf('PROOF_OK') >= 0, 'the written file has the worker-supplied content');
   } finally {
-    try { child.kill(); } catch (_) {}
+    try { await fx.dispose(); } catch (_) {}
     try { mock.server.close(); } catch (_) {}
   }
   A.report('e2e.worker-access.test');

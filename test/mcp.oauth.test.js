@@ -272,6 +272,41 @@ const REDIRECT = 'http://127.0.0.1:8787/api/connectors/oauth/callback';
   A.ok(/unknown/.test(T.resolveConnectorOauthTarget('missing', catalog, []).error || ''), 'an id cannot smuggle an unsaved URL into OAuth start');
 }
 
+// ---- M. AS METADATA CHECKS (audit 2026-09-25 #21): issuer, PKCE S256, https/public endpoints ----
+{
+  const base = {
+    authorization_endpoint: 'https://as.example/authorize', token_endpoint: 'https://as.example/token',
+    registration_endpoint: 'https://as.example/register'
+  };
+  const disc = (meta) => O.discover({ fetchImpl: fakeFetch([
+    ['/.well-known/oauth-protected-resource', { json: { authorization_servers: ['https://as.example'] } }],
+    ['/.well-known/oauth-authorization-server', { json: Object.assign({}, base, meta) }]
+  ]), serverUrl: 'https://srv.example/mcp' });
+  const refused = async (meta, re, label) => {
+    let err = null;
+    try { await disc(meta); } catch (e) { err = e; }
+    A.ok(!!err && re.test(err.message), label + ' (' + (err ? err.message : 'accepted') + ')');
+  };
+  A.eq((await disc({ issuer: 'https://as.example' })).authorizationEndpoint, 'https://as.example/authorize', 'a matching issuer is accepted');
+  A.eq((await disc({ issuer: 'https://as.example/' })).tokenEndpoint, 'https://as.example/token', 'a trailing slash on the issuer is not a mismatch');
+  A.eq((await disc({})).tokenEndpoint, 'https://as.example/token', 'metadata without an issuer is tolerated (hosted servers omit it)');
+  await refused({ issuer: 'https://evil.example' }, /issuer mismatch/, 'a different issuer is refused (mix-up)');
+  await refused({ code_challenge_methods_supported: ['plain'] }, /PKCE S256/, 'a server that advertises PKCE without S256 is refused');
+  A.ok((await disc({ code_challenge_methods_supported: ['S256'] })).codeChallengeMethods.indexOf('S256') >= 0, 'S256 advertised is accepted');
+  await refused({ authorization_endpoint: 'http://as.example/authorize' }, /authorization endpoint: url must be https/, 'an http authorization endpoint is refused');
+  await refused({ authorization_endpoint: 'javascript:alert(1)' }, /authorization endpoint/, 'a javascript: authorization endpoint is refused');
+  await refused({ authorization_endpoint: 'https://127.0.0.1/authorize' }, /internal host/, 'an internal-host authorization endpoint is refused');
+  await refused({ authorization_endpoint: 'https://user:pw@as.example/authorize' }, /embedded credentials/, 'credentials in the authorization endpoint are refused');
+  await refused({ authorization_endpoint: 'https://as.example/authorize#frag' }, /fragment/, 'a fragment in the authorization endpoint is refused');
+  await refused({ token_endpoint: 'http://as.example/token' }, /token endpoint: url must be https/, 'an http token endpoint is refused at discovery');
+  await refused({ registration_endpoint: 'https://10.0.0.5/register' }, /client registration.*internal host/, 'an internal registration endpoint is refused at discovery');
+  // buildAuthorizeUrl guards every path into the browser, including catalog staticOauth rows
+  const mkUrl = (ep) => O.buildAuthorizeUrl({ authorizationEndpoint: ep, clientId: 'c', redirectUri: 'http://127.0.0.1:1/cb', challenge: 'x', state: 's' });
+  A.throws(() => mkUrl('http://accounts.example/auth'), 'buildAuthorizeUrl refuses an http endpoint');
+  A.throws(() => mkUrl('file:///C:/evil.html'), 'buildAuthorizeUrl refuses a file: endpoint');
+  A.ok(/^https:\/\/accounts\.google\.com\/o\/oauth2\/v2\/auth\?/.test(mkUrl('https://accounts.google.com/o/oauth2/v2/auth')), 'a real catalog endpoint still builds');
+}
+
 console.log('ok - mcp.oauth');
   // report() settles the assertion counter — the .catch below only fires on a THROWN error, so
   // without this a failed assertion still exits 0 and the gate scores it green.

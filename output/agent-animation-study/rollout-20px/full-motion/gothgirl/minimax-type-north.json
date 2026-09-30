@@ -1,0 +1,10 @@
+{
+  "id": "gothgirl",
+  "track": "type",
+  "dir": "north",
+  "job": "6d1bd5f2-2fd8-4c0d-9d7b-a8bf094f2aec",
+  "result": "frames: 5\nhttps://api.pixellab.ai/mcp/images/6d1bd5f2-2fd8-4c0d-9d7b-a8bf094f2aec/download?index=0",
+  "packed": true,
+  "lastRaw": "output/agent-animation-study/rollout-20px/full-motion/gothgirl/minimax/type-north/6d1bd5f2-2fd8-4c0d-9d7b-a8bf094f2aec/4.png",
+  "frameCount": 5
+}

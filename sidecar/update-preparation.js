@@ -102,8 +102,8 @@ function makeUpdatePreparation(deps) {
         throw new Error('update receipt read-back mismatch');
       }
       // Integrity hashes are authoritative; read-only mode adds a practical guard against accidental rewrites.
-      try { fs.chmodSync(bundleFile, 0o444); } catch (_) {}
-      try { fs.chmodSync(receiptFile, 0o444); } catch (_) {}
+      try { fs.chmodSync(bundleFile, 0o400); } catch (_) {}   // owner-only: the bundle holds the whole station (0o444 was world-readable)
+      try { fs.chmodSync(receiptFile, 0o400); } catch (_) {}
       nextReceipt.receiptFile = receiptFile;
       receipt = nextReceipt;
       return { ok: true, frozen: true, receipt: nextReceipt };

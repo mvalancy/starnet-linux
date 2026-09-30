@@ -127,7 +127,7 @@ const onLine = (plan, aid, extra) => Object.assign({ lineId: P.lineOf(plan, aid)
   A.ok(!P.ok(plan), 'a cyclic plan is never deployable');
 }
 
-/* ---- DUP_AGENT: two bays bound to the same agent ---- */
+/* ---- ONE AGENT, TWO BAYS is legal (DUP_AGENT retired — Andrew's ruling 2026-09-22): each bay is its own dock ---- */
 {
   const plan = P.compileRoutingPlan(geo(
     [{ id: 'i1', t: 'intake', x: 0, y: 0, w: 1, h: 1 },
@@ -135,7 +135,21 @@ const onLine = (plan, aid, extra) => Object.assign({ lineId: P.lineOf(plan, aid)
      { id: 'b2', t: 'bay', x: 5, y: 5, w: 2, h: 2, agentId: 'coder' }],
     [belt(1, 0, 'E'), belt(2, 0, 'E'), belt(3, 0, 'E'), belt(4, 0, 'E'), belt(5, 6, 'E')]
   ));
-  A.ok(plan.errors.some(e => e.code === 'DUP_AGENT' && e.agentId === 'coder'), 'two bays, one agent -> DUP_AGENT');
+  A.ok(!plan.errors.some(e => e.code === 'DUP_AGENT'), 'two bays, one agent -> no DUP_AGENT any more');
+  A.ok(P.ok(plan), '…and the plan is deployable');
+  A.eq(plan.bays.map(b => b.propId), ['b1', 'b2'], 'BOTH bays are dispatch docks (the second is no longer dropped)');
+  A.eq(plan.docksOfAgent.coder, ['b1', 'b2'], 'the agent crews both, oldest first');
+  A.eq(plan.entryDock.coder, 'b1', 'its entry dock is the INBOX-fed one');
+  A.ok(!plan.errors.some(e => e.code === 'SPLIT_CREW'), 'no SPLIT_CREW without capability-room facts on the geo');
+  const split = P.compileRoutingPlan(geo(
+    [{ id: 'i1', t: 'intake', x: 0, y: 0, w: 1, h: 1 },
+     { id: 'b1', t: 'bay', x: 5, y: 0, w: 2, h: 2, agentId: 'coder', capRoom: 'r1' },
+     { id: 'b2', t: 'bay', x: 5, y: 5, w: 2, h: 2, agentId: 'coder', capRoom: 'r2' }],
+    [belt(1, 0, 'E'), belt(2, 0, 'E'), belt(3, 0, 'E'), belt(4, 0, 'E'), belt(5, 6, 'E')]
+  ));
+  const w = split.errors.find(e => e.code === 'SPLIT_CREW');
+  A.ok(w && w.warn === true && w.agentId === 'coder' && w.propId === 'b2', 'a desk-less agent with bays in two rooms -> SPLIT_CREW (a warning on its second bay)');
+  A.ok(P.ok(split), 'SPLIT_CREW is advice, never a blocker');
 }
 
 /* ---- UNBOUND_BAY is a warning, not a blocker ---- */

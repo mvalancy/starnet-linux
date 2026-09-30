@@ -261,4 +261,52 @@ const clock = { now: () => clk };
   A.eq(s2.list('a', { limit: 1 })[0].runId, 'r199', 'the trimmed boot load keeps the NEWEST rows');
 }
 
+// ---- L. INTERRUPTED runs (2026-09-22): one served row per run, kept current by append-only updates ----
+{
+  const io = memIo();
+  let s = makeRunStore({ io, clock });
+  clk = 10; s.record({ runId: 'before', agentId: 'a', reason: 'done' });
+  clk = 20;
+  const first = s.record({ runId: 'int', agentId: 'a', reason: 'interrupted', turns: 4, startedAt: 5, endedAt: 9, recoveryStatus: 'needs_review', spendUnknown: true, error: 'interrupted:\n  stopped  mid-action' });
+  A.eq([first.reason, first.recoveryStatus, first.spendUnknown, first.error], ['interrupted', 'needs_review', true, 'interrupted: stopped mid-action'], 'an interrupted row keeps its reason, recovery status, unknown-spend flag and a one-line error');
+  clk = 30; s.record({ runId: 'after', agentId: 'a', reason: 'done' });
+  clk = 40; s.record({ runId: 'int', agentId: 'a', reason: 'interrupted', turns: 4, recoveryStatus: 'resolved' });
+  clk = 50; s.record({ runId: 'cont', agentId: 'a', reason: 'done', recoveryOf: 'int' });
+  clk = 60; s.record({ runId: 'int', agentId: 'a', reason: 'interrupted', turns: 4, recoveryStatus: 'continued', continuedRunId: 'cont', continuedReason: 'done' });
+  A.eq(io.lines.length, 6, 'every update is an appended line (the log stays append-only)');
+  A.eq(s.count(), 4, 'count() serves one row per run');
+  A.eq(s.list(null).map(r => r.runId), ['cont', 'after', 'int', 'before'], 'the interrupted run keeps its original position (no duplicate, no jump)');
+  const served = s.list(null).find(r => r.runId === 'int');
+  A.eq([served.recoveryStatus, served.continuedRunId, served.continuedReason, served.ts, 'error' in served], ['continued', 'cont', 'done', 20, false], 'the served row carries the NEWEST state at the FIRST row\'s ts');
+  A.eq(s.all().filter(r => r.runId === 'int').length, 1, 'all() serves one row per interrupted run');
+  A.eq(s.latest('int').recoveryStatus, 'continued', 'latest() returns the collapsed row');
+  A.eq(s.list(null).find(r => r.runId === 'cont').recoveryOf, 'int', 'the continuation row links back with recoveryOf');
+  A.eq(s.list(null, { limit: 2, beforeRunId: 'after' }).map(r => r.runId), ['int', 'before'], 'a page cursor never re-serves rows around a collapsed chain');
+  A.eq(s.list(null, { since: 15, through: 25 }).map(r => r.runId), ['int'], 'the time window applies to the served row\'s original ts');
+  s = makeRunStore({ io, clock });
+  A.eq([s.count(), s.latest('int').recoveryStatus], [4, 'continued'], 'the collapse survives a reload from disk');
+  A.eq(s.record({ runId: 'x', reason: 'interrupted', recoveryStatus: 'bogus', continuedReason: 'nope' }).recoveryStatus, undefined, 'unknown recovery states are not accepted');
+  A.eq(Object.keys(s.record({ runId: 'plain2', reason: 'done' })).filter(k => /^(?:recoveryStatus|recoveryOf|continuedRunId|continuedReason|spendUnknown|error)$/.test(k)), [], 'ordinary rows keep their exact pre-existing shape');
+  const dup = makeRunStore({ io: memIo(), clock });
+  dup.record({ runId: 'same', reason: 'done' }); dup.record({ runId: 'same', reason: 'error' });
+  A.eq(dup.count(), 2, 'rows of runs that were never interrupted are never collapsed');
+}
+
+// ---- STREAM FILTER (conveyor sweep 2026-09-25): a trigger fire / sample reads back ITS rows by streamId ----
+// It used to read the station's newest 50 rows and filter — a busy station pushed the fire's own rows out of that
+// window, so a finished fire said "no run was recorded". list({ streamId }) scans the whole window for that stream.
+{
+  const s = makeRunStore({ io: memIo(), clock });
+  s.record({ runId: 'mine-1', agentId: 'a', reason: 'done', streamId: 'trigger-abc' });
+  s.record({ runId: 'mine-2', agentId: 'b', reason: 'done', streamId: 'trigger-abc' });
+  for (let i = 0; i < 80; i++) s.record({ runId: 'busy-' + i, agentId: 'c', reason: 'done', streamId: 'other-' + i });
+  A.eq(s.list(null, { limit: 50 }).filter(r => r.streamId === 'trigger-abc').length, 0, '(the old read: the fire\'s rows are outside the newest 50)');
+  const mine = s.list(null, { streamId: 'trigger-abc', limit: 200 });
+  A.eq(mine.map(r => r.runId), ['mine-2', 'mine-1'], 'list({ streamId }) returns exactly that stream\'s rows, newest-first');
+  A.eq(s.list(null, { streamId: 'nope' }).length, 0, 'an unknown stream has no rows');
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
+  A.ok(/runsFor: \(streamId\) => \(runStore\.list\(null, \{ streamId: streamId/.test(src), 'the trigger runner reads its fire back by streamId');
+  A.ok(/runs = \(runStore\.list\(null, \{ streamId: streamId, limit: 200 \}\)/.test(src), 'the sample route reads its runs back by streamId');
+}
+
 A.report('runstore.test');

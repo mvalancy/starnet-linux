@@ -1,0 +1,10 @@
+{
+  "id": "catwoman",
+  "track": "sit",
+  "dir": "east",
+  "job": "f7ae25a9-e1e7-4caf-893a-fdcd8e684474",
+  "result": "frames: 5\nhttps://api.pixellab.ai/mcp/images/f7ae25a9-e1e7-4caf-893a-fdcd8e684474/download?index=0",
+  "packed": true,
+  "lastRaw": "output/agent-animation-study/rollout-20px/full-motion/catwoman/minimax/sit-east/f7ae25a9-e1e7-4caf-893a-fdcd8e684474/4.png",
+  "frameCount": 5
+}

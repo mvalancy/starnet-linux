@@ -52,6 +52,7 @@ const { makeFsTools } = require('../sidecar/tools/builtin/fs.js');
 
     const source = path.join(workspace, 'main.fake');
     fs.writeFileSync(source, 'OLD\nclean\n', 'utf8');
+    await tools.readTool.run({ path: 'main.fake' }, ctx);   // fs.edit requires the file to have been observed this session
     const first = await tools.editTool.run({ path: 'main.fake', find: 'clean', replace: 'BROKEN' }, ctx);
     A.ok(first.diagnostics && first.diagnostics.status === 'available', 'a detected server confirms the edit delta');
     A.eq(first.diagnostics.addedCount, 1, 'only one newly introduced diagnostic is counted');
@@ -114,6 +115,7 @@ const { makeFsTools } = require('../sidecar/tools/builtin/fs.js');
     const recordedBeforeCancel = ledgerRows.length;
     const cancelFile = path.join(workspace, 'cancel.fake');
     fs.writeFileSync(cancelFile, 'clean before cancel\n', 'utf8');
+    await tools.readTool.run({ path: 'cancel.fake' }, ctx);
     const ac = new AbortController(); ac.abort();
     let cancelled = false;
     try {

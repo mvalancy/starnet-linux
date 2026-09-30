@@ -1,0 +1,10 @@
+{
+  "id": "animegirl",
+  "track": "type",
+  "dir": "north",
+  "job": "fe38700e-0c27-48cd-97e3-8afeb9b4512d",
+  "result": "frames: 5\nhttps://api.pixellab.ai/mcp/images/fe38700e-0c27-48cd-97e3-8afeb9b4512d/download?index=0",
+  "packed": true,
+  "lastRaw": "output/agent-animation-study/rollout-20px/full-motion/animegirl/minimax/type-north/fe38700e-0c27-48cd-97e3-8afeb9b4512d/4.png",
+  "frameCount": 5
+}

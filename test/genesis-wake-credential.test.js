@@ -11,6 +11,7 @@ async function attempt({stored=false,connected=true,typed='',provider='openai',w
  let agent,pendingStationDoc,pendingStationStats,pendingGrowthSyncAt,pendingRatingSyncAt,pendingProfile,pendingWorkSignal,pendingDossier;
  const agentDocs=()=>{},stripLegacyVoiceBlock=()=>{},stripLegacySoloClause=()=>{},composeSystemPrompt=()=>'',registerHero=()=>{},rehydrateRoster=()=>{},recomposeOrchestrators=()=>{},Workstreams={init(){}},enterGame=()=>{seen.entered=true},persist=()=>{seen.saved=structuredClone(saved)};
  const refreshStarnetGenesisStatus=async()=>{seen.balanceChecks++;return {answered:true,linked:true,balanceUsd:0}};
+ ${A.fnBody(src,'function savedStationProv(')}
  ${A.fnBody(src,'function resumeInto(')}
  const preflightWire=async()=>{seen.calls++;return{ok:wireOk,why:'test transport sentinel'}};${fn}\nreturn onWakeAttempt();`);
  await run(Harness,elements,seen,connected,provider,wireOk,resume,saved);seen.original=saved;return{...seen,message:elements['connect-msg'].innerHTML||elements['connect-msg'].textContent};

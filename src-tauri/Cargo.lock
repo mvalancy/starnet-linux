@@ -3453,7 +3453,7 @@ checksum = "8ee5873ec9cce0195efcb7a4e9507a04cd49aec9c83d0389df45b1ef7ba2e649"
 
 [[package]]
 name = "skynet-desktop"
-version = "0.12.4"
+version = "0.12.5"
 dependencies = [
  "keyring",
  "serde",
@@ -3466,6 +3466,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "uuid",
+ "webview2-com",
  "windows-sys 0.61.2",
 ]
 

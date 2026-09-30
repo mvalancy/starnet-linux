@@ -104,7 +104,18 @@ const TrustStore = (() => {
 
   // apply a demotion the moment the engine sees a bad-enough streak. Lowers ONLY the earned rung (never the
   // Commander's manual floor), records the new earned floor (or clears it), and surfaces an EXPLICIT notice.
+  let demotionPending = false;
+  function applyInitiative(to, confirmed) {
+    let result;
+    try { if (typeof deps.setInitiative !== 'function') return false; result = deps.setInitiative(to); } catch (_) { return false; }
+    const finish = value => {
+      if (value === false || (value && value.ok === false) || posture().initiative !== to) return false;
+      confirmed(); return true;
+    };
+    return result && typeof result.then === 'function' ? result.then(finish).catch(() => false) : finish(result);
+  }
   function maybeDemote() {
+    if (demotionPending) return;
     if (!ready() || !state.earned.initiative) return;
     // STALENESS GUARD (review blocker): the earned record is only actionable while the LIVE dial rung still IS the
     // earned rung. A non-dial writer (settings-backup import, permissions-level preset) can move the posture without
@@ -119,14 +130,16 @@ const TrustStore = (() => {
     const d = res.demote;
     // apply to the dial FIRST, through the SAME writer the panel uses (no parallel plumbing) — and only mutate the
     // record + notify if the write actually landed (a thrown/missing writer must not strand a lying earned record).
-    let applied = false;
-    try { if (typeof deps.setInitiative === 'function') { deps.setInitiative(d.to); applied = true; } } catch (_) { applied = false; }
-    if (!applied) return;
+    const record = state.earned.initiative;
+    const result = applyInitiative(d.to, () => {
+    if (state.earned.initiative !== record) return;
     // update / clear the earned record: if we've stepped back to the manual floor, the rung is no longer "earned".
     if (d.to === state.earned.initiative.floor) delete state.earned.initiative;
     else state.earned.initiative = { to: d.to, floor: state.earned.initiative.floor, provenance: state.earned.initiative.provenance };
     save();
     try { if (typeof deps.notify === 'function') deps.notify('◈ ' + d.why, 'warn'); } catch (_) {}
+    });
+    if (result && typeof result.then === 'function') { demotionPending = true; result.finally(() => { demotionPending = false; }); }
   }
 
   // the event's agent, exactly as xpstore reads it (eventAgentId: typed + trimmed, '' → 'agent') so the two
@@ -198,15 +211,12 @@ const TrustStore = (() => {
     if (!ready() || !offer) return false;
     if (offer.kind === 'initiative') {
       const from = (posture().initiative) || 'wait';    // the Commander's current (manual) rung = the demotion floor
-      let ok = false;
-      try { if (typeof deps.setInitiative === 'function') { deps.setInitiative(offer.to); ok = true; } } catch (_) { ok = false; }
-      if (ok) {
+      return applyInitiative(offer.to, () => {
         // if a lower rung was already earned, keep the ORIGINAL manual floor (don't move the floor up to an earned rung).
         const prevFloor = (state.earned.initiative && state.earned.initiative.floor) || from;
         state.earned.initiative = { to: offer.to, floor: prevFloor, provenance: offer.provenance || null };
         save();
-      }
-      return ok;
+      });
     }
     if (offer.kind === 'grant') {
       let p;

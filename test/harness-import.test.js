@@ -152,4 +152,14 @@ eq(H.scanProfile({ harness: 'openclaw', files: {} }).ok, false, 'empty files map
 eq(H.scanProfile({ harness: 'openclaw', files: {} }).reason, 'nothing-found', 'reason is nothing-found');
 eq(H.scanProfile({ harness: 'bogus', files: { 'SOUL.md': 'x' } }).ok, false, 'unknown harness => ok:false');
 
+// ---- network / device paths are never a local import root (audit 2026-09-25 #19) ----
+for (const bad of ['\\\\server\\share\\agent', '//host/share/agent', '\\\\?\\C:\\Users\\a', '\\\\.\\C:\\x', '\\\\.\\pipe\\x', '\\??\\C:\\x', '\\/evil/share', 'C:\\ok\0bad']) {
+  ok(H.nonLocalPathReason(bad) !== '', 'refused: ' + JSON.stringify(bad));
+}
+ok(/UNC/.test(H.nonLocalPathReason('\\\\server\\share')), 'a UNC root says it is a network path');
+ok(/device/.test(H.nonLocalPathReason('\\\\?\\C:\\x')), 'a device path says it is a device path');
+for (const good of ['C:\\Users\\andro\\.openclaw\\workspace', 'D:/agents/hermes', '/home/u/.hermes', '/Users/u/.openclaw/workspace']) {
+  eq(H.nonLocalPathReason(good), '', 'accepted: ' + good);
+}
+
 console.log('harness-import.test.js OK —', n, 'assertions');

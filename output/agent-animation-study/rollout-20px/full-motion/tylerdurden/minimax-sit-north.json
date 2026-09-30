@@ -1,0 +1,10 @@
+{
+  "id": "tylerdurden",
+  "track": "sit",
+  "dir": "north",
+  "job": "3a0a085a-c1d7-4262-ac46-d2afb82ac379",
+  "result": "frames: 5\nhttps://api.pixellab.ai/mcp/images/3a0a085a-c1d7-4262-ac46-d2afb82ac379/download?index=0",
+  "packed": true,
+  "lastRaw": "output/agent-animation-study/rollout-20px/full-motion/tylerdurden/minimax/sit-north/3a0a085a-c1d7-4262-ac46-d2afb82ac379/4.png",
+  "frameCount": 5
+}

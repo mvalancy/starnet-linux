@@ -43,7 +43,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   try {
     await fixture.start();
     const cards = (await fixture.json('GET', '/api/connectors/catalog')).body.connectors.filter(c => c.googleApi && c.id !== 'google-files');
-    assert.equal(cards.length, 5); assert.ok(cards.every(c => c.signInAvailable));
+    assert.equal(cards.length, 6); assert.ok(cards.every(c => c.signInAvailable));
     assert.ok(!JSON.stringify(cards).includes('123456-starnettest'));
     const first = await start();
     assert.match(await callback(first, 'gmail:good'), /Gmail connected/);
@@ -76,7 +76,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     assert.match(await callback(await start(), 'gmail:good'), /could not be saved/);
     assert.equal(JSON.stringify(disk().oauth.byId.gmail), original, 'failed persistence preserves the working grant');
     fs.unlinkSync(file('google-write-fail'));
-    for (const id of ['google-drive', 'google-calendar', 'google-docs', 'google-sheets']) assert.match(await callback(await start(id), id + ':good'), /connected/);
+    for (const id of ['gmail-send', 'google-drive', 'google-calendar', 'google-docs', 'google-sheets']) assert.match(await callback(await start(id), id + ':good'), /connected/);
     await fixture.stop();
     const state = disk(); state.oauth.byId.gmail.expiresAt = 1;
     makeConnectorVault({ fs, path, keyHex }).write(statePath, state);
@@ -111,6 +111,6 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     assert.match((await fixture.json('GET', '/api/connectors')).body.credentialStorage.error, /not recognized/);
     assert.equal(fs.readFileSync(statePath, 'utf8'), futureState, 'unknown state version cannot be migrated over');
     assert.ok(!fixture.output().includes('GOOGLE_ACCESS_TEST') && !fixture.output().includes('GOOGLE_REFRESH_TEST'));
-    console.log('google-signin.e2e: PASS (five services, native PKCE callback, partial/denied refresh consent, replay, cancellation during exchange, write failure, restart, refresh, revocation, removal, redaction)');
+    console.log('google-signin.e2e: PASS (six services incl. send-only Gmail, native PKCE callback, partial/denied refresh consent, replay, cancellation during exchange, write failure, restart, refresh, revocation, removal, redaction)');
   } finally { await fixture.dispose(); }
 })().catch(e => { console.error(e); process.exitCode = 1; });

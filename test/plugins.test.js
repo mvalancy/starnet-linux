@@ -214,6 +214,100 @@ async function writePlugin(id, source, manifest) {
       A.eq(Object.keys(JSON.parse(await fsp.readFile(ALLOW, 'utf8'))).length, 0, 'and it left no orphan approval behind');
       A.eq(await loader.destroy('auditor'), false, 'destroying what is gone is an honest false');
     }
+
+    // ---- HELPER FILES ARE PART OF WHAT WAS APPROVED (audit 2026-09-25 #17) ----
+    {
+      await fsp.rm(ALLOW, { force: true });
+      for (const d of await fsp.readdir(PLUGINS)) await fsp.rm(path.join(PLUGINS, d), { recursive: true, force: true });
+      const base = path.join(PLUGINS, 'helpered');
+      await writePlugin('helpered', `
+        module.exports = { register(api) {
+          api.on('post_tool_call', () => { global.__helperSays = require('./lib/helper.js')(); });
+        } };
+      `);
+      await fsp.mkdir(path.join(base, 'lib'), { recursive: true });
+      const helperFile = path.join(base, 'lib', 'helper.js');
+      await fsp.writeFile(helperFile, "module.exports = () => 'approved-helper';", 'utf8');
+      let t = 1000;
+      const clock = { now: () => t };
+      const reqFresh = (p) => { for (const k of Object.keys(require.cache)) if (k.indexOf(base) === 0) delete require.cache[k]; return require(p); };
+      const loader = mk({ clock, requireModule: reqFresh });
+      const d0 = (await loader.discover()).plugins[0];
+      await loader.allow(d0.id, d0.digest);
+
+      // a changed helper (main untouched) goes back to pending at the next load
+      await fsp.writeFile(helperFile, "module.exports = () => 'TAMPERED';", 'utf8');
+      const d1 = (await loader.discover()).plugins[0];
+      A.ok(d1.digest !== d0.digest, 'editing a helper file changes the approval digest (main is unchanged)');
+      let r = await loader.load(makeHooks());
+      A.eq(r.loaded.length, 0, 'a plugin whose helper changed does not load on its old approval');
+      A.eq(r.pending.map(p => p.id), ['helpered'], 'it is pending re-approval');
+      // a new file dropped into the folder also re-asks
+      await fsp.writeFile(helperFile, "module.exports = () => 'approved-helper';", 'utf8');
+      A.eq((await loader.discover()).plugins[0].digest, d0.digest, 'restoring the helper restores the approved digest');
+      await fsp.writeFile(path.join(base, 'extra.js'), '1', 'utf8');
+      A.eq((await loader.listPending()).length, 1, 'an added file re-asks too');
+      await fsp.rm(path.join(base, 'extra.js'));
+
+      // exec-time: a helper changed AFTER load is caught before the handler runs, and disables the plugin
+      const errs = [];
+      const loader2 = mk({ clock, requireModule: reqFresh, onError: (e) => errs.push(e) });
+      const spine = makeHooks();
+      r = await loader2.load(spine);
+      A.eq(r.loaded.length, 1, 'the approved plugin loads');
+      global.__helperSays = null;
+      await spine.invoke('post_tool_call', { tool_name: 'x' });
+      A.eq(global.__helperSays, 'approved-helper', 'its handler runs the approved helper');
+      await fsp.writeFile(helperFile, "module.exports = () => 'TAMPERED';", 'utf8');
+      t += 5000;   // past the re-hash window
+      global.__helperSays = null;
+      await spine.invoke('post_tool_call', { tool_name: 'x' });
+      A.eq(global.__helperSays, null, 'after a helper edit the handler does NOT run the changed code');
+      A.ok(errs.some(e => e.plugin === 'helpered' && /changed since approval/.test(e.error)), 'the drift is reported by name');
+      await fsp.writeFile(helperFile, "module.exports = () => 'approved-helper';", 'utf8');
+      t += 5000;
+      await spine.invoke('post_tool_call', { tool_name: 'x' });
+      A.eq(global.__helperSays, null, 'a disabled plugin stays off until it is re-approved and re-loaded');
+
+      // no injected clock => no rate limit: a drift is caught on the VERY NEXT call (never fails open for want of a clock)
+      {
+        const errs3 = [];
+        const loader3 = mk({ clock: undefined, requireModule: reqFresh, onError: (e) => errs3.push(e) });
+        const spine3 = makeHooks();
+        const r3 = await loader3.load(spine3);
+        A.eq(r3.loaded.length, 1, 'clockless loader: the approved plugin loads');
+        global.__helperSays = null;
+        await spine3.invoke('post_tool_call', { tool_name: 'x' });
+        A.eq(global.__helperSays, 'approved-helper', 'clockless loader: the approved helper runs');
+        await fsp.writeFile(helperFile, "module.exports = () => 'TAMPERED';", 'utf8');
+        global.__helperSays = null;
+        await spine3.invoke('post_tool_call', { tool_name: 'x' });
+        A.eq(global.__helperSays, null, 'clockless loader: a helper edit is caught on the next call with no time passing');
+        await fsp.writeFile(helperFile, "module.exports = () => 'approved-helper';", 'utf8');
+      }
+
+      // guard findings cover helpers, not only main
+      const seen = [];
+      await mk({ guard: { scanText: (f) => { seen.push(f); return []; } } }).discover();
+      A.ok(seen.indexOf('lib/helper.js') >= 0, 'the guard scans helper files for the approval prompt');
+
+      // a link inside the folder is refused (it would approve code the plugin does not own)
+      const outside = path.join(DIR, 'outside.js');
+      await fsp.writeFile(outside, "module.exports = () => 'outside';", 'utf8');
+      let linked = true;
+      try { await fsp.symlink(outside, path.join(base, 'lib', 'linked.js'), 'file'); }
+      catch (_) {
+        const jt = path.join(DIR, 'junction-target'); await fsp.mkdir(jt, { recursive: true }); try { await fsp.symlink(jt, path.join(base, 'lib', 'linkdir'), 'junction'); } catch (__) { linked = false; }
+      }
+      if (linked) {
+        const found = await loader.discover();
+        A.eq(found.plugins.length, 0, 'a plugin folder containing a link is not offered for approval');
+        A.ok(found.errors.some(e => /helpered: .*link/.test(e)), 'and the refusal names the link');
+      } else A.ok(true, 'symlinks unavailable here (no privilege) — link refusal covered on other hosts');
+      for (const n of ['linked.js', 'linkdir']) { try { await fsp.rm(path.join(base, 'lib', n), { force: true }); } catch (_) { /* absent */ } }
+
+      delete global.__helperSays;
+    }
   } finally {
     await fsp.rm(DIR, { recursive: true, force: true });
     delete global.__auditLog; delete global.__apiKeys; delete global.__spineReachable;

@@ -57,25 +57,36 @@ function makeProcessFaultHandler(deps) {
   // exiting — a deterministic boot-time throw must not become an infinite exit/respawn loop behind the shell
   // watchdog (2026-09-03 audit). A breaker that throws is contained: the exit policy then proceeds as before.
   const breaker = deps.breaker && typeof deps.breaker.record === 'function' ? deps.breaker : null;
+  // The fault message is served by the UNAUTHENTICATED /api/health, written to the crash ledger on disk and printed
+  // to the log. An uncaught error's text can carry a credential (a URL with a key, a provider body echoing a token),
+  // so it is scrubbed with the host's redact() BEFORE truncation (a cut must never leave an unmatchable prefix).
+  const scrub = typeof deps.redact === 'function' ? deps.redact : function (x) { return x; };
+  function safeSummary(err) {
+    let raw;
+    try { raw = (err && typeof err.message === 'string') ? err.message : String(err); } catch (_) { raw = 'unprintable error'; }
+    let clean;
+    try { clean = String(scrub(raw)); } catch (_) { clean = '[fault message withheld: redaction failed]'; }
+    return summarize({ message: clean });
+  }
   let fault = null;   // { kind, message, at, exiting, loop? } — set ONCE; the first fault wins, later ones only surface
 
   function onUncaught(err) {
-    try { surface('uncaughtException', err); } catch (e) { log('uncaughtException: surface hook failed (policy continues): ' + summarize(e)); }   // the surface must never mask the fault policy
+    try { surface('uncaughtException', err); } catch (e) { log('uncaughtException: surface hook failed (policy continues): ' + safeSummary(e)); }   // the surface must never mask the fault policy
     if (isBenign(err)) return { action: 'benign' };
     if (fault) return { action: 'already-faulted' };
-    fault = { kind: 'uncaughtException', message: summarize(err), at: now(), exiting: !keepAlive };
+    fault = { kind: 'uncaughtException', message: safeSummary(err), at: now(), exiting: !keepAlive };
     // The degraded observation window must never remain an execution window. Stop every background producer and
     // abort live work immediately, before either the delayed exit or the crash-loop hold path is selected. The
     // composition root also refuses non-diagnostic HTTP while fault() is set. A broken quiesce hook is contained:
     // fail-loud exit/hold policy must still run and the hook failure is itself visible in the boot log.
-    try { quiesce(); } catch (e) { log('uncaughtException: quiesce hook failed (fault policy continues): ' + summarize(e)); }
+    try { quiesce(); } catch (e) { log('uncaughtException: quiesce hook failed (fault policy continues): ' + safeSummary(e)); }
     if (keepAlive) {
       log('uncaughtException: process marked DEGRADED and quiesced but kept alive (UNCAUGHT_KEEP_SERVING is set — test opt-out)');
       return { action: 'degraded-kept-alive' };
     }
     if (breaker) {
       let verdict = null;
-      try { verdict = breaker.record({ code: 1, summary: fault.message }); } catch (e) { log('uncaughtException: crash ledger failed (exit policy continues): ' + summarize(e)); }
+      try { verdict = breaker.record({ code: 1, summary: fault.message }); } catch (e) { log('uncaughtException: crash ledger failed (exit policy continues): ' + safeSummary(e)); }
       if (verdict && verdict.tripped) {
         let loop = null;
         try { loop = typeof breaker.state === 'function' ? breaker.state() : null; } catch (_) { loop = null; }
@@ -87,7 +98,7 @@ function makeProcessFaultHandler(deps) {
     }
     log('uncaughtException: state is unproven — health flipped to DEGRADED; exiting(1) in ' + delayMs + 'ms so the shell watchdog restarts a clean process');
     schedule(function () {
-      try { release(); } catch (e) { log('uncaughtException: release hook failed: ' + summarize(e)); }
+      try { release(); } catch (e) { log('uncaughtException: release hook failed: ' + safeSummary(e)); }
       exit(1);
     }, delayMs);
     return { action: 'exit-scheduled', delayMs: delayMs };

@@ -26,7 +26,9 @@ const { RELEASE_DEFERRED, isWorkspaceUrl } = require('../sidecar/mcp/google-clie
   const check = async () => {
     const catalog = (await fixture.json('GET', '/api/connectors/catalog')).body;
     const cards = catalog.connectors.filter(c => c.googleApi && c.id !== 'google-files');
-    assert.equal(cards.length, 5);
+    assert.equal(cards.length, 6);
+    assert.match(cards.find(c => c.id === 'gmail').signInMessage, /security assessment/, 'Gmail names the assessment it waits on');
+    assert.ok(!/assessment/.test(cards.find(c => c.id === 'google-calendar').signInMessage), 'Calendar only waits on app verification');
     assert.ok(cards.every(c => c.releaseDeferred && c.signInAvailable === false && /deferred/.test(c.signInMessage)));
     assert.ok(cards.every(c => c.blurb.split('Planned for a later update.').length === 2 && !c.blurb.includes('Sign in with Google')));
     assert.ok(catalog.groups.flatMap(g => g.connectors).filter(c => c.googleApi && c.id !== 'google-files').every(c => c.releaseDeferred));
@@ -61,6 +63,6 @@ const { RELEASE_DEFERRED, isWorkspaceUrl } = require('../sidecar/mcp/google-clie
     await fixture.restart();
     assert.ok(!(await fixture.json('GET', '/api/connectors')).body.connectors.some(c => c.id === 'gmail'));
     assert.equal(JSON.parse(fs.readFileSync(statePath, 'utf8')).oauth.byId.gmail, undefined);
-    console.log('google-release-deferred: PASS (five services, legacy/custom endpoints, no network, preserved grants, restart, removal)');
+    console.log('google-release-deferred: PASS (six services, per-tier messages, legacy/custom endpoints, no network, preserved grants, restart, removal)');
   } finally { await fixture.dispose(); }
 })().catch(e => { console.error(e); process.exitCode = 1; });

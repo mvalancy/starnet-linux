@@ -295,6 +295,11 @@ for (const raw of [
   A.eq(kindOf('sidecar HTTP 429 — rate limited, slow down').kind, 'rate_limit', 'BROWSER: a bare 429 is unchanged');
   A.eq(kindOf('sidecar HTTP 429 — openai: insufficient_quota').kind, 'billing',
     'BROWSER: an out-of-money account is billing, not a busy provider');
+  // StarNet's OWN spend-ledger errors say 'continuing with spending limits'; they are not a provider out of credit
+  for (const own of ['Spend history is unavailable or not durably saved. Restore the ledger and restart StarNet before continuing with spending limits.',
+    'An interrupted run has unsettled spend; reconcile its provider usage before continuing with spending limits.']) {
+    A.ok(kindOf(own).kind !== 'billing', 'BROWSER: a local spend-ledger error is not told to top up the provider: ' + own.slice(0, 40));
+  }
   A.eq(kindOf("codex: You've hit your usage limit. Resets in 3 days", 429).kind, 'quota_exhausted',
     'BROWSER: the explicit status argument works too');
   // the shared table and the fallback must agree, or the two halves drift again
@@ -340,6 +345,64 @@ for (const raw of [
   A.eq(kindFromRaw('anthropic http 529 - overloaded', null),
     friendlyError(new Error('Anthropic http 529 - Overloaded')).kind,
     'browser fallback and delegate give the SAME verdict on a provider overload');
+}
+
+/* ---- A SUPERGROK USER WAS TOLD TO "SIGN IN WITH CHATGPT" (2026-09-27 user report) ----
+   The /api/run guard answered a bare "missing key/model" for a signed-out GROK OAUTH station, and every one of
+   these read "No model is connected yet — add a provider key (or sign in with ChatGPT)". Each failure now names
+   its own provider and its own door. Both ladders (delegate + browser kindFromRaw) must agree. */
+{
+  const { kindFromRaw } = require('../frontend/app/friendlyerror.js')._internals;
+  // signed-out GROK OAUTH (the guard now names the provider via providerCredentialError)
+  const signedOut = friendlyError(new Error('sidecar HTTP 400 — missing key/model — sign in to GROK OAUTH first - a signed-in subscription + model are required'));
+  A.eq(signedOut.kind, 'oauth', 'signed-out grok guard -> the oauth sign-in class');
+  A.eq(signedOut.provider, 'grok', 'it names grok');
+  A.eq(signedOut.signedOut, true, 'it knows the account was never signed in');
+  A.ok(/grok isn't signed in yet/i.test(signedOut.userMessage), 'copy says Grok is not signed in (got: ' + signedOut.userMessage + ')');
+  A.ok(!/chatgpt|expired/i.test(signedOut.userMessage), 'copy never sends a Grok user to ChatGPT, never claims an expiry');
+  A.ok(/supergrok/i.test(signedOut.userMessage) && /key/i.test(signedOut.userMessage), 'copy names the subscription sign-in AND the key alternative');
+  A.eq(actionButton(signedOut).label, '⏼ SIGN IN TO GROK', 'the door reads SIGN IN TO GROK');
+  // the run path's own sign-in failure (tokens missing at run time) reads the same
+  const runPath = friendlyError(new Error('GROK OAUTH sign-in needed: Not signed in to GROK OAUTH — connect it first.'));
+  A.eq(runPath.signedOut, true, 'the run-path "Not signed in" error is signed-out, not expired');
+  // …while a refresh that DIED mid-life keeps the reconnect wording
+  const died = friendlyError(new Error('GROK OAUTH sign-in needed: refresh token rejected — sign in again'));
+  A.eq(died.kind, 'oauth', 'a dead grok refresh is the oauth class');
+  A.eq(died.signedOut, false, 'a dead refresh is not "never signed in"');
+  A.eq(actionButton(died).label, '⏼ RECONNECT GROK', 'a dead grok refresh reads RECONNECT GROK');
+  // a keyed provider with no key: name it
+  const noKey = friendlyError(new Error('sidecar HTTP 400 — missing key/model — connect a XAI API key'));
+  A.eq(noKey.kind, 'auth', 'a keyed guard stays auth');
+  A.ok(/No XAI API key is connected yet/.test(noKey.userMessage), 'the missing-key copy names XAI (got: ' + noKey.userMessage + ')');
+  A.ok(!/chatgpt/i.test(noKey.userMessage), 'a keyed provider miss does not mention ChatGPT');
+  A.eq(actionButton(noKey).label, '＋ Add a key', 'the keyed door is still the key field');
+  // a provider whose label already ends in API ("OPENAI API") must not read "OPENAI API API key"
+  const openaiKey = friendlyError(new Error('sidecar HTTP 400 — missing key/model — connect a OPENAI API API key'));
+  A.ok(/No OPENAI API key is connected yet/.test(openaiKey.userMessage) && !/API API/.test(openaiKey.userMessage),
+    'the missing-key copy never doubles API (got: ' + openaiKey.userMessage + ')');
+  // an endpoint with no base URL says so, not the generic "No model is connected yet"
+  const noBase = friendlyError(new Error('sidecar HTTP 400 — missing key/model — configure the CUSTOM base URL'));
+  A.ok(/CUSTOM endpoint has no base URL yet/.test(noBase.userMessage), 'a missing base URL is named (got: ' + noBase.userMessage + ')');
+  // a connected provider with no model picked
+  const noModel = friendlyError(new Error('sidecar HTTP 400 — no model selected — pick a model for GROK OAUTH first'));
+  A.eq(noModel.kind, 'no_model', 'no model -> no_model');
+  A.eq(noModel.retryable, false, 'no_model offers no blind retry');
+  A.eq(actionButton(noModel).label, '▸ PICK A MODEL', 'no_model opens the model dock');
+  A.eq(kindFromRaw('sidecar http 400 — no model selected — pick a model for grok oauth first', 400), 'no_model', 'BROWSER ladder agrees on no_model');
+  // xAI rejected the key (400) / has no credits (403): say so, not "no model is connected"
+  const rejected = friendlyError(Object.assign(new Error('openai-compatible http 400 - {"code":"invalid-argument","error":"Incorrect API key provided. You can obtain an API key from https://console.x.ai."}'), { status: 400 }));
+  A.eq(rejected.kind, 'auth', 'xAI bad key -> auth');
+  A.ok(/rejected the API key/i.test(rejected.userMessage), 'a rejected key is described as rejected (got: ' + rejected.userMessage + ')');
+  const broke = friendlyError(Object.assign(new Error('openai-compatible http 403 - {"code":"The caller does not have permission to execute the specified operation","error":"Your newly created team doesn\'t have any credits yet. You can purchase credits on https://console.x.ai/team/x."}'), { status: 403 }));
+  A.eq(broke.kind, 'billing', 'xAI no credits -> billing');
+  A.ok(/out of credit/i.test(broke.userMessage), 'the billing copy says the account is out of credit');
+  // the grok ALLOWLIST door is keyed on the OAuth surface's voice, not on the word "grok" in an XAI key error
+  const keyed403 = friendlyError(new Error('openai-compatible http 403 - {"error":"The caller does not have permission to use model grok-4.7"}'));
+  A.ok(keyed403.kind !== 'grok_oauth_unavailable', 'an XAI (API KEY) 403 naming a grok model is NOT the grok-sign-in allowlist door (got ' + keyed403.kind + ')');
+  A.eq(friendlyError(new Error('Grok (xAI) http 403 - {"code":"The caller does not have permission to execute the specified operation"}')).kind, 'grok_oauth_unavailable',
+    'a GROK OAUTH 403 still routes to the xAI key door');
+  A.eq(friendlyError(new Error('This account is not enabled for xAI OAuth API access (403). Use the XAI (API KEY) provider instead.')).kind, 'grok_oauth_unavailable',
+    'the refresh path\'s allowlist sentence routes there too');
 }
 
 A.report('friendlyerror.test');

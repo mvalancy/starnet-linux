@@ -14,10 +14,12 @@ const { SidecarFixture } = require('./helpers/sidecar-fixture.js');
     }), 'utf8');
     await fixture.start();
 
-    const envelope = { starnetExport: 1, sections: { permissions: { allow: ['cabinet:write'] } } };
+    // security audit 2026-09-25: a path:<root> grant in an imported file is machine authority and is dropped.
+    const envelope = { starnetExport: 1, sections: { permissions: { allow: ['cabinet:write', 'path:C:/imported-whole-drive'] } } };
     const imported = await fixture.json('POST', '/api/config/import', { envelope, only: ['permissions'] });
     A.eq(imported.status, 200, 'permission-only config import succeeds');
     A.ok(imported.body.applied.includes('permissions'), 'response reports the permission section applied');
+    A.ok((imported.body.notes || []).some(n => /skipped 1 project folder grant/.test(n)), 'the dropped folder grant is named in the import notes');
 
     const live = await fixture.json('GET', '/api/permissions');
     A.eq(live.body.grants, ['cabinet:write', existing].sort(), 'live authority contains the imported and existing grants');

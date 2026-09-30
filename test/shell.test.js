@@ -14,6 +14,9 @@ const { makeClock } = require('../shared/clock-rng.js');
 const { makeShellTool } = require('../sidecar/tools/builtin/shell.js');
 
 const SLEEP = process.platform === 'win32' ? 'ping -n 5 127.0.0.1 > NUL' : 'sleep 5';
+// A KILLED command (timeout / abort) is an ERROR since the h1 audit (2026-09-22): tool.run REJECTS with the partial
+// output + the [exit -1 — KILLED …] receipt in the message and a toolSummary naming the cause. Resolve to that error.
+const killedBy = (p) => p.then(r => { throw new Error('expected a killed command to reject, got: ' + (r && r.summary)); }, e => e);
 
 (async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-sh-'));
@@ -102,8 +105,8 @@ const SLEEP = process.platform === 'win32' ? 'ping -n 5 127.0.0.1 > NUL' : 'slee
 
     // ---- 6. the per-call timeout KILLS the child ----
     const t0 = Date.now();
-    const r6 = await tool.run({ cmd: SLEEP, timeoutMs: 600 }, ctx());
-    A.ok(/timed out/.test(r6.content), 'a slow command is killed on timeout');
+    const r6 = await killedBy(tool.run({ cmd: SLEEP, timeoutMs: 600 }, ctx()));
+    A.ok(/timed out/.test(r6.message) && r6.toolSummary === 'timeout', 'a slow command is killed on timeout (and reported as an error)');
     A.ok(Date.now() - t0 < 4500, 'timeout fired well before the 5s sleep would finish');
 
     // ---- 7. an abort signal KILLS the child ----
@@ -111,9 +114,22 @@ const SLEEP = process.platform === 'win32' ? 'ping -n 5 127.0.0.1 > NUL' : 'slee
     const tA = Date.now();
     const p7 = tool.run({ cmd: SLEEP, timeoutMs: 10000 }, ctx({ signal: ac.signal }));
     setTimeout(() => ac.abort(), 200);
-    const r7 = await p7;
-    A.ok(/aborted|\[exit -1/.test(r7.content), 'aborted command is killed');
+    const r7 = await killedBy(p7);
+    A.ok(/aborted|\[exit -1/.test(r7.message) && r7.toolSummary === 'cancelled', 'aborted command is killed (and reported as cancelled)');
     A.ok(Date.now() - tA < 4500, 'abort fired well before the sleep would finish');
+
+    // ---- 8. the timeout CEILING is 10 min by default, config-bounded, and `timeout_ms` is an accepted spelling ----
+    A.eq(tool.timeoutMs, 600000 + 10000, 'the registry backstop sits 10s above the 600s default ceiling');
+    const t8 = Date.now();
+    const r8 = await killedBy(tool.run({ cmd: SLEEP, timeout_ms: 1200 }, ctx()));
+    A.ok(/timed out after 1200ms/.test(r8.message) && Date.now() - t8 < 4500, 'timeout_ms (snake_case) drives the same kill — got ' + String(r8.message).slice(-80));
+    const bounded = makeShellTool({ spawn, fs, pathMod: path, root, clock: makeClock(0), limits: { maxTimeoutMs: 1500 } }).execTool;
+    A.eq(bounded.timeoutMs, 1500 + 10000, 'limits.maxTimeoutMs bounds the registry backstop too');
+    const t9 = Date.now();
+    const r9 = await killedBy(bounded.run({ cmd: SLEEP, timeoutMs: 999999 }, ctx()));
+    A.ok(/timed out after 1500ms/.test(r9.message) && Date.now() - t9 < 4500, 'a timeoutMs above the configured ceiling is clamped to it, never honoured');
+    A.ok(/requested 999999ms is above the 1500ms ceiling/.test(r9.message), 'the clamp is stated, not silent');
+    A.ok(/max 10 min/.test(tool.description) && tool.schema.properties.timeout_ms, 'the model-facing description + schema advertise the new ceiling and alias');
   } finally {
     try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) {}
   }

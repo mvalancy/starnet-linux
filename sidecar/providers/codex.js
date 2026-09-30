@@ -23,9 +23,9 @@
    before the error is surfaced. No renewToken injected = byte-identical to the old behavior. */
 'use strict';
 (function (root, factory) {
-  if (typeof module !== 'undefined' && module.exports) module.exports = factory(require('./provider.js'), require('./errorClass.js'));
-  else { root.SK = root.SK || {}; root.SK.providers = root.SK.providers || {}; root.SK.providers.codex = factory(root.SK.providers.provider, root.SK.providers.errorClass); }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (provider, errorClass) {
+  if (typeof module !== 'undefined' && module.exports) module.exports = factory(require('./provider.js'), require('./errorClass.js'), require('./toolschema.js'));
+  else { root.SK = root.SK || {}; root.SK.providers = root.SK.providers || {}; root.SK.providers.codex = factory(root.SK.providers.provider, root.SK.providers.errorClass, root.SK.providers.toolschema); }
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (provider, errorClass, toolschema) {
   'use strict';
 
   const normalizeFinish = provider.normalizeFinish;
@@ -161,7 +161,8 @@
       const fn = (item && item.function) || {};
       const name = fn.name;
       if (typeof name !== 'string' || !name.trim()) continue;
-      out.push({ type: 'function', name: name, description: fn.description || '', strict: false, parameters: fn.parameters || { type: 'object', properties: {} } });
+      // sanitizeKeys: property names every wire accepts; the model's args are mapped back on the way in (stream()).
+      out.push({ type: 'function', name: name, description: fn.description || '', strict: false, parameters: toolschema.sanitizeKeys(fn.parameters) || { type: 'object', properties: {} } });
     }
     return out.length ? out : null;
   }
@@ -189,7 +190,9 @@
     const reasoningEffort = normalizeCodexReasoningEffort(opts.reasoningEffort || DEFAULT_REASONING_EFFORT);
 
     function buildBody(req) {
-      const { instructions, rest } = extractInstructions(req.messages || []);
+      // ONE pre-send normalization (provider.js prepareWireMessages) ahead of this wire's own pairing pass below
+      // (messagesToInput): a well-formed transcript is untouched; a malformed one arrives already paired.
+      const { instructions, rest } = extractInstructions(provider.prepareWireMessages(req.messages || [], 'codex'));
       const effort = normalizeCodexReasoningEffort(req.reasoningEffort || reasoningEffort);
       const body = {
         model: req.model || DEFAULT_MODEL,
@@ -206,10 +209,14 @@
       return body;
     }
 
-    async function* stream(req) {
+    // A tool advertised under sanitized property keys gets its args mapped back to the declared names before
+    // the loop sees them; with no such tool this is the raw stream itself.
+    function stream(req) { return toolschema.withRestoredArgKeys(wireStream(req), req && req.tools); }
+
+    async function* wireStream(req) {
       const body = buildBody(req);
       let res;
-      try { res = await requestWithRetry(body, req.signal); }
+      try { res = await requestWithRetry(body, req.signal, provider.runtime.preStreamRetries(req, RETRY_DELAYS.length)); }
       catch (e) { if (isAbort(e, req.signal)) return; throw e; }
       const reader = timeouts.idleGuardedReader(res.body.getReader(), { signal: req.signal });
       const dec = new TextDecoder();
@@ -300,7 +307,10 @@
           }
           case 'response.failed': {
             const err = (ev.response && ev.response.error) || ev.error || {};
-            throw new Error('codex stream failed: ' + (err.message || err.code || 'unknown'));
+            const failed = new Error('codex stream failed: ' + (err.message || err.code || 'unknown'));
+            failed.body = { error: err };   // its code (e.g. usage_limit_reached) is what errorClass decides on
+            failed.ownMessage = true;
+            throw failed;
           }
           case 'error':
             throw new Error('codex stream error: ' + ((ev.error && ev.error.message) || ev.message || 'unknown'));
@@ -356,7 +366,11 @@
     // A 401 additionally gets ONE renew+retry through opts.renewToken (see the header comment): the server's
     // "expired" verdict wins over the sidecar's local expiry check. The renew does not consume a transient
     // retry slot — it is a different recovery (new credential, not "wait and hope").
-    async function requestWithRetry(body, signal) {
+    async function requestWithRetry(body, signal, maxRetries) {
+      // maxRetries: the loop may LOWER this ladder (req.preStreamRetries = 0 once it owns the pacing — provider.js).
+      // `waited` is the backoff actually spent; the exhaustion marker reports it so the loop counts it, not repeats it.
+      const retries = (maxRetries == null) ? RETRY_DELAYS.length : maxRetries;
+      let waited = 0;
       let renewed = false;
       for (let attempt = 0; ; attempt++) {
         if (signal && signal.aborted) throw abortError();
@@ -379,18 +393,27 @@
           });
         } catch (e) {
           if (isAbort(e, signal)) throw e;
-          if (attempt < RETRY_DELAYS.length) { await delay(RETRY_DELAYS[attempt], signal); continue; }
-          throw provider.runtime.markPreStreamRetriesExhausted(e);
+          // a TLS rejection or a crash in our own request code cannot heal by re-sending: fail fast, unmarked
+          if (!classifyApiError(e, { model: body.model }).retryable) throw e;
+          if (attempt < retries) { waited += RETRY_DELAYS[attempt]; await delay(RETRY_DELAYS[attempt], signal); continue; }
+          throw provider.runtime.markPreStreamRetriesExhausted(e, { attempts: attempt + 1, waitedMs: waited });
         } finally {
           guard.disarm();
         }
         if (res.ok && res.body) return res;
-        let detail = res.statusText || '';
-        try { const j = await res.json(); detail = (j && j.error && (j.error.message || j.error.code)) || JSON.stringify(j); }
+        let detail = res.statusText || '', errBody = null;
+        try { const j = await res.json(); errBody = j; detail = (j && j.error && (j.error.message || j.error.code)) || JSON.stringify(j); }
         catch (e) { try { detail = (await res.text()).slice(0, 300); } catch (_) {} }
         const err = new Error('codex http ' + res.status + ' — ' + detail);
         err.status = res.status;
         err.headers = res.headers;
+        /* KEEP THE PROVIDER'S ERROR BODY. The message above keeps only error.message, but the classifier's decisive
+           signal is error.code: a ChatGPT plan 429 carries code 'usage_limit_reached' — a spent quota that no amount
+           of waiting fixes — while its message can read like any rate limit ('Codex quota exceeded'). Dropping the
+           body classed it rate_limit, and once the loop's pre-stream ladder rode out transient 429s a spent plan was
+           retried for ~100 s before failing. With the body, errorClass reads the code and fails fast (or falls over). */
+        // ownMessage: the sentence above (label + status) stays the reported message; the body is read for its code.
+        if (errBody && typeof errBody === 'object') { err.body = errBody; err.ownMessage = true; }
         if (res.status === 401 && renew && !renewed) {
           renewed = true;
           try {
@@ -404,8 +427,8 @@
         }
         const cls = classifyApiError(err, { model: body.model });
         err.transient = cls.retryable;
-        if (cls.retryable && attempt < RETRY_DELAYS.length) { await delay(Math.min(60000, Math.max(RETRY_DELAYS[attempt], cls.retryAfterMs || 0)), signal); continue; }
-        throw cls.retryable ? provider.runtime.markPreStreamRetriesExhausted(err) : err;
+        if (cls.retryable && attempt < retries) { const wait = Math.min(60000, Math.max(RETRY_DELAYS[attempt], cls.retryAfterMs || 0)); waited += wait; await delay(wait, signal); continue; }
+        throw cls.retryable ? provider.runtime.markPreStreamRetriesExhausted(err, { attempts: attempt + 1, waitedMs: waited }) : err;
       }
     }
 

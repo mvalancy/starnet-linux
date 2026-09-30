@@ -1,0 +1,10 @@
+{
+  "id": "bikini",
+  "track": "type",
+  "dir": "north",
+  "job": "b95f5c95-b95f-46b0-b0f4-53d8bedb2ca1",
+  "result": "frames: 5\nhttps://api.pixellab.ai/mcp/images/b95f5c95-b95f-46b0-b0f4-53d8bedb2ca1/download?index=0",
+  "packed": true,
+  "lastRaw": "output/agent-animation-study/rollout-20px/full-motion/bikini/minimax/type-north/b95f5c95-b95f-46b0-b0f4-53d8bedb2ca1/4.png",
+  "frameCount": 5
+}

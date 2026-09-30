@@ -258,11 +258,14 @@ const Chat = (() => {
           ? 'paused — waiting for your answer to the question above'
           : 'paused — waiting for you to approve ' + shortName(pend.tool);
         if (tool.textContent !== t) tool.textContent = t;
-        tool.classList.add('has'); tool.classList.add('paused-note');
+        tool.classList.add('has'); tool.classList.add('paused-note'); tool.classList.remove('wait-note');
       } else {
         tool.classList.remove('paused-note');
-        const t = presenceCurTool ? shortName(presenceCurTool) : '';
-        if (tool.textContent !== t) tool.textContent = t; tool.classList.toggle('has', !!t);
+        // the running tool wins; with none, the sidecar's own word on a slow/retrying model call (LIVE WAIT LINE)
+        const t = presenceCurTool ? shortName(presenceCurTool) : waitNoteText(presenceWaitNote());
+        if (tool.textContent !== t) paintToolLine(tool, t, presenceCurTool ? null : presenceWaitNote());
+        tool.classList.toggle('has', !!t);
+        tool.classList.toggle('wait-note', !presenceCurTool && !!t);   // the wait line WRAPS: its numbers never clip
       }
     }
     const time = card.querySelector('.cp-time'); const txt = fmtElapsed(Channels.elapsedOf(activeWs.id, Date.now()));
@@ -280,6 +283,91 @@ const Chat = (() => {
   }
   function presenceToolCall(ws, name) { presenceCurTool = name || null; if (isActiveWs(ws)) renderPresence(); }
   function presenceToolResult(ws) { presenceCurTool = null; if (isActiveWs(ws)) renderPresence(); }
+  /* LIVE WAIT LINE (2026-09-23, live-events lane). The retry ladder (~105 s) and a slow model (up to minutes before a
+     first byte) used to leave this card reading THINKING and nothing else. The sidecar now says so itself —
+     provider.retry before each backoff, agent.waiting on a ~15 s heartbeat while a model call shows nothing — and the
+     card's .cp-tool slot (the same transient line that names the running tool) renders exactly that:
+     "retry 3/6 in 30s (overloaded) — <model>" · "waiting for 45s on <model>". Truthful telemetry: every
+     number is read off the latest event for the DISPLAYED run (no local countdown, no guessed state), and the line
+     clears the moment the run shows output (a token, a tool call), fails over, or ends. */
+  const waitNotes = new Map();   // runId -> the latest wait note (see foldWaitNote)
+  // PURE: the next wait note for a run given one bus event (null = no wait to show). Locked by comms-wait-line.test.js.
+  function foldWaitNote(prev, name, p) {
+    p = p || {};
+    if (name === 'provider.retry') {
+      return { model: String(p.model || (prev && prev.model) || ''), phase: 'retry_backoff', sinceMs: 0,
+        retry: { attempt: p.attempt, maxAttempts: p.maxAttempts, reason: String(p.reason || ''), delayMs: p.delayMs } };
+    }
+    if (name === 'agent.waiting') {
+      // a beat during the backoff keeps the retry it belongs to; any other phase means the retry already went out
+      return { model: String(p.model || (prev && prev.model) || ''), phase: String(p.phase || ''), sinceMs: p.sinceMs,
+        retry: (p.phase === 'retry_backoff' && prev && prev.retry) ? prev.retry : null };
+    }
+    if (name === 'agent.token') return p.delta ? null : prev;   // an empty delta shows the Commander nothing
+    if (name === 'agent.tool_call' || name === 'agent.tool_result' || name === 'provider.fallback'
+      || name === 'agent.run.end' || name === 'agent.run.error') return null;   // output, a failover or the end: the wait is over
+    return prev;
+  }
+  /* PURE: the text for a wait note ('' = nothing to show). FACTS FIRST, MODEL LAST (live browser proof, 2026-09-24): the
+     line used to lead with "waiting on <model>", so the default 520 px panel clipped every retry line's reason and a
+     300 px panel showed "· waiting on anthropic…" and nothing else. The rung, countdown, reason and duration now lead;
+     the model id (the least new fact — it is the agent's roster model) trails, and the slot wraps (.wait-note). No
+     trailing "…": it read exactly like the clip ellipsis. */
+  // PURE: the model as the wait line names it — the bare id without its vendor path ("anthropic/claude-sonnet-4.6" ->
+  // "claude-sonnet-4.6"; still the model, in a third of a 300 px line), capped at 48 chars.
+  function waitModelLabel(n) {
+    const model = String((n && n.model) || '').trim();
+    const bare = model.slice(model.lastIndexOf('/') + 1) || model;
+    return bare ? (bare.length > 48 ? bare.slice(0, 47) + '…' : bare) : 'the model';
+  }
+  function waitNoteText(n) {
+    if (!n) return '';
+    const name = waitModelLabel(n);
+    const since = Math.max(0, Number(n.sinceMs) || 0);
+    const r = n.retry;
+    if (r) {
+      // "in Ns" rounds UP: a 400 ms rung reads "in 1s", never "in 0s"
+      const left = Math.max(0, (Number(r.delayMs) || 0) - since);
+      const of = Number(r.maxAttempts) > 0 ? '/' + r.maxAttempts : '';
+      const why = String(r.reason || '').replace(/_/g, ' ').trim();
+      return 'retry ' + r.attempt + of + (left > 0 ? ' in ' + fmtElapsed(Math.ceil(left / 1000) * 1000) : ' now') + (why ? ' (' + why + ')' : '') + ' — ' + name;
+    }
+    if (n.phase === 'retry_backoff') return 'retry backoff' + (since >= 1000 ? ', ' + fmtElapsed(since) + ' so far' : '') + ' — ' + name;
+    const dur = since >= 1000 ? ' for ' + fmtElapsed(since) : '';
+    if (n.phase === 'connect') return 'connecting' + dur + ' to ' + name;   // (the model id is always LAST: renderPresence splits it off)
+    return 'waiting' + dur + (n.phase === 'streaming' ? ' (stream open)' : '') + ' on ' + name;
+  }
+  // the model id closes every wait line as ONE token (.cp-model): it wraps whole and clips only itself, never mid-id
+  function paintToolLine(tool, t, note) {
+    const m = note ? waitModelLabel(note) : '';
+    if (m && t.endsWith(m)) {
+      tool.textContent = t.slice(0, t.length - m.length);
+      const s = document.createElement('span'); s.className = 'cp-model'; s.textContent = m; tool.appendChild(s);
+    } else tool.textContent = t;
+  }
+  function presenceWaitNote() {
+    const rid = (activeWs && typeof Channels !== 'undefined' && Channels.runIdOf) ? Channels.runIdOf(activeWs.id) : null;
+    return rid ? (waitNotes.get(rid) || null) : null;
+  }
+  let waitWired = false;
+  function wireWaitNotes() {
+    if (waitWired || typeof U === 'undefined' || !U.bus) return;
+    waitWired = true;
+    ['provider.retry', 'agent.waiting', 'agent.token', 'agent.tool_call', 'agent.tool_result', 'provider.fallback', 'agent.run.end', 'agent.run.error'].forEach(name => {
+      U.bus.on(name, p => {
+        const rid = p && p.runId;
+        if (!rid) return;
+        const prev = waitNotes.get(rid) || null;
+        if (!prev && name !== 'provider.retry' && name !== 'agent.waiting') return;   // hot path: a token for a run with no wait
+        const next = foldWaitNote(prev, name, p);
+        if (next === prev) return;
+        waitNotes.delete(rid);
+        if (next) { waitNotes.set(rid, next); if (waitNotes.size > 24) waitNotes.delete(waitNotes.keys().next().value); }
+        const shown = (activeWs && typeof Channels !== 'undefined' && Channels.runIdOf) ? Channels.runIdOf(activeWs.id) : null;
+        if (shown && shown === rid) renderPresence();   // only the displayed stream's own run draws here
+      });
+    });
+  }
   // remove any live presence card without a summary (used when switching away / re-rendering a stream)
   function clearPresence() { const c = log && log.querySelector('#comms-presence'); if (c) { if (c.classList.contains('resolved')) c.removeAttribute('id'); else c.remove(); } presenceCurTool = null; }   // a resolved summary is history — keep it, only live cards are torn down
   function bindPresenceFold(card, fold) {
@@ -525,7 +613,7 @@ const Chat = (() => {
      invariant is inviolate: every model substring is HTML-ESCAPED first (escapeHtml / linkify both escape), and
      we only ever wrap ALREADY-ESCAPED text in our OWN tags — model output never reaches innerHTML raw. `code`
      spans are pulled to placeholders before the bold pass so a ** inside code stays literal. */
-  const MD_MARKERS = /\||^\s*>|^\s*\d+[.)]\s|\*\*|`|^#{1,6}\s|^[ \t]*[-*+]\s/m;   // cheap gate: does this text carry any markdown we render?
+  const MD_MARKERS = /\||^\s*>|^\s*\d+[.)]\s|\*\*|`|^#{1,6}\s|^[ \t]*[-*+]\s|\r?\n[ \t]*\r?\n/m;   // plain paragraph breaks need the same spacing as formatted prose
   function mdInline(safe) {
     // `safe` is escaped-and-linkified HTML. Pull `inline code` to placeholders, bold the rest, restore code.
     const codes = [];
@@ -555,7 +643,7 @@ const Chat = (() => {
     return out+escapeHtml(raw.slice(last));
   }
   function renderMarkdown(raw) {
-    const lines=String(raw).split('\n');
+    const lines=String(raw).replace(/\r\n?/g,'\n').split('\n');
     // Older macOS WebKit cannot PARSE lookbehind, even in a function not yet called.
     // Consume escaped pipes before splitting; retain the existing immediate-backslash semantics.
     const cells = line => {
@@ -571,22 +659,29 @@ const Chat = (() => {
     };
     const listMatch=line=>/^([ \t]*)([-*+][ \t]+|\d+[.)][ \t]+)(.*)$/.exec(line);
     function blocks(from,to,depth) {
-      const parts=[];let i=from;
+      const parts=[],paragraph=[];let i=from;
+      const flushParagraph=()=>{
+        if(paragraph.length)parts.push('<span class="md-p">'+paragraph.splice(0).join('\n')+'</span>');
+      };
       while(i<to) {
         const ln=lines[i];
+        if(!ln.trim()){flushParagraph();i++;continue;}
         if(/^[ \t]*```/.test(ln)) {
+          flushParagraph();
           const code=[];i++;
           while(i<to && !/^[ \t]*```/.test(lines[i]))code.push(lines[i++]);
           if(i<to)i++;parts.push(renderFence(code));continue;
         }
         const h=/^(#{1,6})\s+(.*)$/.exec(ln);
-        if(h){parts.push('<span class="md-h" role="heading" aria-level="'+h[1].length+'">'+reportInline(h[2])+'</span>');i++;continue;}
+        if(h){flushParagraph();parts.push('<span class="md-h" role="heading" aria-level="'+h[1].length+'">'+reportInline(h[2])+'</span>');i++;continue;}
         if(/^\s*>/.test(ln)) {
+          flushParagraph();
           const quote=[];
           while(i<to && /^\s*>/.test(lines[i]))quote.push(reportInline(lines[i++].replace(/^\s*> ?/,'')));
           parts.push('<blockquote class="md-quote">'+quote.join('<br>')+'</blockquote>');continue;
         }
         if(i+1<to && ln.includes('|') && cells(lines[i+1]).length>1 && cells(lines[i+1]).every(c=>/^:?-{3,}:?$/.test(c))) {
+          flushParagraph();
           const headers=cells(ln);i+=2;
           let table='<div class="md-table-scroll" tabindex="0" role="region" aria-label="Report table"><table class="md-table"><thead><tr>'+headers.map(c=>'<th scope="col">'+reportInline(c)+'</th>').join('')+'</tr></thead><tbody>';
           while(i<to && lines[i].includes('|') && lines[i].trim())table+='<tr>'+cells(lines[i++]).map(c=>'<td>'+reportInline(c)+'</td>').join('')+'</tr>';
@@ -594,23 +689,35 @@ const Chat = (() => {
         }
         const first=listMatch(ln);
         if(first && depth<16) {
+          flushParagraph();
           const indent=first[1].replace(/\t/g,'    ').length;
           const ordered=/\d/.test(first[2]),tag=ordered?'ol':'ul';
           let list='<'+tag+' class="md-list"'+(ordered?' start="'+parseInt(first[2],10)+'"':'')+'>';
           while(i<to) {
+            // Loose Markdown lists remain one list; blank separators are not visible rows.
+            let next=i;
+            while(next<to && !lines[next].trim())next++;
+            const following=next<to && listMatch(lines[next]);
+            if(following && following[1].replace(/\t/g,'    ').length===indent && /\d/.test(following[2])===ordered)i=next;
             const item=listMatch(lines[i]);
             if(!item || item[1].replace(/\t/g,'    ').length!==indent || /\d/.test(item[2])!==ordered)break;
             list+='<li>'+reportInline(item[3]);i++;
             const begin=i;
-            while(i<to && lines[i].trim() && /^\s/.test(lines[i]) && (lines[i].match(/^\s*/)[0].replace(/\t/g,'    ').length>indent))i++;
+            while(i<to) {
+              let continuation=i;
+              while(continuation<to && !lines[continuation].trim())continuation++;
+              if(continuation>=to || !/^[ \t]/.test(lines[continuation]) || lines[continuation].match(/^[ \t]*/)[0].replace(/\t/g,'    ').length<=indent)break;
+              i=continuation+1;
+            }
             if(i>begin)list+=blocks(begin,i,depth+1);
             list+='</li>';
           }
           parts.push(list+'</'+tag+'>');continue;
         }
-        parts.push(reportInline(ln));i++;
+        paragraph.push(reportInline(depth ? ln.trimStart() : ln));i++;
       }
-      return parts.join('\n');
+      flushParagraph();
+      return parts.join('');
     }
     return blocks(0,lines.length,0);
   }
@@ -758,6 +865,7 @@ const Chat = (() => {
     wireProposals();   // Cortex turn-in beat: listen for reflection's memory.proposed (registers once)
     wireStudy();       // GROWTH Tier 1: after a salient run, offer ≤1 dossier belief-update at turn-in priority (registers once)
     wireBriefRead();   // TASTE EXTRACTION: the announce-and-act READ card (taskbrief.settled → correctable assumptions; registers once)
+    wireWaitNotes();   // LIVE WAIT LINE: provider.retry / agent.waiting → the presence card's transient line (registers once)
     wireTrust();       // GROWTH Tier 3: after a clean run, offer ONE earned-autonomy raise at the LOWEST beat priority — below the arc (registers once)
     wireThreads();     // NS-6: after a mined task run, offer ONE thread turn-in (Keep/Edit/Discard) at the lowest beat priority — study wins the moment first (registers once)
     wireCrewCapture(); // P3.2: record each dispatched worker's forwarded run-end spend so a 👍 on a crew run splits XP honestly (registers once)
@@ -2338,6 +2446,11 @@ const Chat = (() => {
   function wireFileOpen(a, title, agentId) {
     a.href = fileUrl(title, agentId);
     a.target = '_blank'; a.rel = 'noopener';
+    // the rendered ticket lives minutes, the row lives forever: re-mint right before any use of the href
+    // (capture-phase listeners run before the native navigation / the context menu's copy-link reads it).
+    const refresh = () => { try { a.href = fileUrl(title, agentId); } catch (_) {} };
+    a.addEventListener('click', refresh, true); a.addEventListener('auxclick', refresh, true);
+    a.addEventListener('contextmenu', refresh, true); a.addEventListener('focus', refresh, true);
     const core = tauriCore();
     if (core && core.invoke) {
       a.addEventListener('click', ev => {
@@ -2348,7 +2461,7 @@ const Chat = (() => {
             // The host shows a native confirm before any OS launch (renderer clicks are not host
             // gestures). Cancel there is an ANSWER, not a failure — never fall back around it.
             if (/declined at the host/i.test(String(err || ''))) return;
-            return Promise.resolve(core.invoke('open_external_url', { url: a.href }))
+            return Promise.resolve(core.invoke('open_external_url', { url: fileUrl(title, agentId) }))
               .catch(() => { if (typeof StationUI !== 'undefined' && StationUI.notify) StationUI.notify('could not open that file — use folder or copy path to find it on disk', 'warn'); });
           });
       });
@@ -2425,8 +2538,8 @@ const Chat = (() => {
   function workspaceDir(agentId) {
     const aid = agentId || 'agent';
     if (_wsDirCache.has(aid)) return _wsDirCache.get(aid);
-    const tok = (typeof Harness !== 'undefined' && Harness.apiToken) ? String(Harness.apiToken() || '') : '';
-    const p = fetch('/api/workspace/dir?agent=' + encodeURIComponent(aid) + (tok ? '&token=' + encodeURIComponent(tok) : ''), { cache: 'no-store' })
+    // header auth only: the hardened window.fetch (harness.js) attaches X-StarNet-Token to every /api/ URL
+    const p = fetch('/api/workspace/dir?agent=' + encodeURIComponent(aid), { cache: 'no-store' })
       .then(r => r.ok ? r.json() : null).then(j => (j && j.dir) ? String(j.dir) : '').catch(() => '');
     _wsDirCache.set(aid, p);
     return p;
@@ -2551,20 +2664,18 @@ const Chat = (() => {
     return MEDIA_KIND_BY_EXT[ext] || 'file';
   }
   // The jailed /api/file URL for a workspace file — usable as a REAL href/src, not just inside fetch().
-  // Token: the SYNC injected global (the same value Harness.apiToken() RESOLVES to — apiToken() itself
-  // returns a Promise, and the old String(promise) baked `token=[object Promise]` into the query, a
-  // guaranteed 403 on any native load that can't ride the header shim). Base: on desktop the page runs
+  // Base: on desktop the page runs
   // on the tauri.localhost origin and the shell rewrites ONLY window.fetch to the sidecar — a relative
   // href would navigate into the bundled-asset protocol and vanish (the same trap cloudsave's unload
   // beacon hit), so native loads carry the ABSOLUTE loopback base (window.__STARNET_API__); in a
   // browser the base is '' and the URL stays same-origin relative.
+  // Auth (2026-09-25): a FILE-SCOPED 5-minute ticket (ApiTicket.fileUrl), never the master token — this href reaches
+  // OS-browser history, Referer and copied links. wireFileOpen re-mints it right before any use.
   function fileUrl(title, agentId) {
-    let base = '', tok = '';
+    if (typeof ApiTicket !== 'undefined' && ApiTicket.fileUrl) return ApiTicket.fileUrl(agentId || 'agent', String(title));
+    let base = '';
     try { base = (typeof window !== 'undefined' && window.__STARNET_API__) ? String(window.__STARNET_API__) : ''; } catch (_) {}
-    try { tok = (typeof window !== 'undefined' && window.__STARNET_API_TOKEN__) ? String(window.__STARNET_API_TOKEN__) : ''; } catch (_) {}
-    return base + '/api/file?agent=' + encodeURIComponent(agentId || 'agent') +
-      '&path=' + encodeURIComponent(title) +
-      (tok ? '&token=' + encodeURIComponent(tok) : '');
+    return base + '/api/file?agent=' + encodeURIComponent(agentId || 'agent') + '&path=' + encodeURIComponent(title);
   }
   // append a small "open in a new tab" fallback link — shown when an inline player can't decode the file
   // (e.g. an .mkv/.avi the browser won't play), mirroring the reference harness's OpenMediaButton.
@@ -8190,17 +8301,18 @@ const Chat = (() => {
   // drawing, but the SIDECAR's plan is the one that authorizes spend, so it is the one that decides. Returns
   // { next, brief } — `brief` is the NEXT dock's standing job brief (step editor; the same router fact the
   // sidecar's chain runner injects), so both surfaces compose one handoff turn. null = terminal stage.
-  async function nextStageOf(agentId, tag, lineId) {
+  // (multi-bay, 2026-09-22) dockId = WHICH bay the asking stage ran at; the answer names the next bay (nextDock)
+  async function nextStageOf(agentId, tag, lineId, dockId) {
     try {
       const h = {}, tok = (typeof window !== 'undefined' && window.__STARNET_API_TOKEN__) || '';
       if (tok) h['X-StarNet-Token'] = String(tok);
       // `lineId` = the line this work ENTERED on (work belongs to a line, 2026-08-07). The sidecar's plan is
       // still the decider — it refuses any id that is not this dock's own line — so this only ever narrows.
       const r = await fetch('/api/routing/chain?agentId=' + encodeURIComponent(agentId) + '&tag=' + encodeURIComponent(tag || '')
-        + '&lineId=' + encodeURIComponent(lineId || ''), { cache: 'no-store', headers: h });
+        + '&lineId=' + encodeURIComponent(lineId || '') + (dockId ? '&dockId=' + encodeURIComponent(dockId) : ''), { cache: 'no-store', headers: h });
       if (!r || !r.ok) return null;
       const j = await r.json();
-      return (j && j.next) ? { next: String(j.next), brief: (typeof j.brief === 'string' && j.brief) ? j.brief : null } : null;
+      return (j && j.next) ? { next: String(j.next), nextDock: (typeof j.nextDock === 'string' && j.nextDock) ? j.nextDock : null, brief: (typeof j.brief === 'string' && j.brief) ? j.brief : null } : null;
     } catch (_) { return null; }   // no floor, no sidecar, no line — the single-stage reply already stands
   }
 
@@ -8213,8 +8325,10 @@ const Chat = (() => {
     // WORK BELONGS TO A LINE (2026-08-07): a line advances only for work that entered through ITS OWN
     // trigger. `seed.lineId` is that origin; without one this dock is terminal and nothing downstream runs.
     if (!seed.lineId) return out;
-    const visited = {}; visited[seed.fromAgentId] = true;
-    let cur = seed.fromAgentId;
+    // NEVER RUN A DOCK TWICE (multi-bay): visited keys on the bay when the sidecar names one — a writer crewing
+    // two bays of this line runs at each — else on the agent (an older sidecar answers no nextDock)
+    const visited = {}; visited[seed.fromDock || seed.fromAgentId] = true;
+    let cur = seed.fromAgentId, curDock = seed.fromDock || null;
     // LINE BUDGET (2026-08-21): the sidecar answers each /api/routing/chain ask with the EFFECTIVE ceilings
     // for this line (its INBOX's limits, clamped to the global pool) — the browser bounds itself by the same
     // numbers the sidecar executor would. An older sidecar answers none: the mirrored constants hold.
@@ -8222,9 +8336,9 @@ const Chat = (() => {
     for (let hop = 1; hop <= maxHops + 1; hop++) {   // +1 so a stage PAST the ceiling is named, as the sidecar names it
       if (seed.signal && seed.signal.aborted) return out;
       if (interrupted.has(ws.id)) return out;                       // the Commander pressed Stop — the line stops
-      const nxr = await nextStageOf(cur, lineTag(out.text), seed.lineId);
-      const nx = nxr && nxr.next;
-      if (!nx || visited[nx]) return out;                           // terminal stage, or a loop the plan let through
+      const nxr = await nextStageOf(cur, lineTag(out.text), seed.lineId, curDock);
+      const nx = nxr && nxr.next, nxDock = (nxr && nxr.nextDock) || null;
+      if (!nx || visited[nxDock || nx]) return out;                 // terminal stage, or a loop the plan let through
       const lim = nxr && nxr.limits;
       if (lim && typeof lim === 'object') {
         if (typeof lim.maxHops === 'number' && lim.maxHops >= 0) maxHops = lim.maxHops;
@@ -8251,7 +8365,7 @@ const Chat = (() => {
       }
       const sys = (typeof App !== 'undefined' && App.systemFor) ? App.systemFor(nx) : null;
       if (!sys) return out;                                         // a dock bound to an agent this roster doesn't have
-      visited[nx] = true;
+      visited[nxDock || nx] = true;
 
       const who = (typeof App !== 'undefined' && App.agentName && App.agentName(nx)) || nx;
       const wiHop = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : ('wi-' + Date.now() + '-' + (++wiSeq));
@@ -8259,7 +8373,10 @@ const Chat = (() => {
       // the floor draws the handoff exactly like a channel line's: a crate leaves this dock for the next.
       // `from` = the PRODUCER dock (mirrors chain.js's placed event — must not drift): world.js spawns the
       // crate at THIS dock instead of guessing the upstream dock from the compiled plan.
-      wiEmit('workitem.placed', { workitemId: wiHop, queueId: nx, agentId: nx, kind: 'chain', from: cur, lineId: seed.lineId, preview: String(out.text).replace(/\s+/g, ' ').slice(0, 40), ts: hopStart });
+      const placed = { workitemId: wiHop, queueId: nx, agentId: nx, kind: 'chain', from: cur, lineId: seed.lineId, preview: String(out.text).replace(/\s+/g, ' ').slice(0, 40), ts: hopStart };
+      if (nxDock) placed.dockId = nxDock;          // additive (multi-bay): the bay the crate lands at…
+      if (curDock) placed.fromDock = curDock;      // …and the bay it left
+      wiEmit('workitem.placed', placed);
       if (isActiveWs(ws)) { breakLive(); toolLine('▸ ' + who + ' — stage ' + (hop + 1) + ' of the work line'); }
 
       // the RECEIVING dock's standing brief rides the shared handoff turn — the same 5th param the sidecar's
@@ -8304,7 +8421,7 @@ const Chat = (() => {
       ws.history.push({ role: 'assistant', content: hopText, agentId: nx, ts: Date.now() });   // agentId = the ACTUAL speaker (renderHistory names it)
       capHistory(ws);
       out.text = hopText; out.agentId = nx; out.hops++;
-      cur = nx;
+      cur = nx; curDock = nxDock;
     }
     return out;
   }

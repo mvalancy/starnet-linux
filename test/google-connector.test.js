@@ -28,6 +28,7 @@ const catalog = require('../sidecar/mcp/catalog.js');
   const examples = {
     search_messages: { query: 'from:test@example.invalid', pageToken: 'next&evil=1' }, read_message: { messageId: 'message-1' },
     read_thread: { threadId: 'thread-1' }, read_attachment: { messageId: 'message-1', attachmentId: 'attachment-1' },
+    send_email: { to: ['Test <test@example.invalid>'], subject: 'Hello', body: 'Hi' },
     create_draft: { raw: Buffer.from('To: test@example.invalid\r\nSubject: Test\r\n\r\nHello').toString('base64url') }, send_draft: { draftId: 'draft-1' },
     list_files: { query: "name contains 'test'" }, get_file: { fileId: 'file-1' }, export_file: { fileId: 'file-1', mimeType: 'text/plain' },
     create_file: { metadata: { name: 'Test' } }, update_file: { fileId: 'file-1', metadata: { name: 'Updated' } },
@@ -55,7 +56,7 @@ const catalog = require('../sidecar/mcp/catalog.js');
       const args = name === 'batch_update' ? product === 'google-docs' || def.name.startsWith('docs_') ? { documentId: 'document-1', requests: [{ insertText: { text: 'hi', endOfSegmentLocation: {} } }] } : { spreadsheetId: 'sheet-1', requests: [{ addSheet: { properties: { title: 'New' } } }] } : examples[name];
       const response = await client.callTool(def.name, args);
       assert.equal(response.isError, false);
-      assert.ok(calls.at(-1).target.startsWith(product === 'google-files' ? ENDPOINTS[def.name.startsWith('docs_') ? 'google-docs' : def.name.startsWith('sheets_') ? 'google-sheets' : 'google-drive'] : url));
+      assert.ok(calls.at(-1).target.startsWith(product === 'google-files' ? ENDPOINTS[def.name.startsWith('docs_') ? 'google-docs' : def.name.startsWith('sheets_') ? 'google-sheets' : 'google-drive'] : url.replace(/#.*$/, '')));
       if (def.name === 'write_values') assert.equal(new URL(calls.at(-1).target).searchParams.get('valueInputOption'), 'RAW');
       if (def.name === 'search_messages') assert.equal(new URL(calls.at(-1).target).searchParams.get('pageToken'), 'next&evil=1');
       exercised++;
@@ -65,6 +66,58 @@ const catalog = require('../sidecar/mcp/catalog.js');
     await assert.rejects(client.callTool(defs[0].name, { url: 'https://evil.invalid' }), /Unknown argument/);
     assert.equal(calls.length, before, 'invalid tools never reach the network');
     client.close();
+  }
+  // Per-service release (google-client.js SERVICES/RELEASED): each service opens on its own Google tier.
+  {
+    const G = require('../sidecar/mcp/google-client.js');
+    const shippedEarlyAccess = G.EARLY_ACCESS;
+    G.EARLY_ACCESS = false;   // exercise the per-service map (the post-verification shape) explicitly
+    assert.deepEqual(Object.keys(G.SERVICES).sort(), Object.keys(ENDPOINTS).filter(id => id !== 'google-files').sort(), 'every local adapter endpoint is a gated service');
+    for (const id of Object.keys(G.SERVICES)) assert.equal(G.SERVICES[id].url, ENDPOINTS[id], id + ' gates the exact adapter endpoint');
+    assert.equal(G.SERVICES.gmail.tier, 'restricted'); assert.equal(G.SERVICES['google-drive'].tier, 'restricted');
+    for (const id of ['gmail-send', 'google-calendar', 'google-docs', 'google-sheets']) assert.equal(G.SERVICES[id].tier, 'sensitive', id + ' needs no security assessment');
+    assert.ok(Object.values(G.RELEASED).every(v => v === false), 'source ships every broad service deferred');
+    const cfgOf = id => ({ id, url: ENDPOINTS[id], transport: 'http', googleApi: true });
+    const saved = Object.assign({}, G.RELEASED);
+    try {
+      G.RELEASED['google-calendar'] = true;
+      assert.equal(G.connectorDeferred(cfgOf('google-calendar')), false, 'a released service opens');
+      for (const id of ['gmail', 'gmail-send', 'google-drive', 'google-docs', 'google-sheets']) assert.equal(G.connectorDeferred(cfgOf(id)), true, id + ' stays deferred when only Calendar is released');
+      assert.equal(G.connectorDeferred({ id: 'google-calendar', url: 'https://calendarmcp.googleapis.com/mcp/v1', transport: 'http' }), true, 'an old hosted endpoint cannot ride a released id');
+      assert.equal(G.connectorDeferred({ id: 'custom', url: ENDPOINTS['google-calendar'] + '/x', transport: 'http' }), true, 'a near-miss URL is not the released service');
+      assert.equal(G.connectorDeferred({ id: 'google-files', url: G.FILES_URL, googleApi: true }), false, 'selected files keeps its own switch');
+      assert.equal(G.connectorDeferred({ id: 'notion', url: 'https://mcp.notion.com/mcp', transport: 'http' }), false, 'non-Google connectors are untouched');
+    } finally { Object.assign(G.RELEASED, saved); }
+    assert.match(G.deferredMessage(cfgOf('gmail')), /^Gmail is deferred until .*security assessment/);
+    assert.match(G.deferredMessage(cfgOf('google-calendar')), /^Google Calendar is deferred until Google’s app verification is complete\./);
+    assert.ok(!/assessment/.test(G.deferredMessage(cfgOf('gmail-send'))), 'send-only never waits on the assessment');
+    assert.equal(G.deferredMessage({ url: 'https://gmailmcp.googleapis.com/mcp/v1' }), G.DEFERRED, 'legacy endpoints keep the generic notice');
+    // EARLY ACCESS: a build flag, off in source, only ever read from the bundled registration.
+    assert.equal(shippedEarlyAccess, true, 'source ships early access until Google verification (Andrew, 2026-09-23)');
+    assert.equal(G.loadEarlyAccess({ readFile: () => JSON.stringify({ installed: {}, earlyAccess: true }) }), true);
+    assert.equal(G.loadEarlyAccess({ readFile: () => JSON.stringify({ installed: {} }) }), false);
+    assert.equal(G.loadEarlyAccess({ readFile: () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); } }), false, 'no staged registration is not early access');
+    assert.equal(G.loadEarlyAccess({ readFile: () => '{"earlyAccess":"true"}' }), false, 'only a literal true counts');
+    try {
+      G.EARLY_ACCESS = true;
+      for (const id of Object.keys(G.SERVICES)) assert.equal(G.connectorDeferred(cfgOf(id)), false, id + ' opens in an early-access build');
+      assert.equal(G.connectorDeferred({ id: 'gmail', url: 'https://gmailmcp.googleapis.com/mcp/v1', transport: 'http' }), true, 'legacy endpoints stay deferred even in early access');
+    } finally { G.EARLY_ACCESS = false; }
+    const wf = dir => fs.readFileSync(path.join(__dirname, '../.github/workflows', dir), 'utf8');
+    assert.ok(!/STARNET_GOOGLE_EARLY_ACCESS/.test(wf('release-train.yml')), 'the public release train can never stage early access');
+    assert.match(wf('desktop-build.yml'), /google_early_access:[\s\S]*default: "false"/, 'internal builds opt in explicitly, default off');
+  }
+  // Send-only Gmail: one tool, a well-formed MIME message, and header injection refused before any network call.
+  {
+    const { mimeMessage } = require('../sidecar/mcp/transport.google.js');
+    assert.deepEqual(TOOLS['gmail-send'].map(t => t.name), ['send_email']);
+    const raw = Buffer.from(mimeMessage({ to: ['Ann <ann@example.invalid>'], bcc: ['b@example.invalid'], subject: 'Grüße', body: 'hi\r\nBcc: evil@example.invalid' }), 'base64url').toString();
+    const [head, body] = raw.split('\r\n\r\n');
+    assert.ok(head.startsWith('To: Ann <ann@example.invalid>\r\nBcc: b@example.invalid\r\nSubject: =?UTF-8?B?'), 'recipients + RFC 2047 subject');
+    assert.equal(Buffer.from(body.replace(/\r\n/g, ''), 'base64').toString(), 'hi\r\nBcc: evil@example.invalid', 'body text is inert base64, never headers');
+    for (const bad of [{ to: ['a@example.invalid\r\nBcc: e@example.invalid'] }, { to: ['a@example.invalid, c@example.invalid'] }, { to: ['not-an-address'] }, { to: ['a@example.invalid'], subject: 'x\r\nBcc: e@example.invalid' }]) {
+      assert.throws(() => mimeMessage(Object.assign({ subject: 's', body: 'b' }, bad)), /Invalid|line breaks/);
+    }
   }
   for (const status of [401, 403, 429, 500]) {
     const client = makeMcpClient({ transport: makeGoogleTransport({ url: ENDPOINTS.gmail, token: 'TEST_TOKEN', fetchImpl: async () => new Response('sensitive echoed token', { status }) }), timeoutMs: 1000 });
@@ -115,6 +168,15 @@ const catalog = require('../sidecar/mcp/catalog.js');
     assert.equal(fs.statSync(staged).mode & 0o444, 0o444, 'installed native metadata remains readable across OS accounts');
     assert.equal(stage('', true).status, 0);
     assert.equal(fs.existsSync(staged), false, 'internal builds cannot inherit a stale registration');
+    // EARLY ACCESS is stamped into the registration only when the build asks for it.
+    const stageEarly = (flag) => spawnSync(process.execPath, [path.join(stageRoot, 'scripts/stage-google-client.mjs')], {
+      encoding: 'utf8', env: { ...process.env, STARNET_GOOGLE_DESKTOP_CLIENT_JSON: JSON.stringify(installed), STARNET_GOOGLE_EARLY_ACCESS: flag, NODE_OPTIONS: '' }
+    });
+    assert.equal(stageEarly('').status, 0);
+    assert.equal(JSON.parse(fs.readFileSync(staged, 'utf8')).earlyAccess, undefined, 'a normal build carries no early-access flag');
+    assert.equal(stageEarly('1').status, 0);
+    assert.equal(JSON.parse(fs.readFileSync(staged, 'utf8')).earlyAccess, true, 'an early-access build stamps the flag into the bundled registration');
+    assert.equal(JSON.parse(fs.readFileSync(staged, 'utf8')).installed.client_id, installed.installed.client_id, 'and still ships only the installed client');
   } finally { fs.rmSync(stageRoot, { recursive: true, force: true }); }
   console.log('google-connector: PASS (native registration, legacy routing, ' + exercised + ' real MCP tool paths, validation, API errors, timeout, bounds, customer UI, release gate)');
 })().catch(e => { console.error(e); process.exitCode = 1; });

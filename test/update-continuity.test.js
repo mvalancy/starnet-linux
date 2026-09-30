@@ -21,6 +21,24 @@ const { spawnSync } = require('node:child_process');
     const altered = [{ ...hydrated[0], ...changed }];
     A.eq(C.stableJson(C.normalizeLegacyWorkstreamDefaults(altered)) === C.stableJson(legacy), false, 'semantic change is not hidden: ' + JSON.stringify(changed));
   }
+  // Agent colours: a missing colour becoming a crew palette suit is the one permitted change (roster hydration
+  // since the 2026-09-23 security audit). Anything else about a colour must still fail the comparison.
+  {
+    const prior = C.continuityProjection({ local: fixture, durable: fixture });
+    const paint = (state, color) => { const out = structuredClone(state); for (const k of ['local', 'durable']) out[k].agents[1].color = color; return out; };
+    const same = (a, b) => C.stableJson(a) === C.stableJson(b);
+    const assigned = paint(prior, '#7bc88a');
+    A.eq(same(C.adoptAssignedSuitColors(prior, assigned), assigned), true, 'a missing colour may become a crew palette suit');
+    const offPalette = paint(prior, '#123456');
+    A.eq(same(C.adoptAssignedSuitColors(prior, offPalette), offPalette), false, 'a missing colour replaced by a non-palette colour still fails');
+    const coloured = paint(prior, '#d99a5a');
+    const recoloured = paint(prior, '#7bc88a');
+    A.eq(same(C.adoptAssignedSuitColors(coloured, recoloured), recoloured), false, 'a change to an existing colour is never hidden');
+    A.eq(same(C.adoptAssignedSuitColors(coloured, coloured), coloured), true, 'an unchanged colour compares equal');
+    const suits = /const SUITS = (\[[^\]]+\])/.exec(fs.readFileSync(path.join(__dirname, '../frontend/app/app.js'), 'utf8'));
+    A.ok(suits, 'app.js still declares the crew SUITS palette');
+    A.eq(suits ? JSON.parse(suits[1].replace(/'/g, '"')) : null, C.CREW_SUITS.slice(), 'verifier palette matches the app crew SUITS');
+  }
   const snapshot = { sentinel: { nonce: 'nonce', purpose: 'update-continuity' }, local: fixture, durable: Object.assign({}, fixture, { updatedAt: 200 }) };
   const receipt = C.buildReceipt({
     before: snapshot, after: snapshot,

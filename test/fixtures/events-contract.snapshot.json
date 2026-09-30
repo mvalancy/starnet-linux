@@ -136,6 +136,21 @@
       "summary"
     ]
   },
+  "agent.waiting": {
+    "required": [
+      "agentId",
+      "phase",
+      "runId",
+      "sinceMs"
+    ],
+    "properties": [
+      "agentId",
+      "model",
+      "phase",
+      "runId",
+      "sinceMs"
+    ]
+  },
   "budget.threshold": {
     "required": [
       "cap",
@@ -554,6 +569,28 @@
       "runId",
       "toModel",
       "toProvider"
+    ]
+  },
+  "provider.retry": {
+    "required": [
+      "agentId",
+      "attempt",
+      "delayMs",
+      "reason",
+      "runId"
+    ],
+    "properties": [
+      "agentId",
+      "attempt",
+      "delayMs",
+      "maxAttempts",
+      "model",
+      "patienceMs",
+      "reason",
+      "retryAfterMs",
+      "runId",
+      "stage",
+      "waitedMs"
     ]
   },
   "queue.status": {

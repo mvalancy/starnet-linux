@@ -465,7 +465,7 @@ async function readNdjson(res) {
     A.ok(restartDisk.indexOf(googleClientId) >= 0 && restartDisk.indexOf(googleClientSecret) >= 0, 'restart reads the exact protected Google client credentials from durable connector state');
     A.ok(JSON.stringify(restartCatalog).indexOf(googleClientId) < 0 && JSON.stringify(restartCatalog).indexOf(googleClientSecret) < 0, 'restart catalog still exposes no Google client credential');
 
-    sse = await startSseCollector(B + '/api/channels/events?token=' + encodeURIComponent(token));
+    sse = await startSseCollector(B + '/api/channels/events?' + require('./_httpToken.js').sseQuery(token));
     const create = await fetch(B + '/api/cron', {
       method: 'POST',
       headers,

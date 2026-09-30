@@ -9,4 +9,11 @@ async function bootToken(base, origin) {
   try { return String(JSON.parse(m[1]) || ''); } catch (_) { return ''; }
 }
 
-module.exports = { bootToken };
+// The master token is refused in any URL (2026-09-25). Header-less surfaces present a scoped ticket instead;
+// these mint the same tickets the page does (sidecar/apitickets.js). SSE tickets are single-use: mint per connect.
+const apitickets = require('../sidecar/apitickets.js');
+function sseQuery(token) { return 'ticket=' + encodeURIComponent(apitickets.mint(token, 'sse', apitickets.SCOPE_SSE, { now: Date.now() })); }
+function fileQuery(token, agent, relPath) { return 'ticket=' + encodeURIComponent(apitickets.mint(token, 'file', apitickets.scopeFile(agent, relPath), { now: Date.now() })); }
+function runPrefix(token, agent, runId) { return '/workshop-run/~t/' + apitickets.mint(token, 'run', apitickets.scopeRun(agent, runId), { now: Date.now() }) + '/'; }
+
+module.exports = { bootToken, sseQuery, fileQuery, runPrefix };

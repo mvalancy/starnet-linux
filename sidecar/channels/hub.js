@@ -31,6 +31,14 @@
   const { note: failNote, swallow } = (typeof require === 'function') ? require('../failopen.js') : { note: function (tag, e) { console.warn('[failopen] ' + tag + ':', (e && e.message) || e); }, swallow: function (tag) { return function (e) { console.warn('[failopen] ' + tag + ':', (e && e.message) || e); }; } };
 
   const TASK_SUFFIX = ' The Commander has just messaged you a task — carry it out as best you can and report the result clearly.';
+  /* dockSystem(persona, brief, isTask) — the system context an ENTRY dock runs under: its persona, the dock's
+     standing brief (step editor — the SAME section header the chain handoff turn uses), and the task suffix.
+     Pure + exported so the conveyor step-through test composes the identical entry run (2026-09-22). */
+  function dockSystem(persona, brief, isTask) {
+    return persona
+      + (brief ? '\n\nYOUR STANDING BRIEF FOR THIS STATION:\n' + String(brief).slice(0, 2000) : '')
+      + (isTask ? TASK_SUFFIX : '');
+  }
   const DEFAULT_PERSONA = 'You are the Commander\'s AI agent, reachable over a messaging app. Address the user as "Commander", '
     + 'keep a spark of personality, and keep replies concise and chat-friendly. When given a task you have REAL tools '
     + '(web search/read, files, memory) — use them and report what you actually found.';
@@ -191,19 +199,26 @@
   // slash-actions.js) — the same code path the desktop palette uses, so the answer here is byte-identical to the
   // answer there instead of a second implementation that drifts. Everything else is control-plane work only this
   // hub can do (it owns the in-flight run and the transcript file).
+  //
+  // `owner` — WHO may run it (2026-09-25, sec-owner-gates). Anyone admitted to the chat (a whitelisted group's
+  // members, an allowed non-owner) can TALK to the agent, but only the bound owner may change the station:
+  //   'always' — owner-only in every form (state-changing, or reveals the owner's private spend/schedules)
+  //   'write'  — the bare form is a read-only readout anyone may see; any argument (a change) is owner-only
+  //   absent   — read-only, open to every admitted sender (status, agents, whoami, tools, help, start)
+  // Commander-defined commands (userCommandNames) are owner-only too — they run the owner's own aliases.
   const COMMANDS = [
     { command: 'status', description: 'What this chat is doing right now' },
-    { command: 'stop', description: 'Stop the run in progress' },
-    { command: 'new', description: 'Forget this chat\'s history and start fresh' },
+    { command: 'stop', description: 'Stop the run in progress', owner: 'always' },
+    { command: 'new', description: 'Forget this chat\'s history and start fresh', owner: 'always' },
     { command: 'agents', description: 'List agents (→ marks the one you are talking to)' },
-    { command: 'talk', description: 'Switch this chat to another agent', usage: '/talk <name>' },
-    { command: 'model', description: 'Show or change the current agent\'s model', usage: '/model [id]' },
-    { command: 'usage', description: 'Real spend from the station ledger', slash: true },
+    { command: 'talk', description: 'Switch this chat to another agent', usage: '/talk <name>', owner: 'always' },
+    { command: 'model', description: 'Show or change the current agent\'s model', usage: '/model [id]', owner: 'write' },
+    { command: 'usage', description: 'Real spend from the station ledger', slash: true, owner: 'always' },
     { command: 'tools', description: 'The tools this agent can actually call', slash: true },
-    { command: 'routine', description: 'List, create or pause scheduled routines', usage: '/routine [list|add <schedule> | <task>|pause N|rm N]', slash: true },
-    { command: 'away', description: 'Queue work to build on the away shift', usage: '/away [<what to build>|list|on|off]', slash: true },
-    { command: 'approvals', description: 'Approve/deny buttons for this chat (on or off)', usage: '/approvals [on|off]' },
-    { command: 'mention', description: 'In a group: when I answer, and whether I follow the rest', usage: '/mention [on|observe|off]' },
+    { command: 'routine', description: 'List, create or pause scheduled routines', usage: '/routine [list|add <schedule> | <task>|pause N|rm N]', slash: true, owner: 'always' },
+    { command: 'away', description: 'Queue work to build on the away shift', usage: '/away [<what to build>|list|on|off]', slash: true, owner: 'always' },
+    { command: 'approvals', description: 'Approve/deny buttons for this chat (on or off)', usage: '/approvals [on|off]', owner: 'write' },
+    { command: 'mention', description: 'In a group: when I answer, and whether I follow the rest', usage: '/mention [on|observe|off]', owner: 'write' },
     { command: 'whoami', description: 'Show which agent this chat is talking to' },
     { command: 'help', description: 'List these commands', menu: false },
     // Telegram sends this when a fresh chat's START button is pressed. menu:false — the client offers it on an
@@ -212,6 +227,15 @@
   ];
   const SLASH_CMDS = COMMANDS.reduce((m, c) => { if (c.slash) m[c.command] = 1; return m; }, {});
   const KNOWN_CMDS = COMMANDS.reduce((m, c) => { m[c.command] = 1; return m; }, {});
+  const OWNER_CMDS = COMMANDS.reduce((m, c) => { if (c.owner) m[c.command] = c.owner; return m; }, {});
+  // Does this parsed command need the bound owner? Pure, exported for the policy test.
+  function commandNeedsOwner(parsed) {
+    if (!parsed) return false;
+    const rule = OWNER_CMDS[parsed.cmd];
+    if (rule === 'always') return true;
+    if (rule === 'write') return !!String(parsed.arg || '').trim();
+    return false;
+  }
   // the setMyCommands payload (name + one-line description only — Telegram renders no usage strings).
   function menuCommands() {
     return COMMANDS.filter(c => c.menu !== false).map(c => ({ command: c.command, description: c.description }));
@@ -328,6 +352,11 @@
     // Opt-in for unaddressed sample runs: resolve identity only AFTER the router picks the dock.
     const resolveEntryRunConfig = typeof o.resolveEntryRunConfig === 'function' ? o.resolveEntryRunConfig : null;
     const onLineOutcome = typeof o.onLineOutcome === 'function' ? o.onLineOutcome : null;
+    // ENTRY TAINT (security review 2026-09-24): a hub whose every inbound message is EXTERNAL DATA rather than the
+    // owner speaking — the line-trigger hub (a webhook payload / a watched folder's file contents) — names the taint
+    // its FIRST hop starts under, so the entry run's sensitive tools are consent-gated exactly like any other run
+    // that has read untrusted content. Absent -> the old rule (only a media attachment taints the entry run).
+    const entryTaint = (typeof o.entryTaint === 'string' && o.entryTaint.trim()) ? o.entryTaint.trim().slice(0, 80) : null;
     // SAMPLE/PROOF SEAM (additive, 2026-08-05): an optional streamId (string, or fn(chatId) -> string) stamped
     // onto every runOnce this hub fires (entry dock AND chain hops). With it, the host records the runs +
     // transcripts under that workstream (runs.jsonl streamId -> a readable OUTBOX crate); WITHOUT it — every
@@ -357,6 +386,20 @@
     // The composition root may mint this only for an authenticated Telegram owner DM. It deliberately lives at
     // the hub edge so every other channel and every Telegram group message stays on its ordinary policy.
     const ownerTrustedFor = typeof o.ownerTrusted === 'function' ? o.ownerTrusted : (() => false);
+    /* OWNER IDENTITY for control commands and Full Power inheritance (2026-09-25, sec-owner-gates).
+       isOwner(msg) answers "is this sender the bound owner?" in ANY chat type (the owner may /model from their own
+       group); it is minted by the composition root from the adapter's paired owner id, never from message text.
+       ownerSurface:true marks a hub whose every inbound is already the Commander (the local dev/sample routes and
+       the owner-configured line triggers behind the launch token) — it keeps those surfaces byte-identical.
+       Absent both, the fallback is ownerTrusted (owner DM) — fail closed: a hub that cannot name its owner
+       grants the owner-only commands to nobody. */
+    const ownerSurface = o.ownerSurface === true;
+    const isOwnerFor = ownerSurface ? (() => true)
+      : (typeof o.isOwner === 'function' ? o.isOwner : ownerTrustedFor);
+    // untrustedSenders:false — this hub has no chat senders at all (the owner-configured line triggers): its runs
+    // are not tagged as sender-originated, so their Full Power posture is unchanged, while its commands still need
+    // an owner it can never name (a webhook body that starts with /stop is refused, not obeyed).
+    const tagSenderRuns = !ownerSurface && o.untrustedSenders !== false;
     const rosterFn = typeof o.roster === 'function' ? o.roster : null;
     const setModelFn = typeof o.setModel === 'function' ? o.setModel : null;
     const modelCatalogFn = typeof o.modelCatalog === 'function' ? o.modelCatalog : null;
@@ -480,6 +523,37 @@
       const tail = String(chatId).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 40 - agentPrefix.length);
       return agentPrefix + (tail || '0');
     }
+    /* HOP HISTORY IS KEYED BY CHAT LINEAGE, NOT BY AGENT (sec-taint 09-25). A downstream hop replays its prior turns
+       from the channel store. That store was keyed by the hop's agentId alone, so every chat, every line and every
+       direct conversation with that agent shared ONE history: text a hop was handed in chat A (upstream output,
+       possibly a hostile page an upstream stage read) replayed into chat B's run of the same agent — and into that
+       agent's own untainted DM fallback history. The key is now a digest of channel + chat + line + dock, so a hop
+       remembers only the handoffs of its OWN chat's line. Deterministic (two FNV-1a lanes), fits the store's
+       agentId grammar ('hop_' + 32 hex = 36 chars ≤ 40), and can never equal a real agent's history file by
+       accident short of a 2^-64 collision. */
+    function hopHistoryKey(chatId, lineId, node) {
+      const src = channel + '\u0000' + String(chatId) + '\u0000' + String(lineId || '') + '\u0000' + String(node || '');
+      let h1 = 0x811c9dc5, h2 = 0x01000193;
+      for (let i = 0; i < src.length; i++) {
+        const c = src.charCodeAt(i);
+        h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+        h2 = Math.imul(h2 ^ c, 0x811c9dc5) >>> 0;
+      }
+      const hex = (n) => ('00000000' + n.toString(16)).slice(-8);
+      return 'hop_' + hex(h1) + hex(h2) + hex(Math.imul(h1 ^ h2, 0x01000193) >>> 0) + hex((h2 + src.length) >>> 0);
+    }
+    // the hop keys a chat has written, remembered on its chat record so /new forgets the line's handoffs too
+    function rememberHopKey(chatId, key) {
+      if (!bindChats || typeof store.getChatRecord !== 'function' || typeof store.saveChatRecord !== 'function') return;
+      try {
+        const rec = store.getChatRecord(chatId) || {};
+        const keys = Array.isArray(rec.hopKeys) ? rec.hopKeys.filter(k => typeof k === 'string' && AID_RE.test(k)) : [];
+        if (keys.indexOf(key) >= 0) return;
+        keys.push(key);
+        store.saveChatRecord(chatId, { hopKeys: keys.slice(-32) });
+      } catch (e) { failNote('channels.hub.hopKeys', e); }
+    }
+
     function resolvedStreamId(chatId) {
       let explicit = '';
       try { if (streamIdFor) explicit = String(streamIdFor(chatId) || ''); } catch (_) { explicit = ''; }
@@ -884,6 +958,10 @@
     // Resolve which agent a chat is currently bound to, from the SAME precedence run resolution uses (minus the
     // live floor plan, which is content-per-message and not a stable "who am I talking to"). Used by /agents,
     // /talk confirmations, and /model to name the target honestly.
+    function ownerOnlyReply(label) {
+      return '⚠ ' + label + ' is owner-only on this station — only the paired owner can use it. You can still talk to the agent here.';
+    }
+
     function currentBoundAgent(chatId, boundAgentId, sec) {
       if (boundAgentId) return boundAgentId;
       if (sec && sec.agentId && AID_RE.test(String(sec.agentId))) return String(sec.agentId);
@@ -969,6 +1047,11 @@
         let dropped = 0;
         try { dropped = store.clearHistory(boundId); }
         catch (e) { await deliver(chatId, '⚠ Could not clear this chat: ' + ((e && e.message) || 'the write failed') + '.', '', 'command'); return; }
+        // the work line's per-chat hop histories start fresh too (hopHistoryKey)
+        try {
+          const rec = typeof store.getChatRecord === 'function' ? store.getChatRecord(chatId) : null;
+          for (const k of (rec && Array.isArray(rec.hopKeys) ? rec.hopKeys : [])) if (typeof k === 'string' && AID_RE.test(k)) dropped += store.clearHistory(k) || 0;
+        } catch (e) { failNote('channels.hub.hopKeys.clear', e); }
         await deliver(chatId, dropped
           ? ('Cleared ' + dropped + ' message' + (dropped === 1 ? '' : 's') + ' — this chat starts fresh. I no longer remember what we discussed.')
           : 'Nothing to clear — this chat had no history yet.', '', 'command');
@@ -1282,6 +1365,12 @@
       } finally { recoveringInbox = false; }
     }
 
+    // Words the sender did not author (a platform-flagged forward, or a reply quoting one). Arrives under the
+    // owner's id, so owner admission cannot see it — the run is tainted instead (2026-09-23 security audit).
+    function carriesThirdPartyText(msg) {
+      return !!(msg && (msg.forwarded || (msg.replyTo && msg.replyTo.forwarded)));
+    }
+
     function textBatchable(msg) {
       if (!msg || msg.edited || (Array.isArray(msg.media) && msg.media.length)) return false;
       const text = String(msg.text || '').trim();
@@ -1301,6 +1390,7 @@
         const next = String(msg.text || '').trim();
         rec.msg.text = prior && next ? prior + '\n' + next : (prior || next);
         rec.msg.messageId = msg.messageId == null ? rec.msg.messageId : msg.messageId;
+        if (carriesThirdPartyText(msg)) rec.msg.forwarded = true;   // one forwarded bubble taints the merged turn
       }
       const mySeq = ++rec.seq;
       await sleep(TEXT_BATCH_WAIT_MS);
@@ -1324,6 +1414,7 @@
       } else {
         if (Array.isArray(msg.media) && msg.media.length) rec.msg.media = rec.msg.media.concat(msg.media);
         if (!rec.msg.text && msg.text) rec.msg.text = msg.text;   // the caption rides on whichever part carried it
+        if (carriesThirdPartyText(msg)) rec.msg.forwarded = true;
       }
       const mySeq = ++rec.seq;
       await sleep(ALBUM_WAIT_MS);
@@ -1382,6 +1473,11 @@
       const boundAgentId = (boundRec && boundRec.agentId && AID_RE.test(String(boundRec.agentId))) ? String(boundRec.agentId) : null;
       let ownerTrusted = false;
       try { ownerTrusted = ownerTrustedFor(msg) === true; } catch (_) { ownerTrusted = false; }
+      // The bound owner in ANY chat (commands), and the bound owner in a DIRECT chat (Full Power inheritance —
+      // a group's context carries other members' words, so only a DM run is purely the owner's).
+      let senderIsOwner = false;
+      try { senderIsOwner = isOwnerFor(msg) === true; } catch (_) { senderIsOwner = false; }
+      const channelSenderOwner = ownerSurface || ownerTrusted || (senderIsOwner && String(msg.chatType || '') === 'dm');
 
       /* OBSERVE-ONLY: heard, filed, never answered. The mention gate stopped the bot replying to a room it was
          not addressed in, and in doing so gave it amnesia — asked later to "summarise that", it had never seen
@@ -1401,8 +1497,18 @@
       // Control commands are intercepted BEFORE any run starts — they must never spawn an LLM run. Replies go out
       // through the SAME deliver() path so chunking/limits apply. Channel-agnostic: this lives in the hub, so
       // Telegram/Discord/any future adapter get identical behavior.
-      const parsed = parseCommand(msg.text);
-      if (parsed) { await handleCommand(chatId, parsed, boundAgentId, sec, boundRec, msg.chatType, ownerTrusted); return; }
+      // A FORWARDED "/away on" is a third party's words, not the Commander's command — never parse it as one.
+      const parsed = carriesThirdPartyText(msg) ? null : parseCommand(msg.text);
+      if (parsed) {
+        // OWNER GATE: a non-owner may talk to the agent, never reconfigure the station. Refused for free, before
+        // any handler, write or slash-registry call — and said plainly, so the member knows it is a policy.
+        if (commandNeedsOwner(parsed) && !senderIsOwner) {
+          await deliver(chatId, ownerOnlyReply('/' + parsed.cmd), '', 'command');
+          return;
+        }
+        await handleCommand(chatId, parsed, boundAgentId, sec, boundRec, msg.chatType, ownerTrusted);
+        return;
+      }
 
       // COMMANDER-DEFINED commands are not in this hub's table (the sidecar owns them), so a "/standup" would
       // otherwise fall through and be answered by the MODEL — spending a turn to say it doesn't understand.
@@ -1411,6 +1517,8 @@
       // command may do here: an alias resolves and runs, a shell exec is refused off-desktop.
       const userNamed = /^\/([A-Za-z0-9_-]+)/.exec(String(msg.text || ''));
       if (userNamed && runSlashFn && userCommandNames().indexOf(userNamed[1].toLowerCase()) !== -1) {
+        // the Commander's own commands run the Commander's own aliases — owner-only, same gate as the table above
+        if (!senderIsOwner) { await deliver(chatId, ownerOnlyReply('/' + userNamed[1]), '', 'command'); return; }
         // resolve the agent the SAME way handleCommand does, so a user command is scoped to whoever this chat
         // is actually talking to rather than a default
         const ucAgent = currentBoundAgent(chatId, boundAgentId, sec);
@@ -1443,12 +1551,19 @@
       // Resolution order: floor plan > this chat's explicit /talk binding > the connect-time configured agentId >
       // the per-chat tg_<chatId> fallback (an unbound chat still just works).
       const tag = getTag ? getTag(msg.text) : undefined;
-      const routed = resolveAgent ? resolveAgent({ tag, chatId, text: msg.text, boundAgentId }) : null;
+      /* resolveAgent may answer a bare agentId (every pre-dock seam) or { agentId, dockId } (router.resolveDock —
+         multi-bay agents, 2026-09-22): the DOCK the floor routed the work to is the one whose brief, room and line
+         the run gets. A binding/fallback resolution carries no dock and the seams read the agent's entry dock. */
+      const routedRaw = resolveAgent ? resolveAgent({ tag, chatId, text: msg.text, boundAgentId }) : null;
+      const routed = (routedRaw && typeof routedRaw === 'object') ? routedRaw.agentId : routedRaw;
+      const routedDock = (routedRaw && typeof routedRaw === 'object' && routedRaw.dockId != null && AID_RE.test(String(routedRaw.dockId))) ? String(routedRaw.dockId) : null;
       const agentId = (routed && AID_RE.test(String(routed))) ? String(routed)
         : boundAgentId
         ? boundAgentId
         : (sec.agentId && AID_RE.test(String(sec.agentId))) ? String(sec.agentId) : agentIdFor(chatId);
       const canonicalStreamId = resolvedStreamId(chatId);
+      // the dock this run is AT: only when the floor's own resolution picked this agent (never inferred)
+      const dockId = (routedDock && routed && String(routed) === agentId) ? routedDock : null;
 
       if (resolveEntryRunConfig) {
         try {
@@ -1487,8 +1602,9 @@
          the compiled plan stays the only authority; absent -> null -> every dock terminal, which is the
          safe direction. It rides `resolvedInfo` (so the host stamps the crate with it) and the chain seed
          below (so the gate can read it). */
-      const lineId = lineOriginFor ? (lineOriginFor(agentId) || null) : null;
+      const lineId = lineOriginFor ? ((dockId ? lineOriginFor(agentId, dockId) : lineOriginFor(agentId)) || null) : null;
       const resolvedInfo = { chatId: chatId, agentId: agentId, text: msg.text, isTask: isTask, lineId: lineId };
+      if (dockId) resolvedInfo.dockId = dockId;   // additive: the host lands the crate at THIS bay (multi-bay)
       if (onResolved) { try { onResolved(resolvedInfo); } catch (_) {} }
       if (intake && typeof intake.onResolved === 'function') { try { intake.onResolved(resolvedInfo); } catch (_) {} }
 
@@ -1541,6 +1657,10 @@
         try { mediaIngest = await ingestMedia(agentId, allMedia); }
         catch (e) { mediaIngest = { attachments: [], notes: ['[media ingest failed: ' + ((e && e.message) || e) + ']'] }; }
       }
+      // UNTRUSTED ENTRY (run-origin.js entryUntrusted): the same three provenances that start the entry run tainted —
+      // a trigger payload (entryTaint), a chat attachment, a forwarded/quoted third-party message. Decided ONCE per
+      // message so the entry run and every hop of its line carry one verdict.
+      const lineEntryUntrusted = !!(entryTaint || mediaIngest.attachments.length || carriesThirdPartyText(msg));
       // The quoted preamble goes ABOVE the member's own words — it is the context their sentence refers back to.
       // It is built from msg.replyTo only, never from msg.text, so routing/classification/commands (which all ran
       // on the RAW text above) are untouched by it.
@@ -1594,14 +1714,12 @@
       // system context carries it — the SAME section header the chain handoff turn uses. Null-safe: no seam /
       // no floor / no brief composes the exact pre-brief system string.
       let dockBrief = null;
-      if (stageBriefFor) { try { dockBrief = stageBriefFor(agentId); } catch (_) { dockBrief = null; } }
-      const system = persona
-        + (dockBrief ? '\n\nYOUR STANDING BRIEF FOR THIS STATION:\n' + String(dockBrief).slice(0, 2000) : '')
-        + (isTask ? TASK_SUFFIX : '');
+      if (stageBriefFor) { try { dockBrief = dockId ? stageBriefFor(agentId, dockId) : stageBriefFor(agentId); } catch (_) { dockBrief = null; } }
+      const system = dockSystem(persona, dockBrief, isTask);
 
       // B5: if this agent runs at a bound BAY, its tools are that bay room's objects (resolveStation), not the
       // default office — so a routed agent's reach is exactly what the floor granted it. null -> office default.
-      const bayStation = resolveStation ? resolveStation(agentId) : null;
+      const bayStation = resolveStation ? (dockId ? resolveStation(agentId, dockId) : resolveStation(agentId)) : null;
 
       // ---- run with bounded supersede-retry ------------------------------------------------------------------
       // ONE run per conversation: the prev.abort.abort() above told this chat's prior run to stop. But its host-side
@@ -1681,9 +1799,15 @@
             key: usingCodex ? '' : sec.key, model: sec.model, provider, baseUrl: sec.baseUrl || sec.base_url || '', reasoningEffort, system, messages, agentId, isTask,
             emit: sink, signal: ac.signal, runId, lineId, trigger: 'event',
             streamId: canonicalStreamId || undefined,
-            initialTaint: mediaIngest.attachments.length ? 'channel attachment' : null,
+            initialTaint: entryTaint || (mediaIngest.attachments.length ? 'channel attachment' : (carriesThirdPartyText(msg) ? 'forwarded message' : null)),
+            // RUN ORIGIN (run-origin.js entryUntrusted): the job itself is third-party content, so Full Access does not
+            // lift this run's taint lock. Every hop of its line inherits the same verdict (lineEntryUntrusted below).
+            untrustedEntry: lineEntryUntrusted || undefined,
             surface: wantApprovals ? 'interactive' : 'autonomous',
             ownerTrusted: ownerTrusted,
+            // RUN ORIGIN (sidecar/run-origin.js): a chat sender started this run. Full Power (per-agent Full Access /
+            // master bypass) is inherited only when that sender is the bound owner in a direct chat.
+            channelSender: tagSenderRuns, channelSenderOwner: channelSenderOwner,
             // ...but ONLY for who answers a consent prompt. A phone has no floor to place props on, so this run
             // composes the headless office either way. Without this, /approvals on silently cut the agent from
             // the full autonomous office to compute-only (2 tools) — THE MOAT is floor-real placement, and there
@@ -1691,6 +1815,8 @@
             floorless: true,
             prompt: consentPrompt,
             broadcast: true,   // P1: mirror this routed run's lifecycle to the station floor over SSE — it has no browser-local stream
+            // LINE WATCH (additive): the run row records the line + bay it worked AT (the per-line stats and bay lamps)
+            lineId: lineId || undefined, dockId: dockId || undefined,
             // A channel task is real work the agent should learn from, exactly like a COMMS task. Admission is
             // already owner-gated upstream (adapter.js ownerOk: a non-owner DM never reaches this host, a group
             // must be whitelisted), and each record is stamped with its origin (channel:<name>) so the Commander
@@ -1733,7 +1859,7 @@
          would be an unstoppable spend. The reply that finally leaves is the LAST stage's. */
       if (chain && !state.errMsg && !myRec.superseded && String(state.buf || '').trim()) {
         const line = await chain.advance({
-          agentId: agentId, text: state.buf, originalText: msg.text,
+          agentId: agentId, dockId: dockId || undefined, text: state.buf, originalText: msg.text,
           // the entry run's reconciled spend: the chain's $ ceiling covers the whole line, stage one included
           // (2026-08-10 audit). `line.usd` stays hop-only, so onLineOutcome's accounting is unchanged.
           entryUsd: state.usd || 0,
@@ -1767,9 +1893,11 @@
               else if (name === 'capdenied') hs.errMsg = hs.errMsg || ('no ' + (p.need || 'capability') + ' — ' + (p.reason || ''));
               else if (name === 'agent.run.end') { if (typeof p.usd === 'number' && isFinite(p.usd)) hs.usd = p.usd; }
             };
+            // THIS chat's line history for THIS dock — never the agent's shared history (see hopHistoryKey)
+            const hopKey = hopHistoryKey(chatId, lineId, h.dockId || h.agentId);
             let hist = [];
-            try { hist = store.loadHistory(h.agentId); } catch (_) {}
-            try { store.appendTurn(h.agentId, 'user', h.text); } catch (e) { failNote('channels.hub.appendTurn', e); }
+            try { hist = store.loadHistory(hopKey); } catch (_) {}
+            try { store.appendTurn(hopKey, 'user', h.text); rememberHopKey(chatId, hopKey); } catch (e) { failNote('channels.hub.appendTurn', e); }
             try {
               await runOnce({
                 key: hopConfig.key, model: hopConfig.model, provider: hopConfig.provider,
@@ -1778,17 +1906,23 @@
                 agentId: h.agentId, lineId, isTask: true, emit: hopSink, signal: h.signal, runId: hopRunId, trigger: 'event',
                 streamId: canonicalStreamId || undefined,   // the whole line shares one canonical transcript
                 initialTaint: 'upstream agent output',
+                untrustedEntry: lineEntryUntrusted || undefined,   // a hop of a payload-started line stays under the taint lock
                 surface: 'autonomous', ownerTrusted: ownerTrusted, broadcast: true, reflect: true,
-                station: (resolveStation ? resolveStation(h.agentId) : null) || undefined,
-                taskKey: 'chain:' + channel + ':' + chatId + ':' + h.agentId, taskSource: channel
+                channelSender: tagSenderRuns, channelSenderOwner: channelSenderOwner,   // a hop keeps the entry sender's Full Power verdict
+                // the hop's OWN dock room (multi-bay: never the union of the agent's bays)
+                station: (resolveStation ? (h.dockId ? resolveStation(h.agentId, h.dockId) : resolveStation(h.agentId)) : null) || undefined,
+                taskKey: 'chain:' + channel + ':' + chatId + ':' + h.agentId + (h.dockId ? '@' + h.dockId : ''), taskSource: channel,
+                lineId: lineId || undefined, dockId: h.dockId || undefined, workitemId: h.workitemId || undefined   // LINE WATCH: the hop's line + bay on its run row (+ its crate on run.start)
               });
             } catch (e) { hs.errMsg = hs.errMsg || ('run failed: ' + ((e && e.message) || e)); }
-            if (hs.buf.trim() && !hs.errMsg) { try { store.appendTurn(h.agentId, 'assistant', hs.buf); } catch (e) { failNote('channels.hub.appendTurn', e); } }
+            if (hs.buf.trim() && !hs.errMsg) { try { store.appendTurn(hopKey, 'assistant', hs.buf); } catch (e) { failNote('channels.hub.appendTurn', e); } }
             return { text: hs.buf, usd: hs.usd, error: hs.errMsg };
           }
         });
         if (onLineOutcome) {
-          try { onLineOutcome({ agentId: line.agentId, stopped: line.stopped || null, hops: line.hops.slice(), usd: line.usd }); } catch (_) {}
+          // a throwing outcome hook is the HOST's bug (the trigger runner records every fire's truth through it): never
+          // let it abort the reply, but never swallow it silently either — the failopen ledger names it
+          try { const lo = { agentId: line.agentId, stopped: line.stopped || null, hops: line.hops.slice(), usd: line.usd }; if (line.dockId) lo.dockId = line.dockId; onLineOutcome(lo); } catch (e) { failNote('channels.hub.lineOutcome', e); }
         }
         if (!myRec.superseded && line.hops.length) {
           // the line's answer replaces the first stage's — and the floor/channel agree on who produced it
@@ -2007,5 +2141,5 @@
     };
   }
 
-  return { makeChannelHub, chunkText, chunkTextParts, endNote, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, REPLY_QUOTE_MAX, COMMANDS, _internals: { TASK_SUFFIX, DEFAULT_PERSONA, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, COMMANDS } };
+  return { makeChannelHub, dockSystem, chunkText, chunkTextParts, endNote, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, REPLY_QUOTE_MAX, COMMANDS, commandNeedsOwner, _internals: { TASK_SUFFIX, DEFAULT_PERSONA, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, COMMANDS } };
 });

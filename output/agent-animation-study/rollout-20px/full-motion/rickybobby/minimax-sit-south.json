@@ -1,0 +1,10 @@
+{
+  "id": "rickybobby",
+  "track": "sit",
+  "dir": "south",
+  "job": "620648c9-84f8-47e0-98f8-54a5115a0e56",
+  "result": "frames: 5\nhttps://api.pixellab.ai/mcp/images/620648c9-84f8-47e0-98f8-54a5115a0e56/download?index=0",
+  "packed": true,
+  "lastRaw": "output/agent-animation-study/rollout-20px/full-motion/rickybobby/minimax/sit-south/620648c9-84f8-47e0-98f8-54a5115a0e56/4.png",
+  "frameCount": 5
+}

@@ -372,10 +372,19 @@ const SPRITES = (() => {
   const TURN_STEP_W = 1.2;       // rad/s a standing body must exceed before its feet shuffle
   const TURN_STEP_FRAMES = 4 / Math.PI;   // walk frames per radian swept ≈ 2 frames per 90° pivot
   const DIR8_HYST = 0.10;        // rad a sector holds past its boundary (sectors are π/8 half-width)
+  const POSE_FADE_MS = 110;      // outgoing pose dissolves under the incoming one (drawBody)
+  const WALK_FACE_TRUST = 0.9;   // rad: walking art follows the eased facing unless displacement disagrees by more
   const ang = a => Math.atan2(Math.sin(a), Math.cos(a));
   function renderDir8(b, dir, glancing, nowMs) {
     // while walking (and not glancing) follow the true continuous heading; otherwise the game dir
-    const travel = b._resolvedTravelHeading ?? b.faceA;
+    // Arcing bodies travel ALONG their eased facing, so faceA is the smooth truth; raw displacement carries
+    // every separation nudge and flipped the 8-way pose back and forth within a frame or two. Displacement
+    // still wins when the two genuinely disagree (a shove, a chord step) so art never walks backwards.
+    // A displacement that matches the step the gait itself chose (b._travelHeading) is not evidence against
+    // the facing: that is a slow chord step while the body is still turning (the first steps of a U-turn).
+    const moved = b._resolvedTravelHeading, faced = b.faceA, own = b._travelHeading;
+    const shoved = moved != null && (own == null || Math.abs(ang(moved - own)) > 0.5);
+    const travel = moved == null ? faced : faced == null || shoved && Math.abs(ang(moved - faced)) > WALK_FACE_TRUST ? moved : faced;
     const want = (!glancing && b.state === 'walk' && travel != null) ? ang(travel) : DIR8_A[dir];
     if (want == null) return dir;
     const dt = Math.max(0, Math.min(100, nowMs - (b._rAt || 0)));   // clamp: first frame / tab-restore must not spin
@@ -397,7 +406,9 @@ const SPRITES = (() => {
       b._turnAng = (b._turnAng || 0) + swept;
     }
     const cur = b._rD8;
-    if (b.state !== 'walk' && cur && DIR8_A[cur] != null && Math.abs(ang(b._rA - DIR8_A[cur])) < Math.PI / 8 + DIR8_HYST) return cur;
+    // Walking holds its sector past the boundary too: an arcing body sweeps through every sector once,
+    // and separation nudges near a 22.5° edge used to flip the pose back and forth frame to frame.
+    if (cur && DIR8_A[cur] != null && Math.abs(ang(b._rA - DIR8_A[cur])) < Math.PI / 8 + DIR8_HYST) return cur;
     let best = dir, bd = Infinity;
     for (const d in DIR8_A) {
       const t = Math.abs(ang(b._rA - DIR8_A[d]));
@@ -414,6 +425,26 @@ const SPRITES = (() => {
       }
     }
     return pick(set, names, dir);
+  }
+
+  /* one walk in-between: drawing a crossfaded into drawing c by t, composed in PREMULTIPLIED space
+     ('lighter' adds a·(1-t) + c·t) so pixels both drawings cover stay fully opaque mid-blend. Two
+     plain alpha draws over the floor would let the floor show through the body at t = 0.5. One
+     shared scratch canvas: drawBody copies it out synchronously before the next body is drawn. */
+  let tweenCanvas = null;
+  function tweenFrame(a, c, t) {
+    const w = Math.max(a.width, c.width) | 0, h = Math.max(a.height, c.height) | 0;
+    if (!tweenCanvas) tweenCanvas = document.createElement('canvas');
+    if (tweenCanvas.width !== w || tweenCanvas.height !== h) { tweenCanvas.width = w; tweenCanvas.height = h; }
+    const g = tweenCanvas.getContext('2d');
+    if (!g || (g.isContextLost && g.isContextLost())) return t < 0.5 ? a : c;
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
+    g.clearRect(0, 0, w, h);
+    g.globalAlpha = 1 - t; g.drawImage(a, 0, 0);
+    g.globalCompositeOperation = 'lighter'; g.globalAlpha = t; g.drawImage(c, 0, 0);
+    g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1;
+    return tweenCanvas;
   }
 
   /* main draw: foot-anchored at (x, y) */
@@ -560,6 +591,19 @@ const SPRITES = (() => {
         : Math.floor(nowMs / (1000 / fps) + aph);
     b._renderFrame = fr.length > 1 ? ((idx % fr.length) + fr.length) % fr.length : 0;
     const f = fr.length > 1 ? fr[((idx % fr.length) + fr.length) % fr.length] : fr[0];
+    // WALK IN-BETWEENS (2026-09-22, Andrew: "smooth out the walking frames"). An eight-drawing cycle
+    // cut from one drawing to the next 14-26 times a second, and every cut read as a visible step.
+    // The phase driving it is continuous (distance or swept angle), so the pose at phase k+frac is
+    // drawn as drawing k crossfaded into drawing k+1, eased so each authored drawing still holds
+    // crisp around its own phase. Only neighbouring drawings of ONE cycle blend, the body's position
+    // is untouched (nothing floats), and reduced motion keeps the hard cuts.
+    const phase = fixedIdx != null || reduced || fr.length < 2 || key.indexOf('.walk.') === -1 ? null
+      : turnStep ? (b._turnAng || 0) * TURN_STEP_FRAMES * turnFrameScale + aph
+      : (b.odo != null && stride > 0) ? b.odo / stride + aph : null;
+    const frac = phase == null ? 0 : phase - Math.floor(phase);
+    const tween = frac * frac * (3 - 2 * frac);
+    const fNext = tween > 0.02 ? fr[(b._renderFrame + 1) % fr.length] : null;
+    b._renderWalkTween = fNext ? +tween.toFixed(3) : null;
     // footprint = native master × per-set scale → identical on-floor size as before, but f is now the
     // full-resolution master. Draw it DOWN to that size with smoothing ON so the detail survives (and
     // stays sharp if the camera zooms in, since it resamples straight from the 92px master each frame).
@@ -593,7 +637,9 @@ const SPRITES = (() => {
     // Walking masters have slightly different packing below their boots. A set-wide idle
     // pad made those differences into floor penetration and floating during the cycle.
     const walking = key.includes('.walk.') && !turnStep;
-    const pad = (walking ? getFramePad(f) : seatLift ? getTrackPad(key) : getFootPad(set)) * sc;
+    // an in-between's boots sit between its two drawings' boots, so its foot line does too
+    const framePad = fNext ? getFramePad(f) + (getFramePad(fNext) - getFramePad(f)) * tween : getFramePad(f);
+    const pad = (walking ? framePad : seatLift ? getTrackPad(key) : getFootPad(set)) * sc;
     // Quiet standing breath changes the torso's height by less than a quarter world unit while
     // its measured foot line stays fixed. Existing walk/pivot, furniture, sleep, talk and gesture
     // tracks own their motion. Portraits keep their established framing. Omitting appearance
@@ -615,7 +661,7 @@ const SPRITES = (() => {
     const y = planted ? snap(b.py + GROUND_BITE - seatLift) - (dh - pad) * breathScale
       : snap(b.py - dh + GROUND_BITE + bob + pad - seatLift);
     // Report the rendered pixel boundary, including snapping and authored margins.
-    b._renderGroundGap = b.py - (y + (dh - getFramePad(f) * sc) * breathScale);
+    b._renderGroundGap = b.py - (y + (dh - framePad * sc) * breathScale);
     b._renderCycleUnits = cycleUnitsFor(set, sc, f.height);
     // the pool's outer half-width, taken from the body's DRAWN footprint. Masters carry side
     // padding, so this lands well under dw/2 — a pool wider than the boots reads as a puddle.
@@ -655,7 +701,24 @@ const SPRITES = (() => {
         ctx.rect(x - 1, y - 1, dw + 2, Math.max(0, floor - y - 5));
         ctx.clip();
       }
-      ctx.drawImage(lightFrame(f, light), x, y, dw, drawHeight);
+      // POSE DISSOLVE (2026-09-22, Andrew: "you can see the frames when they turn"). A change of
+      // POSE — facing sector, walk↔stand, stand↔sit — used to hard-cut between two unrelated
+      // drawings. The outgoing pose now fades out beneath the incoming one for POSE_FADE_MS,
+      // riding the body's position, so a turn reads as a rotation instead of a swap. Frames
+      // WITHIN one walk cycle never dissolve (that smears the legs); reduced motion never fades.
+      const prev = b._poseLast, fadeable = !reduced && !b.noShadow && prev && prev.key !== key
+        && nowMs - prev.at < 200 && Math.hypot(b.px - prev.px, b.py - prev.py) < 6;
+      if (fadeable) b._poseFade = { f: prev.f, ox: prev.x - prev.px, oy: prev.y - prev.py, w: prev.w, h: prev.h, at: nowMs };
+      const fade = b._poseFade, ft = fade && !reduced ? (nowMs - fade.at) / POSE_FADE_MS : 1;
+      if (fade && ft < 1) {
+        const keep = ctx.globalAlpha;
+        ctx.globalAlpha = keep * (1 - ft) * (1 - ft * 0.35);
+        ctx.drawImage(lightFrame(fade.f, light), snap(b.px + fade.ox), snap(b.py + fade.oy), fade.w, fade.h);
+        ctx.globalAlpha = keep;
+      } else if (fade) b._poseFade = null;
+      b._renderPoseFade = fade && ft < 1 ? +ft.toFixed(3) : null;
+      ctx.drawImage(fNext ? tweenFrame(lightFrame(f, light), lightFrame(fNext, light), tween) : lightFrame(f, light), x, y, dw, drawHeight);
+      b._poseLast = { key, f, x, y, px: b.px, py: b.py, w: dw, h: drawHeight, at: nowMs };
       if (tuckDeskFeet) ctx.restore();
       if(speech)ctx.restore();
     }

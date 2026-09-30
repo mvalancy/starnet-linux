@@ -60,7 +60,13 @@ function seedTokens(ws, envelope) {
     s = await status();
     A.eq(s.connected, false, 'after logout: not connected');
     A.eq(s.expired, false, 'after logout: no longer "expired" — the dead state was cleared with the credentials');
-    A.eq(fs.existsSync(path.join(ws, 'codex', 'tokens.json')), false, 'logout removed the token file');
+    // logout leaves a credential-free signed-out TOMBSTONE (security audit 2026-09-25): an absent file let boot
+    // migrate a legacy workspace's token back in. Both copies must carry no token material.
+    for (const f of ['tokens.json', 'tokens.json.bak']) {
+      const onDisk = fs.readFileSync(path.join(ws, 'codex', f), 'utf8');
+      A.ok(JSON.parse(onDisk).signedOut === true && onDisk.indexOf(ACCESS) < 0 && onDisk.indexOf(REFRESH) < 0,
+        'logout leaves a credential-free signed-out tombstone in ' + f);
+    }
 
     // ===== boot 2: logout survives a REAL sidecar restart — the recovery copy cannot resurrect it =====
     await fixture.restart();

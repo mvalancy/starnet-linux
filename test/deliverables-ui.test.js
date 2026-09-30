@@ -1,6 +1,7 @@
 'use strict';
 const A = require('./_assert.js');
 const D = require('../frontend/app/deliverables.js');
+const Tickets = require('../sidecar/apitickets.js');
 
 const md = D.safeMarkdown('# Hello\n<script>alert(1)</script>\n**bold**');
 A.ok(md.indexOf('<h1>Hello</h1>') >= 0 && md.indexOf('<strong>bold</strong>') >= 0, 'bounded Markdown formatting renders');
@@ -10,8 +11,17 @@ const csv = D.safeCsv('a,b,c\n1,"two, too",3\n4,5,6', 2, 2);
 A.ok(csv.indexOf('<table') >= 0 && csv.indexOf('two, too') >= 0, 'quoted CSV cells parse into a table');
 A.ok(csv.indexOf('<td>3</td>') < 0 && csv.indexOf('<td>4</td>') < 0, 'CSV preview obeys row and column bounds');
 
-A.eq(D.openUrl('/workshop-run/a/r/index.html', 'secret'), '/workshop-run/a/r/index.html?token=secret', 'sandboxed HTML navigation receives the launch token');
-A.eq(D.openUrl('/api/file?agent=a&path=x.md', 'secret'), '/api/file?agent=a&path=x.md&token=secret', 'file preview receives the launch token');
+// open URLs carry a SCOPED TICKET, never the launch token (2026-09-25 — these reach OS-browser history/Referer)
+global.window = { __STARNET_API_TOKEN__: 'secret', crypto: require('node:crypto').webcrypto };
+global.ApiTicket = require('../frontend/app/apiticket.js');
+const runOpen = D.openUrl('/workshop-run/a/r/index.html');
+const runSplit = Tickets.splitRunTicket(runOpen);
+A.ok(runSplit && runSplit.rest === 'a/r/index.html' && runOpen.indexOf('secret') < 0, 'sandboxed HTML navigation gets a run ticket in the path, no launch token: ' + runOpen.slice(0, 40));
+A.ok(Tickets.verify('secret', runSplit.ticket, 'run', Tickets.scopeRun('a', 'r'), { now: Date.now() }).ok, 'that run ticket verifies for run a/r');
+const fileOpen = D.openUrl('/api/file?agent=a&path=x.md');
+const fq = new URL(fileOpen, 'http://127.0.0.1').searchParams;
+A.ok(fileOpen.indexOf('secret') < 0 && !fq.has('token') && Tickets.verify('secret', fq.get('ticket'), 'file', Tickets.scopeFile('a', 'x.md'), { now: Date.now() }).ok, 'file preview gets a file ticket for exactly x.md, no launch token');
+delete global.ApiTicket; delete global.window;
 
 /* ---- the organized library's display helpers (2026-08-13) ---- */
 const NOW = new Date('2026-08-13T15:00:00').getTime();

@@ -308,4 +308,34 @@ A.eq(sampler.stats().preparations,preparedCount+2,'explicit frame refresh remain
 sampler.dispose();
 A.eq(sampler.stats().sampleCacheSize, 0, 'dispose releases all sample descriptors');
 
+// KEY buffer (2026-09-22): the one pass that puts light ON a surface. It must be
+// absent unless asked for, composite as overlay between the dark film and the glow,
+// and keep its stamps tighter than the cut that made room for it.
+const keyed = Light.create({ canvasFactory }); keyed.setGeometry(station(true));
+const keyFrame = { fixtures: [{ x: 30, y: 30, r: 50, rgb: '255,192,104' }], lights: [source], ambient: 0.82 };
+const ops = [], keyOut = Object.assign(canvasFactory(96, 60).getContext('2d'), {
+  drawImage(img) { ops.push({ op: this.globalCompositeOperation, img }); } });
+keyed.render(keyOut, keyFrame);
+A.eq(keyed.stats().key, false, 'the key buffer is not allocated unless configured');
+A.eq(ops.filter(o => o.op === 'overlay').length, 0, 'an unkeyed station composites exactly as before');
+const plainSurfaces = surfaces.length, plainStamps = keyed.stats().cachedStamps;
+keyed.configure({ key: 1.5, keyReach: 0.5, shadeCool: 0.1 }); ops.length = 0;
+keyed.render(keyOut, keyFrame);
+A.eq(keyed.stats().key, true, 'configuring a key allocates its buffers');
+A.eq(surfaces.length - plainSurfaces - (keyed.stats().cachedStamps - plainStamps), 2,
+  'besides its own stamps, the key costs exactly one static and one per-frame surface');
+A.eq(ops.map(o => o.op).join(','), 'source-over,overlay,screen', 'the key lands between the dark film and the glow');
+A.ok(keyed.stats().cachedStamps > plainStamps, 'key stamps are cached separately from the full-radius cut stamps');
+const keyCut = fills.filter(f => /^rgb\(\d+,\d+,\d+\)$/.test(String(f.style))).pop();
+A.ok(keyCut && /^rgb\((\d+),(\d+),(\d+)\)$/.test(keyCut.style) && +RegExp.$1 < 128 && +RegExp.$3 > 128,
+  'shadeCool leans the unlit neutral toward blue, away from red');
+const steady = keyed.stats(), steadySurfaces = surfaces.length;
+ops.length = 0; keyed.render(keyOut, keyFrame);
+A.eq(keyed.stats().dynamicBuilds, steady.dynamicBuilds, 'a steady keyed frame reuses its composed maps');
+A.eq(surfaces.length, steadySurfaces, 'a steady keyed frame allocates nothing');
+keyed.configure({ key: 0, shadeCool: 0 }); ops.length = 0; keyed.render(keyOut, keyFrame);
+A.eq(keyed.stats().key, false, 'switching the key off releases its buffers');
+A.eq(ops.filter(o => o.op === 'overlay').length, 0, 'and the composite returns to the unkeyed path');
+keyed.dispose();
+
 A.report('WorldLight spatial illumination');

@@ -1,0 +1,10 @@
+{
+  "id": "elonmusk",
+  "track": "type",
+  "dir": "north",
+  "job": "abb30ef3-c433-4fee-bebc-773e4ab4fe81",
+  "result": "frames: 5\nhttps://api.pixellab.ai/mcp/images/abb30ef3-c433-4fee-bebc-773e4ab4fe81/download?index=0",
+  "packed": true,
+  "lastRaw": "output/agent-animation-study/rollout-20px/full-motion/elonmusk/minimax/type-north/abb30ef3-c433-4fee-bebc-773e4ab4fe81/4.png",
+  "frameCount": 5
+}

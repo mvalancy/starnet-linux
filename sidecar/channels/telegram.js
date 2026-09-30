@@ -143,6 +143,14 @@
   //     quoting it would staple a phantom "in reply to" onto every single group turn;
   //   • the same shape appears on the service message that opened the topic.
   // Media on the quoted message rides through so the hub can ingest the actual photo the member long-pressed.
+  /* FORWARD PROVENANCE (2026-09-23 security audit). A forward arrives with the OWNER's from.id, so without this
+     flag a stranger's text the Commander forwarded ("is this legit?") ran as the Commander's own directive with
+     owner trust. Bot API 7+ sends forward_origin; older payloads carry the forward_* family. Any of them means
+     the words were authored by someone else — the hub turns that into an untrusted-content taint. */
+  function isForwarded(m) {
+    return !!(m && (m.forward_origin || m.forward_date || m.forward_from || m.forward_from_chat || m.forward_sender_name));
+  }
+
   function replyOf(m) {
     const rt = m && m.reply_to_message;
     if (!rt || typeof rt !== 'object') return null;
@@ -155,6 +163,7 @@
     const media = mediaOf(rt);
     if (!text && !media.length) return null;   // a reply to a service message quotes nothing
     const out = { text: text };
+    if (isForwarded(rt)) out.forwarded = true;   // quoting a forward re-injects a third party's words
     const who = from.username || from.first_name;
     if (who) out.userName = String(who);
     if (from.is_bot) out.fromBot = true;
@@ -249,6 +258,7 @@
         messageId: m.message_id
       };
       if (msgSrc.edited) msg.edited = true;         // the hub decides whether a correction earns a fresh run
+      if (isForwarded(m)) msg.forwarded = true;     // third-party words under the owner's id — the hub taints the run
       if (msgSrc.post) msg.channelPost = true;      // a broadcast post: no human sender, and it can echo back to us
       if (from.is_bot) msg.fromBot = true;                       // another BOT is talking — the adapter drops these
       /* WHICH FORUM TOPIC this arrived in, so the answer can go back to it. Read ONLY for a real topic message:

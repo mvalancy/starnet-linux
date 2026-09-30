@@ -1,0 +1,10 @@
+{
+  "id": "tonymontana",
+  "track": "type",
+  "dir": "north",
+  "job": "7e6a8520-d80e-4beb-b803-6546f6666b4d",
+  "result": "frames: 5\nhttps://api.pixellab.ai/mcp/images/7e6a8520-d80e-4beb-b803-6546f6666b4d/download?index=0",
+  "packed": true,
+  "lastRaw": "output/agent-animation-study/rollout-20px/full-motion/tonymontana/minimax/type-north/7e6a8520-d80e-4beb-b803-6546f6666b4d/4.png",
+  "frameCount": 5
+}

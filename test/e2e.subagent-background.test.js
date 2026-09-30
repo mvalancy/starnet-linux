@@ -195,7 +195,7 @@ async function waitUntil(fn, ms, label) {
     const token = await bootToken(B, B);
     A.ok(token.length >= 32, 'got a session API token');
     const headers = { 'Content-Type': 'application/json', 'X-StarNet-Token': token, Origin: B };
-    sse = await startSseCollector(B + '/api/channels/events?token=' + encodeURIComponent(token));
+    sse = await startSseCollector(B + '/api/channels/events?' + require('./_httpToken.js').sseQuery(token));
 
     const res = await fetch(B + '/api/run', {
       method: 'POST',

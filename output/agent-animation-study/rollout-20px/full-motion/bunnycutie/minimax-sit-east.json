@@ -1,0 +1,10 @@
+{
+  "id": "bunnycutie",
+  "track": "sit",
+  "dir": "east",
+  "job": "1209d462-0487-4ad4-9556-9898164171c6",
+  "result": "frames: 5\nhttps://api.pixellab.ai/mcp/images/1209d462-0487-4ad4-9556-9898164171c6/download?index=0",
+  "packed": true,
+  "lastRaw": "output/agent-animation-study/rollout-20px/full-motion/bunnycutie/minimax/sit-east/1209d462-0487-4ad4-9556-9898164171c6/4.png",
+  "frameCount": 5
+}

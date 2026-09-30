@@ -1,0 +1,10 @@
+{
+  "id": "reptilian",
+  "track": "sit",
+  "dir": "west",
+  "job": "cdf10bb9-ef17-4dad-89ab-238032d29f3e",
+  "result": "frames: 5\nhttps://api.pixellab.ai/mcp/images/cdf10bb9-ef17-4dad-89ab-238032d29f3e/download?index=0",
+  "packed": true,
+  "lastRaw": "output/agent-animation-study/rollout-20px/full-motion/reptilian/minimax/sit-west/cdf10bb9-ef17-4dad-89ab-238032d29f3e/4.png",
+  "frameCount": 5
+}

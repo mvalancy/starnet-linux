@@ -237,7 +237,7 @@ const toolCalls = (events) => events.filter(e => e.name === 'agent.tool_call').m
     }
 
     /* ---- 3. an approved send actually DELIVERS, and the text is readable at the far end -------------- */
-    sse = await startSseCollector(B + '/api/channels/events?token=' + encodeURIComponent(token));
+    sse = await startSseCollector(B + '/api/channels/events?' + require('./_httpToken.js').sseQuery(token));
     {
       let asked = null;
       const events = await runWithConsent(B, headers, 'ping the dev chat', (p) => { asked = p; return 'once'; });

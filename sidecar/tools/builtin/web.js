@@ -1,9 +1,10 @@
 /* sidecar/tools/builtin/web.js — the WEB capability: web_search(query) and web_fetch(url).
-   Zero extra API keys for the MVP. Node 18+ (global fetch). No deps.
+   Zero extra API keys for the MVP. Node 18+. One runtime dep: undici (its fetch + a per-hop Agent that pins the
+   DNS-validated address — the rebinding guard; staged into the desktop bundle by scripts/stage-voice-deps.mjs).
 
    makeWebTools(deps?) -> { searchTool, fetchTool, register(registry),
                             webSearch(query,opts), webFetch(url,opts) }   // raw fns exported for reuse/testing
-     deps.fetchImpl  : (url, init) => Promise<Response>   // injectable for tests; defaults to global fetch
+     deps.fetchImpl  : (url, init) => Promise<Response>   // injectable for tests; defaults to undici.fetch
      deps.openrouter : { apiKey, model } | null           // enables the OpenRouter search/fetch FALLBACK
      deps.userAgent  : override UA string
 
@@ -37,6 +38,7 @@
   const DEFAULT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
                      '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
   const FETCH_MAX_CHARS   = 6000;   // web_fetch truncation
+  const net = require('node:net');
   /* RAW-BODY CEILING, applied BEFORE anything parses the response.
      htmlToText is a chain of lazy `[\s\S]*?` replaces — quadratic in the input — and the clamp to
      FETCH_MAX_CHARS ran AFTER it. Measured on a page of repeated "<script>": 64KB -> 55ms, 256KB -> 880ms,
@@ -255,9 +257,8 @@
       throw new Error('refusing to fetch private/loopback/intranet host: ' + h);
     return u;
   }
-  // DNS-rebinding guard: resolve a NAME and refuse if any address is private. Injectable + best-effort.
-  // A proven ENOTFOUND is preserved for web_fetch to report immediately; transient resolver failures are
-  // still left for fetch to surface because they are not proof that the domain is absent.
+  // Resolve every candidate and return the address that the connection must use.
+  // A DNS failure is not evidence that the destination is safe, so fail closed.
   function nodeLookup(host) { const dns = require('node:dns'); return dns.promises.lookup(host, { all: true }); }
   async function assertResolvedSafe(u, lookup) {
     if (!lookup) return;
@@ -273,15 +274,14 @@
       throw e;
     }
     let addrs;
-    try { addrs = await lookup(u.hostname); }
-    catch (e) {
-      if (e && e.code === 'ENOTFOUND') throw e;
-      return;
-    }
+    addrs = await lookup(u.hostname);
+    if (!Array.isArray(addrs) || !addrs.length) throw new Error('no verified DNS address for ' + h);
     for (const a of (addrs || [])) {
       const ip = (a && a.address) || '';
+      if (!net.isIP(ip)) throw new Error('resolver returned an invalid IP address for ' + h);
       if (isPrivateV4(ip) || isPrivateV6(ip)) throw new Error('refusing: ' + u.hostname + ' resolves to private address ' + ip);
     }
+    return addrs[0];
   }
 
   // ---------- HTML -> readable text (web_fetch fallback) ----------
@@ -420,7 +420,8 @@
 
   function makeWebTools(deps) {
     deps = deps || {};
-    const rawFetch = deps.fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
+    const undici = require('undici');
+    const rawFetch = deps.fetchImpl || undici.fetch;
     if (!rawFetch) throw new Error('web.js requires global fetch (Node 18+) or deps.fetchImpl');
     const politeness = deps.politeness || makePoliteScheduler({
       wait: deps.politeWait, minGapMs: deps.politeMinGapMs,
@@ -432,6 +433,23 @@
     const or = deps.openrouter || null;
     // DNS-rebinding guard resolver: default to real Node DNS; pass deps.lookup:null to disable (tests).
     const doLookup = ('lookup' in deps) ? deps.lookup : nodeLookup;
+    const makePinnedAgent = deps.agentFactory || (options => new undici.Agent(options));
+    // One dispatcher per requested hop: its socket lookup returns ONLY the
+    // address validated for this hop. The URL stays intact for Host and TLS SNI.
+    // Closing after the body is read prevents an old connection from carrying
+    // the next hop past its own DNS validation.
+    async function fetchPinned(u, init) {
+      const address = await assertResolvedSafe(u, doLookup);
+      const dispatcher = address ? makePinnedAgent({ connect: {
+        lookup(hostname, options, callback) { callback(null, address.address, address.family); }
+      } }) : null;
+      try {
+        const r = await doFetch(u.href, dispatcher ? Object.assign({}, init, { dispatcher }) : init);
+        return { status: r.status, ct: r.headers.get('content-type') || '', loc: r.headers.get('location') || '', body: await readBodyBounded(r) };
+      } finally {
+        if (dispatcher) await dispatcher.close();
+      }
+    }
     // web_request needs the RUN's surface (host authority — never taken from tool args) and a resolver for
     // the Commander's stored keys. Default: no keys and the strict surface, so an unwired caller can only
     // make UNAUTHENTICATED requests rather than silently gaining credentials it was never handed.
@@ -585,9 +603,9 @@
     async function directFetch(u0, parent) {
       let u = u0;
       for (let hop = 0; hop < 6; hop++) {
-        const res = await withTimeout(signal => doFetch(u.href, {
+        const res = await withTimeout(signal => fetchPinned(u, {
           headers: { 'User-Agent': UA, 'Accept': 'text/html,application/xhtml+xml' }, redirect: 'manual', signal
-        }).then(async r => ({ status: r.status, ct: r.headers.get('content-type') || '', loc: r.headers.get('location') || '', body: await readBodyBounded(r) })), FETCH_TIMEOUT_MS, parent);
+        }), FETCH_TIMEOUT_MS, parent);
         if (res.status >= 300 && res.status < 400 && res.loc) {
           const next = assertSafeUrl(new URL(res.loc, u.href).href);   // re-validate the redirect target
           await assertResolvedSafe(next, doLookup);
@@ -1008,9 +1026,9 @@
           const sendHeaders = hop === 0 || originOf(target) === firstOrigin
             ? headers
             : Object.keys(headers).reduce((o, k) => (isCredential(k) ? o : (o[k] = headers[k], o)), {});
-          res = await withTimeout(signal => doFetch(target.href, {
+          res = await withTimeout(signal => fetchPinned(target, {
             method, headers: sendHeaders, body: hasBody ? bodyPayload : undefined, redirect: 'manual', signal
-          }).then(async r => ({ status: r.status, ct: r.headers.get('content-type') || '', loc: r.headers.get('location') || '', body: await readBodyBounded(r) })), FETCH_TIMEOUT_MS, ctx && ctx.signal);
+          }), FETCH_TIMEOUT_MS, ctx && ctx.signal);
           if (res.status >= 300 && res.status < 400 && res.loc) {
             const next = assertSafeUrl(new URL(res.loc, target.href).href);
             await assertResolvedSafe(next, doLookup);

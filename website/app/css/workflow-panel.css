@@ -1,0 +1,277 @@
+/* THE DOCKED WORKFLOW PANEL (REFIT, 2026-09-22) — frontend/app/workflowpanel.js.
+   Docked to the right of build mode, never over the floor: the canvas stays live beside it (build.js
+   viewInsets reads this box as occluded glass, so FIT / pan-to-part frame the VISIBLE floor).
+   MATERIAL (glass reskin, 2026-09-24): the same sheet as the Build Library dock opposite it (refit-polish.css:
+   --refit-glass over --refit-sheet, blur(18px), one --refit-edge hairline, 12px shell / 6-8px parts) and the
+   same control voice as COMMS glass (glass-comms.css): matte plates with a top hairline light, recessed wells
+   for anything you type or read back, and state as a change of EDGE / FILL / RAIL — never an outer glow.
+   Theme tokens only, so every phosphor set re-tints it. The one local colour is the loop/edited cyan the
+   prototypes use for "goes round" and "your words, not the agent's" — a semantic voice like --ok/--bad. */
+.wf-panel {
+  --wf-cyan: #5fd8ff;
+  --wf-edge: var(--refit-edge, rgba(var(--ph-rgb),.2));            /* the one hairline */
+  --wf-light: inset 0 1px 0 rgba(var(--ph-bright-rgb),.07);        /* the plate's top edge light */
+  --wf-plate: rgba(var(--ph-rgb),.035);                            /* a resting card on the sheet */
+  --wf-hover: rgba(var(--ph-rgb),.1);                              /* the Build Library's hover fill */
+  --wf-on: rgba(var(--ph-rgb),.13);                                /* its active fill */
+  --wf-well: rgba(0,0,0,.34);                                      /* a recessed field (darker than the Library search: reading text sits in it) */
+  --wf-well-shadow: inset 0 1px 3px rgba(0,0,0,.15);
+  --wf-ring: 0 0 0 2px rgba(var(--ph-rgb),.1);                     /* focus: a hairline ring, not a bloom */
+  position: absolute; z-index: 4; right: 12px; top: 58px; bottom: 12px;
+  width: min(calc(540px * var(--sn-unzoom,1)), 46%);
+  display: flex; flex-direction: column; min-height: 0;
+  font-family: 'VT323', 'Courier New', monospace; color: var(--text);
+  border: 1px solid var(--wf-edge); border-radius: 12px;
+  background: var(--refit-glass, none), var(--refit-sheet, var(--panel));
+  backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+  box-shadow: 0 12px 36px rgba(0,0,0,.4), inset 0 1px rgba(var(--ph-rgb),.08);
+  text-shadow: none;
+  user-select: text; overflow: hidden;
+}
+@media (max-width: 1100px) { .wf-panel { top: 88px; } }
+@media (max-width: 900px) { .wf-panel { left: 12px; width: auto; top: auto; height: 58%; } }
+.wf-panel [hidden] { display: none !important; }
+.wf-panel :is(button,input,textarea,summary):focus-visible { outline: 2px solid var(--ph-bright); outline-offset: 2px; }
+/* a text field shows focus as its own edge + ring (the Build Library / menu-glass field), not a second outline */
+.wf-panel :is(input:not([type=checkbox]):not([type=radio]),textarea):focus-visible { outline: none; }
+
+/* ---- the panel's keys: the Build Library / COMMS glass button, one voice for every .bb inside ---- */
+.wf-panel .bb {
+  color: var(--ph); border: 1px solid var(--wf-edge); border-radius: 6px;
+  background: var(--refit-glass, var(--wf-plate)); box-shadow: var(--wf-light); text-shadow: none;
+  transition: background-color var(--t-fast) var(--ease-soft), border-color var(--t-fast) var(--ease-soft), color var(--t-fast) var(--ease-soft);
+}
+.wf-panel .bb:hover:not(:disabled) { color: var(--ph-bright); border-color: rgba(var(--ph-rgb),.45); background: var(--wf-hover); box-shadow: var(--wf-light); }
+.wf-panel .bb:active:not(:disabled) { box-shadow: inset 0 2px 4px rgba(0,0,0,.35); }
+.wf-panel .bb:is(.active,.sel,[aria-pressed="true"]), .wf-panel .bb:is(.active,.sel,[aria-pressed="true"]):hover:not(:disabled) { color: var(--ph-bright); border-color: var(--ph); background: var(--wf-on); box-shadow: var(--wf-light), inset 0 -2px 0 rgba(var(--ph-rgb),.65); }
+.wf-panel .bb:disabled, .wf-panel .bb:disabled:hover { opacity: .4; cursor: default; color: var(--ph); border-color: var(--wf-edge); background: var(--refit-glass, var(--wf-plate)); box-shadow: var(--wf-light); }
+/* the primary key is lit glass, not a solid slab (app.css paints .refit-primary solid with !important) */
+.wf-panel .bb.refit-primary { color: var(--ph-bright) !important; background: rgba(var(--ph-rgb),.16) !important; border-color: var(--ph) !important; text-shadow: none !important; }
+.wf-panel .bb.refit-primary:hover:not(:disabled) { background: rgba(var(--ph-rgb),.24) !important; }
+.wf-panel .bb.refit-primary:disabled { background: rgba(var(--ph-rgb),.16) !important; }
+.wf-panel .wf-x:hover:not(:disabled) { color: var(--bad); border-color: var(--bad); background: color-mix(in srgb, var(--bad) 8%, transparent); }
+/* the WHEN picker's keys and fields, restated in the same glass (the shared .sp skin lights its keys with a bloom) */
+.wf-panel :is(.sp-mode,.sp-day,.sp-unit) { border-color: var(--wf-edge); border-radius: 6px; background: var(--wf-plate); box-shadow: var(--wf-light); }
+.wf-panel :is(.sp-mode,.sp-day,.sp-unit):hover { border-color: rgba(var(--ph-rgb),.45); background: var(--wf-hover); }
+.wf-panel :is(.sp-mode.active,.sp-day.on,.sp-unit.on) { color: var(--ph-bright); border-color: var(--ph); background: var(--wf-on); box-shadow: var(--wf-light), inset 0 -2px 0 rgba(var(--ph-rgb),.65); }
+.wf-panel :is(select,.sp .sp-num) { background-color: var(--wf-well); border: 1px solid var(--wf-edge); border-radius: 8px; box-shadow: var(--wf-well-shadow); text-shadow: none; }
+.wf-panel .sp .sp-num { background-image: none; }
+.wf-panel :is(select,.sp .sp-num):focus { border-color: var(--ph); box-shadow: var(--wf-ring); }
+
+/* one scroll for the card (header · strip · editor); the footer stays put */
+.wf-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--ph-dim) transparent; }
+/* header: name · readiness · cost · how it runs */
+.wf-head { padding: 10px 14px 8px; border-bottom: 1px solid var(--wf-edge); display: grid; gap: 4px; flex: 0 0 auto; }
+.wf-head-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.wf-kick { font-size: 13px; letter-spacing: 2px; color: var(--ph-dim); }
+.wf-x { min-width: 30px; }
+.wf-name-in { width: 100%; box-sizing: border-box; background: transparent; border: 0; border-bottom: 1px dashed var(--ph-dim); color: var(--ph-bright);
+  font: inherit; font-size: 26px; letter-spacing: .6px; padding: 0 2px; }
+/* the name is a glass field (the generic input rule sizes it; only the material is restated here) */
+.wf-panel input.wf-name-in { border: 1px solid var(--wf-edge); border-radius: 8px; background: linear-gradient(180deg, rgba(0,0,0,.5), transparent 70%), var(--bg); box-shadow: var(--wf-well-shadow); text-shadow: none; }
+.wf-panel input.wf-name-in:hover { border-color: rgba(var(--ph-rgb),.38); }
+.wf-panel input.wf-name-in:focus { outline: none; border-color: var(--ph); box-shadow: var(--wf-ring); }
+.wf-name-none { font-size: 22px; color: var(--ph-dim); }
+.wf-ready { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.wf-pill { font-size: 14px; letter-spacing: 1.3px; padding: 1px 8px; border: 1px solid color-mix(in srgb, var(--gold) 60%, transparent); border-radius: 4px;
+  color: var(--gold); background: rgba(var(--gold-rgb),.07); box-shadow: var(--wf-light); cursor: pointer; }
+.wf-pill:not(.ok):hover { border-color: var(--gold); background: rgba(var(--gold-rgb),.12); }
+.wf-pill.ok { border-color: color-mix(in srgb, var(--ok) 60%, transparent); color: var(--ok); background: rgba(var(--ok-rgb),.07); cursor: default; }
+.wf-est { font-size: 14px; color: var(--ph-dim); font-variant-numeric: tabular-nums; }
+.wf-sentence { margin: 2px 0 0; font-size: 17px; line-height: 1.3; color: var(--text); }
+.wf-sentence .wf-ag { font-weight: normal; color: var(--ph-bright); cursor: pointer; }
+.wf-sentence .wf-lp { color: var(--wf-cyan); }
+.wf-miss { font: inherit; color: var(--gold); background: rgba(var(--gold-rgb),.1); border: 0; border-radius: 3px; box-shadow: inset 0 -1px 0 var(--gold); padding: 0 4px; cursor: pointer; }
+.wf-miss:hover { background: rgba(var(--gold-rgb),.18); }
+.wf-hints { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px; }
+.wf-hint { font: inherit; font-size: 13px; color: var(--ph-dim); background: var(--wf-plate); border: 1px dashed rgba(var(--ph-rgb),.3); border-radius: 4px; padding: 0 6px; cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-soft), border-color var(--t-fast) var(--ease-soft), color var(--t-fast) var(--ease-soft); }
+.wf-hint:hover { color: var(--ph-bright); border-color: rgba(var(--ph-rgb),.55); background: var(--wf-hover); }
+
+/* flow strip: trigger ▸ docks in compiled order ▸ OUTBOX, loops drawn as back-arcs. The strip is the panel's one
+   recessed bay — a darker well with the faint layout grid — so the machine reads as set INTO the glass. */
+.wf-strip-wrap { flex: 0 0 auto; overflow-x: auto; scrollbar-width: thin; scrollbar-color: var(--ph-dim) transparent; border-bottom: 1px solid var(--wf-edge);
+  background: linear-gradient(rgba(var(--ph-rgb),.03) 1px, transparent 1px) 0 0/20px 20px, linear-gradient(90deg, rgba(var(--ph-rgb),.03) 1px, transparent 1px) 0 0/20px 20px, rgba(0,0,0,.22);
+  box-shadow: inset 0 2px 6px rgba(0,0,0,.28), inset 0 -1px 0 rgba(var(--ph-bright-rgb),.04); }
+.wf-strip { position: relative; display: flex; align-items: center; padding: 10px 12px 40px; min-width: max-content; }
+.wf-node { position: relative; z-index: 1; width: 112px; box-sizing: border-box; display: grid; gap: 2px; align-content: start; text-align: left;
+  font: inherit; color: var(--text); border: 1px solid var(--wf-edge); border-radius: 7px; padding: 6px 8px; cursor: pointer;
+  background: linear-gradient(165deg, rgba(var(--ph-rgb),.075), transparent 46%), color-mix(in srgb, var(--panel2) 88%, transparent);
+  box-shadow: var(--wf-light), 0 2px 6px rgba(0,0,0,.25);
+  transition: background-color var(--t-fast) var(--ease-soft), border-color var(--t-fast) var(--ease-soft); }
+.wf-node:hover { border-color: rgba(var(--ph-rgb),.45); }
+/* the selected part keeps the floor highlight's gold, as an edge + inner ring (no bloom) */
+.wf-node.sel { border-color: var(--gold); background: linear-gradient(165deg, rgba(var(--gold-rgb),.1), transparent 55%), color-mix(in srgb, var(--panel2) 88%, transparent);
+  box-shadow: inset 0 0 0 1px rgba(var(--gold-rgb),.35), var(--wf-light), 0 2px 6px rgba(0,0,0,.25); }
+.wf-node.wf-term { width: 96px; }
+.wf-node:disabled { opacity: .6; cursor: default; }
+.wf-node .k { display: flex; justify-content: space-between; align-items: center; font-size: 12px; letter-spacing: 1.6px; color: var(--ph-dim); }
+.wf-node .t { font-size: 18px; color: var(--ph-bright); letter-spacing: .6px; }
+.wf-node .a { font-size: 14px; color: var(--text); overflow-wrap: anywhere; display: flex; align-items: center; gap: 5px; min-width: 0; }
+.wf-node .a .an { min-width: 0; }
+/* the strip's crew: a small skin well per bay (same glass well as the agent picker) */
+.wf-node .wf-nthumb { border-radius: 4px; background: var(--wf-well); box-shadow: inset 0 0 0 1px var(--wf-edge), var(--wf-well-shadow); }
+/* inline skin (trigger rows, starting-agent chips, the run log, a working line): the figure alone, sat on the text line */
+.wf-panel .wf-ithumb { margin: -3px 4px -3px 0; }
+.wf-node .a.none { color: var(--gold); }
+.wf-node .s { font-size: 13px; color: var(--ph-dim); line-height: 1.15; max-height: 2.3em; overflow: hidden; }
+.wf-node .s i { font-style: normal; color: var(--gold); }
+.wf-node .warn { font-size: 12px; color: var(--warn); }
+.wf-node .badge { justify-self: start; font-size: 12px; letter-spacing: 1.2px; color: var(--ok); background: rgba(var(--ok-rgb),.1);
+  border: 1px solid color-mix(in srgb, var(--ok) 50%, transparent); border-radius: 3px; padding: 0 4px; margin-top: 1px; }
+/* status lamps: a small housed lamp — dark ring, top light, a faint spill (the glass session-lamp recipe) */
+.wf-node .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gold); flex: 0 0 auto;
+  box-shadow: 0 0 0 1px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.3), 0 0 4px rgba(var(--gold-rgb),.3); }
+.wf-node .dot.ok { background: var(--ok); box-shadow: 0 0 0 1px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.3), 0 0 4px rgba(var(--ok-rgb),.3); }
+.wf-node.gate { width: 100px; border-style: dashed; border-color: color-mix(in srgb, var(--wf-cyan) 70%, transparent); }
+.wf-node.gate .k { color: var(--wf-cyan); }
+.wf-node.gate.join { border-color: rgba(var(--ph-rgb),.35); }
+.wf-colgroup { display: grid; gap: 6px; padding: 16px 6px 6px; border: 1px dashed rgba(var(--ph-rgb),.3); border-radius: 9px; background: rgba(var(--ph-rgb),.02); }
+.wf-colmode { font-size: 11px; letter-spacing: 1.4px; color: var(--ph-dim); margin-top: -12px; }
+.wf-belt { position: relative; flex: 0 0 auto; width: 50px; display: grid; justify-items: center; align-content: center; gap: 4px; }
+.wf-belt .carry { font-size: 12px; color: var(--ph-dim); text-align: center; line-height: 1.05; max-width: 50px; max-height: 3.2em; overflow: hidden; overflow-wrap: anywhere; min-height: 1.1em; }
+/* the belt: a recessed channel with the rollers passing under a hairline lip */
+.wf-belt .rail { width: 100%; height: 8px; background: rgba(0,0,0,.4); border-block: 1px solid var(--wf-edge); border-radius: 2px; position: relative; overflow: hidden;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.5); }
+.wf-belt .rail::after { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(90deg, transparent 0 7px, rgba(var(--ph-rgb),.4) 7px 9px, transparent 9px 14px); animation: wf-roll 1.1s linear infinite; }
+@keyframes wf-roll { to { background-position: 14px 0; } }
+.wf-plus { position: relative; width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--wf-edge);
+  background: linear-gradient(180deg, rgba(var(--ph-rgb),.08), rgba(var(--ph-rgb),.02)), var(--panel2); box-shadow: var(--wf-light), 0 1px 3px rgba(0,0,0,.4);
+  color: var(--ph); font: inherit; font-size: 18px; line-height: 1; padding: 0; display: grid; place-items: center; cursor: pointer; z-index: 2;
+  transition: background-color var(--t-fast) var(--ease-soft), border-color var(--t-fast) var(--ease-soft), color var(--t-fast) var(--ease-soft); }
+.wf-plus:hover { border-color: var(--gold); color: var(--gold); background: linear-gradient(180deg, rgba(var(--gold-rgb),.14), rgba(var(--gold-rgb),.04)), var(--panel2); }
+.wf-plus.on { border-color: var(--gold); color: var(--gold); background: linear-gradient(180deg, rgba(var(--gold-rgb),.2), rgba(var(--gold-rgb),.08)), var(--panel2); box-shadow: inset 0 0 0 1px rgba(var(--gold-rgb),.4), 0 1px 3px rgba(0,0,0,.4); }
+.wf-ins { flex: 0 0 auto; padding: 8px 14px; border-bottom: 1px solid var(--wf-edge); background: linear-gradient(180deg, rgba(var(--gold-rgb),.05), rgba(var(--gold-rgb),.015)); box-shadow: inset 0 1px 0 rgba(var(--gold-rgb),.12); }
+.wf-inserter { display: grid; gap: 6px; }
+.wf-inserter .h { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; letter-spacing: 1.3px; color: var(--gold); }
+.wf-inserter .n { font-size: 13px; color: var(--ph-dim); line-height: 1.2; }
+.wf-arcs { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 0; overflow: visible; }
+.wf-arcs path { fill: none; stroke: rgba(0,0,0,.5); stroke-width: 6; }
+.wf-arcs path.chev { stroke: var(--wf-cyan); stroke-width: 2; stroke-dasharray: 6 8; opacity: .85; animation: wf-rollb 1s linear infinite; }
+@keyframes wf-rollb { to { stroke-dashoffset: -14; } }
+.wf-arcs text { font-family: 'VT323', monospace; font-size: 13px; fill: var(--wf-cyan); letter-spacing: .6px; }
+
+/* body: the selected part's editor */
+.wf-body { padding: 4px 14px 12px; }
+.wf-sec { padding: 10px 0; display: grid; gap: 7px; }
+.wf-sec + .wf-sec { border-top: 1px solid var(--wf-edge); }
+.wf-panel h3::after, .wf-panel h4::after { display: none; }
+.wf-sec h3 { margin: 0; padding: 0; border: 0; background: none; text-shadow: none; text-transform: none; letter-spacing: .4px; font-weight: normal; font-size: 19px; color: var(--ph-bright); display: flex; align-items: baseline; gap: 8px; }
+.wf-sec h3 .n { font-size: 13px; letter-spacing: 1px; border: 1px solid var(--wf-edge); border-radius: 4px; background: var(--wf-plate); box-shadow: var(--wf-light); padding: 0 5px; color: var(--ph); }
+.wf-sec h4 { padding: 0; border: 0; background: none; text-transform: none; margin: 4px 0 0; font-weight: normal; font-size: 15px; letter-spacing: 1.4px; color: var(--ph-dim); }
+.wf-help { margin: 0; font-size: 15px; line-height: 1.3; color: var(--text); }
+.wf-help.dim, .wf-panel .dim { color: var(--ph-dim); }
+.wf-help b { font-weight: normal; color: var(--ph-bright); }
+.wf-help.bad, .wf-warnline { color: var(--warn); font-size: 15px; line-height: 1.3; display: block; }
+.wf-ok, .wf-okc { color: var(--ok); font-weight: normal; }
+.wf-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.wf-link { font: inherit; background: none; border: 0; padding: 0; color: var(--ph-bright); text-decoration: underline; cursor: pointer; }
+.wf-panel .refit-error { display: none; color: var(--bad); font-size: 14px; }
+.wf-panel .refit-error.show { display: block; }
+.wf-more { font-size: 15px; }
+.wf-more summary { cursor: pointer; color: var(--ph-dim); padding: 3px 0; }
+.wf-more summary:hover { color: var(--ph-bright); }
+.wf-panel .refit-workflow-advanced summary { cursor: pointer; color: var(--ph-dim); }
+.wf-panel .lb-field { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 15px; }
+.wf-panel .lb-num { width: 84px; }
+
+/* the agent picker: every agent, with an honest status — glass cards, the chosen one lit with a rail */
+.wf-agents { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px; }
+.wf-agent { display: grid; grid-template-columns: 34px 1fr; gap: 0 7px; align-items: center; text-align: left; font: inherit;
+  background: var(--refit-glass, var(--wf-plate)); border: 1px solid var(--wf-edge); border-radius: 7px; padding: 5px 7px; color: var(--text); cursor: pointer; box-shadow: var(--wf-light);
+  transition: background-color var(--t-fast) var(--ease-soft), border-color var(--t-fast) var(--ease-soft); }
+.wf-agent:hover:not(:disabled) { border-color: rgba(var(--ph-rgb),.45); background: var(--wf-hover); }
+.wf-agent.on { border-color: var(--ph); background: var(--wf-on); box-shadow: inset 2px 0 0 var(--ph), var(--wf-light); }
+.wf-agent:disabled { opacity: .5; cursor: not-allowed; }
+/* the agent's SKIN in a recessed glass well (the panel's own --wf-well material; matte, no glow) — the same body the
+   floor draws, never a letter. A disabled card dims it with the card (opacity). */
+.wf-agent .av { grid-row: 1/3; width: 34px; height: 42px; border-radius: 5px; background: var(--wf-well); box-shadow: inset 0 0 0 1px var(--wf-edge), var(--wf-well-shadow); }
+.wf-agent.on .av:not(.agt-wait) { box-shadow: inset 0 0 0 1px rgba(var(--ph-rgb),.45), var(--wf-well-shadow); }
+.wf-agent .nm { font-size: 16px; color: var(--ph-bright); letter-spacing: .6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-agent .st { font-size: 12px; color: var(--ph-dim); line-height: 1.1; }
+.wf-agent .st.free { color: var(--ok); }
+.wf-agent.recruit { border-style: dashed; border-color: rgba(var(--ph-rgb),.3); background: transparent; box-shadow: none; }
+.wf-agent.recruit:hover:not(:disabled) { border-color: rgba(var(--ph-rgb),.55); background: var(--wf-hover); }
+.wf-agent.recruit .av { display: grid; place-items: center; font-size: 22px; background: transparent; border: 1px dashed rgba(var(--ph-rgb),.4); color: var(--ph); box-shadow: none; }
+.wf-compute { display: grid; gap: 6px; justify-items: start; }
+
+/* the contract: GETS → DOES → HANDS OFF → TO — one recessed form, labels on a quiet plate column */
+.wf-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.wf-chip { font: inherit; font-size: 15px; letter-spacing: .4px; color: var(--ph); background: var(--refit-glass, var(--wf-plate)); border: 1px solid var(--wf-edge); border-radius: 6px; padding: 1px 8px; cursor: pointer; box-shadow: var(--wf-light);
+  transition: background-color var(--t-fast) var(--ease-soft), border-color var(--t-fast) var(--ease-soft), color var(--t-fast) var(--ease-soft); }
+.wf-chip:hover { border-color: rgba(var(--ph-rgb),.45); color: var(--ph-bright); background: var(--wf-hover); }
+.wf-chip[aria-pressed="true"] { background: var(--wf-on); border-color: var(--ph); color: var(--ph-bright); box-shadow: var(--wf-light), inset 0 -2px 0 rgba(var(--ph-rgb),.65); }
+.wf-contract { display: grid; border: 1px solid var(--wf-edge); border-radius: 8px; overflow: hidden; background: var(--wf-well); box-shadow: var(--wf-well-shadow);
+  transition: border-color var(--t-fast) var(--ease-soft); }
+.wf-contract:focus-within { border-color: rgba(var(--ph-rgb),.55); }
+.wf-contract .row { display: grid; grid-template-columns: 78px minmax(0,1fr); border-top: 1px solid var(--wf-edge); }
+.wf-contract .row:first-child { border-top: 0; }
+.wf-contract .lab { padding: 6px 8px; font-size: 13px; letter-spacing: 1.5px; color: var(--ph-dim); background: var(--wf-plate); border-right: 1px solid var(--wf-edge); }
+.wf-contract .val { padding: 5px 8px; font-size: 15px; color: var(--text); }
+.wf-contract .val.ro { color: var(--ph-dim); }
+.wf-contract .val.ro b { font-weight: normal; color: var(--ph-bright); }
+.wf-contract textarea, .wf-contract input { width: 100%; box-sizing: border-box; background: transparent; border: 0; color: var(--ph-bright); font: inherit; font-size: 16px; line-height: 1.3; padding: 0; resize: vertical; box-shadow: none; text-shadow: none; }
+.wf-contract textarea { min-height: 76px; }
+.wf-contract textarea:focus, .wf-contract input:focus { outline: none; box-shadow: none; }
+.wf-contract .row:focus-within { background: rgba(var(--ph-rgb),.05); }
+.wf-contract .row:focus-within .lab { color: var(--ph-bright); background: var(--wf-hover); box-shadow: inset 2px 0 0 var(--ph); }
+
+/* try this step + the step test */
+.wf-io { display: block; width: 100%; box-sizing: border-box; background: rgba(0,0,0,.46); border: 1px solid var(--wf-edge); border-radius: 8px; box-shadow: var(--wf-well-shadow);
+  padding: 6px 8px; font: inherit; font-size: 15px; line-height: 1.3; color: var(--text); text-shadow: none; white-space: pre-wrap; max-height: 200px; overflow: auto; resize: vertical;
+  transition: border-color var(--t-fast) var(--ease-soft), box-shadow var(--t-fast) var(--ease-soft); }
+textarea.wf-io { color: var(--ph-bright); }
+textarea.wf-io:hover { border-color: rgba(var(--ph-rgb),.38); }
+textarea.wf-io:focus { outline: none; border-color: var(--ph); box-shadow: var(--wf-ring); }
+.wf-io.out { border-color: color-mix(in srgb, var(--ok) 60%, transparent); color: var(--ph-bright); }
+.wf-io.edited, textarea.wf-io.edited { border-color: var(--wf-cyan); }
+.wf-from { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; letter-spacing: 1.3px; color: var(--ph-dim); }
+.wf-from .src { color: var(--wf-cyan); letter-spacing: .4px; }
+.wf-tag { color: var(--wf-cyan); background: color-mix(in srgb, var(--wf-cyan) 12%, transparent); border: 1px solid color-mix(in srgb, var(--wf-cyan) 50%, transparent); border-radius: 3px; padding: 0 5px; letter-spacing: 1px; }
+.wf-meta { display: flex; flex-wrap: wrap; gap: 12px; font-size: 14px; color: var(--ph-dim); font-variant-numeric: tabular-nums; }
+.wf-meta b { font-weight: normal; color: var(--ph); }
+.wf-flowon { border-left: 3px solid var(--wf-cyan); border-radius: 0 6px 6px 0; padding: 4px 8px; background: linear-gradient(90deg, color-mix(in srgb, var(--wf-cyan) 8%, transparent), color-mix(in srgb, var(--wf-cyan) 2%, transparent)); font-size: 15px; color: var(--ph-bright); }
+.wf-flowon b { font-weight: normal; color: var(--wf-cyan); }
+.wf-verdict { border-left: 3px solid var(--ok); border-radius: 0 6px 6px 0; padding: 3px 8px; background: linear-gradient(90deg, rgba(var(--ok-rgb),.08), rgba(var(--ok-rgb),.02)); font-size: 15px; }
+.wf-verdict.revise { border-left-color: var(--gold); background: linear-gradient(90deg, rgba(var(--gold-rgb),.08), rgba(var(--gold-rgb),.02)); }
+.wf-log { font-size: 15px; color: var(--ph-dim); }
+.wf-spin { display: inline-block; width: 8px; height: 8px; background: var(--ph); margin-right: 6px; animation: wf-blink .5s steps(2) infinite; }
+@keyframes wf-blink { 50% { opacity: .2; } }
+/* "continue with MY edit": the cyan voice as lit glass, same weight as the primary key */
+.wf-panel .bb.cyan, .wf-panel .bb.refit-primary.cyan { color: var(--wf-cyan) !important; background: color-mix(in srgb, var(--wf-cyan) 14%, transparent) !important; border-color: var(--wf-cyan) !important; box-shadow: var(--wf-light); }
+.wf-panel .bb.cyan:hover:not(:disabled), .wf-panel .bb.refit-primary.cyan:hover:not(:disabled) { background: color-mix(in srgb, var(--wf-cyan) 22%, transparent) !important; }
+.wf-budget { display: flex; align-items: center; gap: 8px; font-size: 14px; font-variant-numeric: tabular-nums; }
+.wf-budget .meter { flex: 0 0 90px; height: 6px; background: rgba(0,0,0,.4); border: 1px solid var(--wf-edge); border-radius: 3px; overflow: hidden; box-shadow: inset 0 1px 2px rgba(0,0,0,.5); }
+.wf-budget .meter i { display: block; height: 100%; background: var(--ph); }
+.wf-runlog { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 8px 0; border-top: 1px solid var(--wf-edge); }
+.wf-runlog .lbl { font-size: 12px; letter-spacing: 1.5px; color: var(--ph-dim); margin-right: 4px; }
+.wf-runlog .arr { color: var(--ph-dim); }
+.wf-hop { font: inherit; font-size: 14px; color: var(--text); background: var(--refit-glass, var(--wf-plate)); border: 1px solid var(--wf-edge); border-radius: 5px; padding: 0 6px; cursor: pointer; box-shadow: var(--wf-light);
+  transition: background-color var(--t-fast) var(--ease-soft), border-color var(--t-fast) var(--ease-soft); }
+.wf-hop:hover { border-color: rgba(var(--ph-rgb),.45); background: var(--wf-hover); }
+.wf-hop.sel { border-color: var(--gold); color: var(--ph-bright); background: rgba(var(--gold-rgb),.08); box-shadow: inset 0 0 0 1px rgba(var(--gold-rgb),.3), var(--wf-light); }
+.wf-hop.edited { border-color: var(--wf-cyan); }
+.wf-hop.revise { border-style: dashed; }
+
+/* footer: the Build Library's quiet base strip */
+.wf-foot { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 8px 14px; border-top: 1px solid var(--wf-edge); background: rgba(0,0,0,.12); }
+.wf-foot-note { flex: 1; min-width: 150px; font-size: 13px; color: var(--ph-dim); }
+.wf-sample-res { flex: 1 1 100%; font-size: 14px; }
+
+/* LINE TRIGGERS (2026-09-23): folder / webhook rows on the INBOX. The URL and the once-only key are readouts the
+   Commander copies, so they wrap anywhere and select as one token; the key box is the only lit (gold-edged) object. */
+.lt-row { padding: 4px 0 6px; border-bottom: 1px dashed var(--wf-edge); }
+.lt-row:last-child { border-bottom: 0; }
+.lt-acts { padding-left: 1.15em; margin-top: 3px; }
+.lt-url { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.lt-code { font-family: 'VT323', monospace; font-size: 14px; color: var(--ph-bright); background: var(--wf-well); border: 1px solid var(--wf-edge); border-radius: 5px; box-shadow: var(--wf-well-shadow);
+  padding: 0 5px; overflow-wrap: anywhere; user-select: all; }
+.lt-reveal { margin: 5px 0 3px 1.15em; padding: 6px 8px; border: 1px solid color-mix(in srgb, var(--gold) 60%, transparent); border-left: 3px solid var(--gold); border-radius: 0 7px 7px 0;
+  background: linear-gradient(90deg, rgba(var(--gold-rgb),.08), rgba(var(--gold-rgb),.025)); box-shadow: inset 0 1px 0 rgba(var(--gold-rgb),.12); display: grid; gap: 4px; }
+.lt-reveal .lt-key { font-size: 16px; color: var(--gold); }
+.lt-form .lb-field { margin-top: 4px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .wf-belt .rail::after, .wf-arcs path.chev, .wf-spin { animation: none; }
+  .wf-panel :is(.bb,.wf-node,.wf-agent,.wf-chip,.wf-hop,.wf-hint,.wf-plus,.wf-contract,.wf-io) { transition: none; }
+}

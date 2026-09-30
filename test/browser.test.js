@@ -113,7 +113,7 @@ function fakeDriver() {
   }
 
   const driver = fakeDriver();
-  const B = makeBrowserTools({ driver, vision: async ({ question }) => 'vision answer: ' + question });
+  const B = makeBrowserTools({ driver, lookup: null, vision: async ({ question }) => 'vision answer: ' + question });
   const names = B.tools.map(t => t.name).sort();
   A.eq(names, [
     'browser.attach', 'browser.back', 'browser.click', 'browser.console', 'browser.detach', 'browser.dialog', 'browser.drag',

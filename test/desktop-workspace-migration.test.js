@@ -47,7 +47,7 @@ const setupMigration = src.indexOf('let migrated_workspaces = migrate_workspace_
 // Setup kicks off the sidecar via spawn_sidecar_with_retry(&state) (audit 0.2 wrapped the bare
 // spawn so a first-run failure shows a Retry dialog); accept either the wrapper or a bare spawn so
 // this invariant is about ORDERING, not the exact helper name.
-const sidecarSpawn = src.search(/spawn_sidecar(?:_with_retry)?\(&state\)/);
+const sidecarSpawn = src.search(/spawn_sidecar(?:_with_retry)?\((?:app\.handle\(\),\s*)?&state\)/);
 A.ok(setupMigration >= 0, 'setup invokes workspace migration');
 A.ok(sidecarSpawn >= 0, 'setup spawns the sidecar');
 A.ok(setupMigration < sidecarSpawn, 'workspace migration runs before sidecar spawn');

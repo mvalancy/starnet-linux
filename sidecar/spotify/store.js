@@ -47,7 +47,8 @@
       // reject honestly so clear()/refresh() callers never claim a write that still did not land.
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          await fsp.writeFile(tmp, JSON.stringify(state), 'utf8');
+          // 0o600: this file holds the Spotify refresh token — never world-readable on Linux/macOS.
+          await fsp.writeFile(tmp, JSON.stringify(state), { encoding: 'utf8', mode: 0o600 });
           await fsp.rename(tmp, file);
           return;
         } catch (e) { lastError = e; }

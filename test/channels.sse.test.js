@@ -230,6 +230,8 @@ A.eq(runTeeView('agent.reasoning', { agentId: 'a1', runId: 'r1', on: true }), nu
     let lastSseEventAt = 0, fnow = 0;
     const apiUrl = x => x, fetchSnapshot = () => { snapshots++; };
     const window = { __STARNET_API_TOKEN__: '' };
+    const ApiTicket = { sseUrl: q => '/api/channels/events?' + q + '&ticket=T' + (++minted) };   // app/apiticket.js stand-in
+    let minted = 0;
     const performance = { now: () => 0 };
     const U = { bus: { emit(name, payload) { emitted.push({name, payload}); } } };
     ${openSource}

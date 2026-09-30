@@ -51,6 +51,18 @@
   const QUEUE_CAP_MAX = 12;
   const DRY_STOP_DEFAULT = 3;     // consecutive NOTHING-TO-DO passes before the loop goes DORMANT
   const DRY_STOP_MAX = 20;
+  /* THE STALL BREAKER (2026-09-17). Convergence above trusts the model to CONCEDE. A customer's agent never did:
+     98 overnight passes, each one re-confirming that the previous pass's files existed, each one filed as a
+     'candidate' ("verified — everything is in place"), each one auto-approved, ~$98 gone and no work done.
+     dryStreak never moved because the model never said NOTHING-TO-DO; the queue never filled because gate:'auto'
+     approves its own passes. So this counter reads the LEDGER, not the model's mood: a candidate that changed
+     no file, landed no commit and filed no findings is a STALLED pass, and a loop that stalls stallStopAfter
+     times in a row is parked 'paused' with the reason spelled out. It costs $0 to be parked and one click to
+     resume — the Commander decides, after seeing why, whether the loop had a point. */
+  const STALL_STOP_DEFAULT = 3;   // consecutive passes that changed nothing before the loop parks itself
+  const STALL_STOP_MAX = 20;
+  const ECHO_MIN_TOKENS = 6;      // below this a summary is too short to compare by overlap; exact match only
+  const ECHO_THRESHOLD = 0.8;     // word-set overlap at/above which two summaries are "the same pass again"
 
   /* ---- HOW A LOOP KNOWS IT IS FINISHED ---------------------------------------------------------------
      Two accepted signals, because asking a model to CONCEDE ("say NOTHING-TO-DO") is asking for the one
@@ -82,6 +94,54 @@
 
   function queueCapOf(loop) { return clampInt(loop && loop.queueCap, QUEUE_CAP_MIN, QUEUE_CAP_MAX, QUEUE_CAP_DEFAULT); }
   function dryStopOf(loop) { return clampInt(loop && loop.dryStopAfter, 1, DRY_STOP_MAX, DRY_STOP_DEFAULT); }
+  function stallStopOf(loop) { return clampInt(loop && loop.stallStopAfter, 1, STALL_STOP_MAX, STALL_STOP_DEFAULT); }
+
+  /* similarity — word-set overlap (Jaccard) of two summaries after case/punctuation folding. Pure, bounded, and
+     deliberately crude: it exists to catch "Verified that all files exist. Everything is in place." said 98 ways,
+     not to grade prose. Two short strings (< ECHO_MIN_TOKENS words) compare by exact folded equality only, because
+     overlap on three words is a coin toss. Returns 0..1. */
+  function tokens(s) {
+    return String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9\s]+/g, ' ').split(/\s+/).filter(Boolean);
+  }
+  function similarity(a, b) {
+    const ta = tokens(a), tb = tokens(b);
+    if (!ta.length || !tb.length) return 0;
+    if (ta.length < ECHO_MIN_TOKENS || tb.length < ECHO_MIN_TOKENS) return ta.join(' ') === tb.join(' ') ? 1 : 0;
+    const sa = new Set(ta), sb = new Set(tb);
+    let both = 0;
+    for (const w of sa) if (sb.has(w)) both++;
+    const union = sa.size + sb.size - both;
+    return union ? both / union : 0;
+  }
+
+  /* stallSignal — did this settled CANDIDATE actually do anything? Reads only what the ledger can prove.
+
+       loop     — the loop record BEFORE this iteration is folded in (its iterations are the history)
+       settled  — the iteration row as it will be stored: { outcome, files, commit, digest, summary, title }
+
+     Returns null (a real pass), 'no-change' or 'echo':
+       'no-change' — a git-backed loop (workdir set) whose pass touched no file, landed no commit and filed no
+                     findings. For a git loop the diff IS the work; a pass with an empty diff and no report is
+                     a pass that only looked.
+       'echo'      — any loop whose pass touched nothing AND whose summary is the previous candidate's summary
+                     again (similarity ≥ ECHO_THRESHOLD). A loop with no workdir legitimately produces text, so
+                     text alone is never a stall there — but the SAME text twice is not a second deliverable.
+     A filed DIGEST with a positive count is always real work (the model reported findings, and a research loop
+     has nothing else to show). A noop/failed/red/cancelled outcome is never a stall — those have their own
+     counters — so callers gate on outcome === 'candidate' first. */
+  function stallSignal(loop, settled) {
+    if (!settled || settled.outcome !== 'candidate') return null;
+    const files = Array.isArray(settled.files) ? settled.files.length : 0;
+    if (files > 0 || settled.commit) return null;
+    const d = settled.digest;
+    if (d && d.filed && isNum(d.count) && d.count > 0) return null;
+    if (loop && loop.workdir) return 'no-change';
+    const prev = ((loop && loop.iterations) || []).slice().reverse()
+      .find(it => it && it.outcome === 'candidate' && it.n !== settled.n);
+    if (!prev) return null;
+    const a = settled.summary || settled.title || '', b = prev.summary || prev.title || '';
+    return similarity(a, b) >= ECHO_THRESHOLD ? 'echo' : null;
+  }
 
   /* pendingReviews — the iterations sitting in the review queue: outcome 'candidate' (real work landed)
      with no verdict yet. Oldest first; the queue is FIFO by design because iteration N+1 is built ON TOP
@@ -260,6 +320,20 @@
     }
     if (noops) lines.push('', 'Passes that found nothing to do so far: ' + noops);
 
+    /* THE STALL NUDGE. If the last pass claimed work but the ledger shows none, say so before the model spends
+       another dollar re-reading the same files. Stated as fact (no file changed, nothing committed) — and paired
+       with the honest exit so "do the work" and "admit there is none" are both on the table. Re-verifying is
+       named explicitly because that is the exact loop a customer's agent fell into for 98 passes. */
+    const lastStall = its.slice().reverse().find(it => it.stall);
+    const stallStreak = (loop.stallStreak || 0);
+    if (stallStreak > 0 && lastStall) {
+      lines.push('', 'YOUR LAST ' + (stallStreak === 1 ? 'PASS' : stallStreak + ' PASSES') + ' CHANGED NOTHING (iteration #' + lastStall.n + '): ' +
+        (lastStall.stall === 'echo' ? 'the report repeated the pass before it;' : 'it reported work, but') +
+        ' no file changed and nothing was committed.');
+      lines.push('Checking that files exist is not work. Either make a real change this pass, or if the objective');
+      lines.push('is genuinely met, say so with the exit below. After ' + stallStopOf(loop) + ' such passes in a row this loop parks itself.');
+    }
+
     /* THE FEEDBACK LOOP. If the last iteration's work failed the project's own check, that failure output is
        the single most useful thing the next iteration can be told — it is the difference between "try again"
        (a retry storm) and "here is exactly what you broke" (progress). It leads the actionable section because
@@ -339,6 +413,9 @@
       noopCount: its.filter(it => it.outcome === 'noop').length,
       dryStreak: loop.dryStreak || 0,
       failStreak: loop.failStreak || 0,
+      // THE STALL BREAKER's counter + ceiling: passes in a row that claimed work the ledger cannot see.
+      stallStreak: loop.stallStreak || 0,
+      stallStopAfter: stallStopOf(loop),
       // REPORTING COMPLIANCE. A loop whose exit condition is "N empty digests" cannot ever finish if the model
       // stops filing them. The panel must be able to say that out loud rather than showing a loop that looks
       // healthy and will in fact run until the budget stops it.
@@ -357,6 +434,8 @@
         // once a pass is approved it leaves `pending`, and without this its work would become invisible —
         // the Commander could no longer see where the code they approved actually went.
         commit: it.commit || null,
+        // 'no-change' | 'echo' when this candidate changed nothing (stallSignal) — the panel labels it honestly.
+        stall: it.stall || null,
         endedAt: it.endedAt, usd: it.usd, check: it.check || null
       })),
       // the check surface the panel renders its stepper from. `checkCmd` is shown so the Commander can see
@@ -401,7 +480,12 @@
     summarize: summarize,
     queueCapOf: queueCapOf,
     dryStopOf: dryStopOf,
+    stallStopOf: stallStopOf,
+    stallSignal: stallSignal,
+    similarity: similarity,
     GATES: GATES,
+    STALL_STOP_DEFAULT: STALL_STOP_DEFAULT,
+    ECHO_THRESHOLD: ECHO_THRESHOLD,
     QUEUE_CAP_DEFAULT: QUEUE_CAP_DEFAULT,
     QUEUE_CAP_MIN: QUEUE_CAP_MIN,
     QUEUE_CAP_MAX: QUEUE_CAP_MAX,

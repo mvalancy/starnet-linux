@@ -11,7 +11,7 @@
    charts and comments are dropped. A caller that needs fidelity should open the file, not read it.
 
    makeDocExtract({ inflateRaw }) -> { sniff, extract, _internals }
-     inflateRaw(buf) -> Buffer     // zlib.inflateRawSync, injected so this module stays pure + testable
+     inflateRaw(buf, { maxOutputLength }) -> Buffer   // zlib.inflateRawSync, injected so this module stays pure + testable
      sniff(nameOrPath, buf?) -> 'docx' | 'xlsx' | 'ipynb' | null
      extract(buf, kind, opts?) -> string        // throws on a malformed container; the caller falls back */
 'use strict';
@@ -25,6 +25,12 @@
   const DEFAULT_MAX_CHARS = 200000;
   const MAX_SHEET_ROWS = 5000;      // a spreadsheet can be a million rows; the prompt cannot
   const MAX_ROW_CELLS = 256;
+  // ZIP-BOMB CEILING. The declared sizes in a ZIP header are attacker-controlled and deflate reaches ~1000:1, so a
+  // 1 MB .docx/.xlsx an agent downloaded could inflate to a gigabyte — synchronously, freezing the whole sidecar
+  // (UI, API, every run) or exhausting memory. Each entry and the whole document share a hard output budget; past
+  // it extract() throws and fs.read falls back to the plain read. Real documents are nowhere near these numbers.
+  const MAX_ENTRY_INFLATE = 32 * 1024 * 1024;
+  const MAX_TOTAL_INFLATE = 64 * 1024 * 1024;
 
   const EOCD_SIG = 0x06054b50, CEN_SIG = 0x02014b50, LOC_SIG = 0x04034b50;
 
@@ -201,13 +207,21 @@
       if (kind === 'ipynb') text = ipynbText(buf);
       else {
         const entries = readEntries(buf);
-        text = kind === 'docx' ? docxText(buf, entries, inflateRaw) : xlsxText(buf, entries, inflateRaw);
+        let budget = MAX_TOTAL_INFLATE;
+        const bounded = raw => {
+          if (budget <= 0) throw new Error('document expands past the extraction budget');
+          // zlib honours maxOutputLength and throws ERR_BUFFER_TOO_LARGE instead of allocating past it.
+          const out = inflateRaw(raw, { maxOutputLength: Math.min(MAX_ENTRY_INFLATE, budget) });
+          budget -= out.length;
+          return out;
+        };
+        text = kind === 'docx' ? docxText(buf, entries, bounded) : xlsxText(buf, entries, bounded);
       }
       if (text.length > maxChars) return text.slice(0, maxChars) + '\n…[truncated]';
       return text;
     }
 
-    return { sniff, extract, _internals: { readEntries, entryBytes, unescapeXml, stripTags, docxText, xlsxText, ipynbText, findEocd } };
+    return { sniff, extract, _internals: { MAX_ENTRY_INFLATE, MAX_TOTAL_INFLATE, readEntries, entryBytes, unescapeXml, stripTags, docxText, xlsxText, ipynbText, findEocd } };
   }
 
   return { makeDocExtract, sniff, _internals: { unescapeXml, stripTags, findEocd } };

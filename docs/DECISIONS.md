@@ -14,6 +14,17 @@ many of these — they win on any wording conflict.
   beginner-limited: sandbox freedom, full power from minute one, and no grind/unlock/usage
   walls. User-work quotas default off; users or deployers may opt into limits. Restricted
   postures enforce their advertised consent/sandbox boundaries. (Locked; see also skills.)
+  - **Amendment (2026-09-17, Andrew; `agent/runaway-breaker`): the per-DAY spend cap ships ON at
+    $25 as a SOFT rail.** A customer's full-access loop ran 98 overnight passes re-confirming
+    files existed and burned ~$98 with every cap at 0. The rail is not a usage wall: hitting it
+    ends the run with reason `budget`/`day`, the Budget panel offers one-click RESUME (+$25
+    headroom), the value is editable, and saving 0 turns it off. Unmetered (OAuth/subscription)
+    runs never touch it. Per-run, per-agent and global caps still default off
+    (`sidecar/budgetcaps.js` SHIPPED_DEFAULTS). Paired with the LOOP stall breaker: a loop whose
+    passes change nothing (no file, no commit, no findings, or the same report again) parks
+    itself `paused` after 3 — the ledger decides, never the model's mood. **Confirmed for merge by
+    Andrew on 2026-09-23** ("merge the runaway breaker"); per-run loop detection in `sidecar/loop-breaker.js`
+    (Hermes-gap Step 2) is separate and is not a quota. **Strict vs soft (2026-09-23):** a cap someone CHOSE (env or a saved Budget value) stays fail-closed when spend history is uncertain (test/spend-authority.http.test.js); the shipped $25 default is SOFT — after a crash leaves unsettled spend it cannot be enforced, so it proceeds instead of refusing every paid run, and the Budget panel shows the day spend as unknown (sidecar/budget.js strictScope).
 - **FULL POWER MEANS THE WHOLE LOCAL COMPUTER** (2026-08-14, Andrew; supersedes every older
   Full-Access/hard-floor/desktop-lease limitation). Per-agent Full Access and the station-wide
   master bypass are host-minted scopes of one general authority: StarNet must project every

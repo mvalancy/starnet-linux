@@ -1,0 +1,10 @@
+{
+  "id": "baddie",
+  "track": "type",
+  "dir": "north",
+  "job": "34f418bd-e0b5-4f76-8cf3-9be76d09f838",
+  "result": "frames: 5\nhttps://api.pixellab.ai/mcp/images/34f418bd-e0b5-4f76-8cf3-9be76d09f838/download?index=0",
+  "packed": true,
+  "lastRaw": "output/agent-animation-study/rollout-20px/full-motion/baddie/minimax/type-north/34f418bd-e0b5-4f76-8cf3-9be76d09f838/4.png",
+  "frameCount": 5
+}

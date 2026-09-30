@@ -19,30 +19,22 @@
 <link rel="canonical" href="https://starnetos.com/">
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
 <link rel="preload" href="app/assets/sprites/blank/rot_south.png" as="image" fetchpriority="high">
-<link rel="stylesheet" href="styles.css?v=20260913-brand-nav">
+<link rel="stylesheet" href="styles.css?v=20260924-home-rules">
+<link rel="stylesheet" href="home.css?v=20260924-home-rules">
 </head>
-<body>
+<body class="home">
 
 <!-- CRT overlays -->
 <div class="crt-scan" aria-hidden="true"></div>
 <div class="crt-vignette" aria-hidden="true"></div>
 <div class="crt-flicker" aria-hidden="true"></div>
+<div class="scroll-prog" aria-hidden="true"><span></span></div>
 
 <!-- HUD corner ticks -->
 <div class="tick tick-tl" aria-hidden="true"></div>
 <div class="tick tick-tr" aria-hidden="true"></div>
 <div class="tick tick-bl" aria-hidden="true"></div>
 <div class="tick tick-br" aria-hidden="true"></div>
-
-<!-- passing agent blips -->
-<div class="blips" aria-hidden="true">
-  <div class="blip" style="top:12%; width:5px; height:5px; animation-duration:13s; animation-delay:-2s;"><span style="width:42px;"></span></div>
-  <div class="blip" style="top:22%; width:3px; height:3px; animation-duration:21s; animation-delay:-9s;"><span style="width:26px;"></span></div>
-  <div class="blip" style="top:33%; width:6px; height:6px; animation-duration:10s; animation-delay:-5s;"><span style="width:54px;"></span></div>
-  <div class="blip" style="top:42%; width:2px; height:2px; animation-duration:26s; animation-delay:-14s;"><span style="width:20px;"></span></div>
-  <div class="blip" style="top:18%; width:3px; height:3px; animation-duration:17s; animation-delay:-11s;"><span style="width:32px;"></span></div>
-  <div class="blip" style="top:50%; width:4px; height:4px; animation-duration:15s; animation-delay:-7s;"><span style="width:38px;"></span></div>
-</div>
 
 <header class="topbar" id="topbar">
   <a class="brand" href="#top" aria-label="StarNet home"><img src="assets/starnet-logo-small.png" alt="StarNet" width="355" height="60"></a>
@@ -62,69 +54,245 @@
 
   <!-- ===== hero ===== -->
   <section class="hero">
+    <canvas class="starfield" aria-hidden="true"></canvas>
     <div class="grid-floor" aria-hidden="true"><div></div></div>
+    <div class="horizon" aria-hidden="true"></div>
     <div class="ember" aria-hidden="true"></div>
     <div class="hero-inner">
-      <img class="hero-logo" src="assets/starnet-logo-glow.png" alt="StarNet">
+      <div class="hero-eyebrow"><span class="pip" aria-hidden="true"></span>A VIDEOGAME WHERE THE WORK IS REAL</div>
+      <img class="hero-logo" src="assets/starnet-logo-glow.png" alt="StarNet" width="1200" height="240">
       <h1 class="tagline">Give your AI a world to work in.<span class="cursor" aria-hidden="true"></span></h1>
       <p class="subline">A desktop home for your AI crew. Give agents real tasks, connect their tools, and build workflows across a living pixel-art station.</p>
       <div class="cta-row">
-        <a id="cta-download" class="btn btn-primary" href="#download">[ DOWNLOAD ]</a>
+        <a id="cta-download" class="btn btn-primary btn-hot" href="#download">[ DOWNLOAD ]</a>
         <a class="btn" href="docs/getting-started.html">[ GET STARTED ]</a>
       </div>
-      <div class="hero-meta"><span id="ver-badge">v0.11.2</span> &middot; MIT open source &middot; Windows + macOS &middot; bring your own keys</div>
+      <div class="hero-meta"><span id="ver-badge">v0.12.4</span> &middot; MIT open source &middot; Windows + macOS &middot; bring your own keys</div>
     </div>
-    <a class="hero-scroll" href="#station" aria-label="Scroll to what it is">SCROLL<span></span></a>
+    <a class="hero-scroll" href="#station" aria-label="Scroll to the station">ENTER THE STATION<span></span></a>
   </section>
 
-  <!-- ===== what it is ===== -->
-  <section id="station" class="section">
+  <!-- ===== the station (the real renderer) ===== -->
+  <section id="station" class="section section-wide">
     <div class="section-head">
       <span class="section-no">01</span>
-      <h2>WHAT IT IS</h2>
+      <h2 data-scramble>THE STATION</h2>
+      <span class="section-tag">// every sprite is a real agent</span>
     </div>
-    <div class="split station">
-      <div class="split-copy" data-reveal>
-        <p class="lead">A living simulation on your machine where every sprite is a real agent doing real work. Recruit a crew, connect real tools and real models, and build the station into a workforce shaped around you &mdash; the only limit is what you ask for.</p>
-        <ul class="contract">
-          <li><b>Placed gear is real capability.</b> A signal dish grants web, a cabinet grants files, a workbench grants a terminal &mdash; place one and the whole crew draws on it.</li>
-          <li><b>Every bay is another agent</b>, running its own work in parallel.</li>
-          <li><b>The floor is honest.</b> An agent at a lit desk means a live run &mdash; the timer on screen is the real one.</li>
-        </ul>
-        <p>You direct from COMMS. They think, browse, build files, and deliver &mdash; with your models, your keys, on your machine.</p>
-      </div>
-      <figure class="bezel live">
-        <div class="app-clip" aria-label="Live preview: the actual StarNet app running in your browser, clipped to the station camera">
-          <iframe id="live-app" src="app/embed.htm?v=20260905-current-station-v4" scrolling="no" loading="lazy" tabindex="-1" title="StarNet live preview"></iframe>
+    <p class="big-lead" data-reveal>A living simulation on your machine. Recruit a crew, connect real tools and real models, and build the station into a workforce shaped around you &mdash; the only limit is what you ask for.</p>
+
+    <div class="monitor-stage">
+      <figure class="bezel live monitor">
+        <span class="mon-corner c1" aria-hidden="true"></span><span class="mon-corner c2" aria-hidden="true"></span>
+        <span class="mon-corner c3" aria-hidden="true"></span><span class="mon-corner c4" aria-hidden="true"></span>
+        <div class="mon-bar" aria-hidden="true"><span class="rec"></span>STARTER STATION<span class="mon-bar-r">RENDERER &middot; LIVE</span></div>
+        <div class="app-clip" aria-label="Starter station rendered by StarNet. Visual preview only; no AI tasks are running.">
+          <iframe id="live-app" src="app/embed.htm?v=20260922-current-starter-v6" scrolling="no" loading="lazy" tabindex="-1" title="StarNet starter station — visual preview"></iframe>
         </div>
-        <figcaption>// live preview &middot; current source build</figcaption>
+        <figcaption><strong>YOUR STATION STARTS HERE</strong><span>Actual StarNet renderer &middot; current source build<br>Visual preview only. AI tasks run in the desktop app.</span></figcaption>
       </figure>
+    </div>
+
+    <ul class="truths" data-reveal="stagger">
+      <li><span class="t-k">PLACED GEAR = REAL CAPABILITY</span><p>A signal dish grants web, a cabinet grants files, a workbench grants a terminal. Place one and the whole crew draws on it.</p></li>
+      <li><span class="t-k">EVERY BAY = ANOTHER AGENT</span><p>Each one runs its own work in parallel. You direct from COMMS &mdash; they think, browse, build files, and deliver.</p></li>
+      <li><span class="t-k">THE FLOOR IS HONEST</span><p>An agent at a lit desk means a live run. The timer on screen is the real one.</p></li>
+    </ul>
+  </section>
+
+  <!-- ===== manifesto ===== -->
+  <section id="honest" class="manifesto" aria-label="Truthful telemetry">
+    <p class="mf-kicker">// TRUTHFUL TELEMETRY</p>
+    <p class="mf-line" data-scrub>If it looks like an agent is working, it is.</p>
+    <ul class="mf-proofs" data-reveal="stagger">
+      <li><b>01</b> Every run is a real model call with real tools.</li>
+      <li><b>02</b> Every cent lands in a ledger you can read.</li>
+      <li><b>03</b> The station never shows state the harness can't prove.</li>
+    </ul>
+  </section>
+
+  <!-- ===== capabilities console ===== -->
+  <section id="capabilities" class="section section-wide">
+    <div class="section-head">
+      <span class="section-no">02</span>
+      <h2 data-scramble>WHAT YOUR CREW CAN DO</h2>
+      <span class="section-tag">// six systems, one station</span>
+    </div>
+
+    <div class="console" data-reveal>
+      <div class="console-tabs" role="tablist" aria-label="Capabilities">
+        <button class="ctab" role="tab" id="ct-crew" aria-controls="cp-crew" aria-selected="true"><span class="ct-n">01</span><span class="ct-t">Crew</span><span class="ct-bar" aria-hidden="true"></span></button>
+        <button class="ctab" role="tab" id="ct-flow" aria-controls="cp-flow" aria-selected="false" tabindex="-1"><span class="ct-n">02</span><span class="ct-t">Workflows</span><span class="ct-bar" aria-hidden="true"></span></button>
+        <button class="ctab" role="tab" id="ct-tools" aria-controls="cp-tools" aria-selected="false" tabindex="-1"><span class="ct-n">03</span><span class="ct-t">Tools</span><span class="ct-bar" aria-hidden="true"></span></button>
+        <button class="ctab" role="tab" id="ct-routine" aria-controls="cp-routine" aria-selected="false" tabindex="-1"><span class="ct-n">04</span><span class="ct-t">Routines</span><span class="ct-bar" aria-hidden="true"></span></button>
+        <button class="ctab" role="tab" id="ct-models" aria-controls="cp-models" aria-selected="false" tabindex="-1"><span class="ct-n">05</span><span class="ct-t">Models</span><span class="ct-bar" aria-hidden="true"></span></button>
+        <button class="ctab" role="tab" id="ct-reach" aria-controls="cp-reach" aria-selected="false" tabindex="-1"><span class="ct-n">06</span><span class="ct-t">Channels</span><span class="ct-bar" aria-hidden="true"></span></button>
+        <div class="console-status" aria-hidden="true"><span class="pip"></span><span data-status>SYS 01 / 06 &middot; AUTO</span></div>
+      </div>
+
+      <div class="console-screen">
+        <!-- 01 crew -->
+        <div class="cpanel" role="tabpanel" id="cp-crew" aria-labelledby="ct-crew">
+          <div class="cp-art" aria-hidden="true">
+            <svg viewBox="0 0 480 300" class="sch sch-crew">
+              <g class="links">
+                <path d="M240 150 L90 70"/><path d="M240 150 L390 70"/><path d="M240 150 L70 200"/><path d="M240 150 L410 200"/><path d="M240 150 L240 262"/>
+              </g>
+              <g class="packets">
+                <circle r="3.5" class="pk"><animateMotion dur="2.4s" repeatCount="indefinite" path="M240 150 L90 70"/></circle>
+                <circle r="3.5" class="pk"><animateMotion dur="2.4s" begin="-.5s" repeatCount="indefinite" path="M240 150 L390 70"/></circle>
+                <circle r="3.5" class="pk"><animateMotion dur="2.4s" begin="-1s" repeatCount="indefinite" path="M240 150 L70 200"/></circle>
+                <circle r="3.5" class="pk"><animateMotion dur="2.4s" begin="-1.5s" repeatCount="indefinite" path="M240 150 L410 200"/></circle>
+                <circle r="3.5" class="pk"><animateMotion dur="2.4s" begin="-2s" repeatCount="indefinite" path="M240 150 L240 262"/></circle>
+              </g>
+              <g class="hub"><circle cx="240" cy="150" r="34" class="hub-ring"/><circle cx="240" cy="150" r="46" class="hub-pulse"/><text x="240" y="147" class="lbl">YOU</text><text x="240" y="163" class="sub">COMMS</text></g>
+              <g class="desk d1"><rect x="50" y="48" width="80" height="44"/><circle cx="118" cy="58" r="3" class="led"/><text x="90" y="76" class="lbl">DESK 1</text></g>
+              <g class="desk d2"><rect x="350" y="48" width="80" height="44"/><circle cx="418" cy="58" r="3" class="led"/><text x="390" y="76" class="lbl">DESK 2</text></g>
+              <g class="desk d3"><rect x="30" y="178" width="80" height="44"/><circle cx="98" cy="188" r="3" class="led"/><text x="70" y="206" class="lbl">DESK 3</text></g>
+              <g class="desk d4"><rect x="370" y="178" width="80" height="44"/><circle cx="438" cy="188" r="3" class="led"/><text x="410" y="206" class="lbl">DESK 4</text></g>
+              <g class="desk d5"><rect x="200" y="240" width="80" height="44"/><circle cx="268" cy="250" r="3" class="led"/><text x="240" y="268" class="lbl">DESK 5</text></g>
+            </svg>
+          </div>
+          <div class="cp-copy">
+            <h3>A crew shaped around you</h3>
+            <p>Recruit specialists, give them personalities, and direct their work from COMMS. Each agent has its own desk and notebook.</p>
+            <a class="cp-link" href="docs/agents.html">Meet your crew &rarr;</a>
+          </div>
+        </div>
+
+        <!-- 02 workflows -->
+        <div class="cpanel" role="tabpanel" id="cp-flow" aria-labelledby="ct-flow" hidden>
+          <div class="cp-art" aria-hidden="true">
+            <svg viewBox="0 0 480 300" class="sch sch-flow">
+              <rect x="10" y="136" width="460" height="28" class="belt"/>
+              <line x1="10" y1="136" x2="470" y2="136" class="rail"/><line x1="10" y1="164" x2="470" y2="164" class="rail"/>
+              <g class="march"><path d="M6 150h10M36 150h10M66 150h10M96 150h10M126 150h10M156 150h10M186 150h10M216 150h10M246 150h10M276 150h10M306 150h10M336 150h10M366 150h10M396 150h10M426 150h10M456 150h10" class="chev"/></g>
+              <g class="node"><rect x="16" y="104" width="70" height="92"/><text x="51" y="94" class="lbl">INBOX</text></g>
+              <g class="node bay b1"><rect x="138" y="96" width="84" height="108"/><rect x="152" y="112" width="56" height="30" class="scr"/><text x="180" y="84" class="lbl">BAY &middot; DRAFT</text><circle cx="208" cy="188" r="3.5" class="led"/></g>
+              <g class="node bay b2"><rect x="262" y="96" width="84" height="108"/><rect x="276" y="112" width="56" height="30" class="scr"/><text x="304" y="84" class="lbl">BAY &middot; REVIEW</text><circle cx="332" cy="188" r="3.5" class="led"/></g>
+              <g class="node"><rect x="394" y="104" width="70" height="92"/><text x="429" y="94" class="lbl">OUTBOX</text></g>
+              <g class="crate"><rect x="-11" y="-11" width="22" height="22"/><path d="M-11 -4h22"/></g>
+              <text x="240" y="252" class="sub">a job rides the belt &mdash; each bay is a real agent run</text>
+            </svg>
+          </div>
+          <div class="cp-copy">
+            <h3>Workflows you can see</h3>
+            <p>Connect agents with conveyors. Filters, splitters, and joiners route real jobs and combine their results &mdash; and chat never needs a belt at all.</p>
+            <a class="cp-link" href="docs/guides/first-line.html">Build a workflow &rarr;</a>
+          </div>
+        </div>
+
+        <!-- 03 tools -->
+        <div class="cpanel" role="tabpanel" id="cp-tools" aria-labelledby="ct-tools" hidden>
+          <div class="cp-art" aria-hidden="true">
+            <div class="term">
+              <div class="term-bar"><i></i><i></i><i></i><span>agent run &middot; tool calls</span></div>
+              <pre class="term-body" data-term='[["web_search","\"agent harness benchmarks\"","12 results"],["fs.write","report.md","ok"],["shell.exec","npm test","pass"],["web_fetch","docs page","200"]]'></pre>
+            </div>
+          </div>
+          <div class="cp-copy">
+            <h3>Tools that do real work</h3>
+            <p>Agents browse, work with files, run code, and use connected services. Placed gear grants the capability to your whole crew &mdash; place it once.</p>
+            <a class="cp-link" href="docs/station.html">Explore capabilities &rarr;</a>
+          </div>
+        </div>
+
+        <!-- 04 routines -->
+        <div class="cpanel" role="tabpanel" id="cp-routine" aria-labelledby="ct-routine" hidden>
+          <div class="cp-art" aria-hidden="true">
+            <svg viewBox="0 0 480 300" class="sch sch-clock">
+              <circle cx="240" cy="150" r="118" class="dial"/>
+              <path d="M240 32 A118 118 0 0 1 240 268" class="night"/>
+              <g class="ticks"></g>
+              <g class="sweep"><line x1="240" y1="150" x2="240" y2="40"/><circle cx="240" cy="40" r="4"/></g>
+              <circle cx="240" cy="150" r="5" class="hubdot"/>
+              <g class="mark m1"><circle cx="342" cy="91" r="6"/><text x="360" y="86" class="lbl l">ROUTINE</text></g>
+              <g class="mark m2"><circle cx="138" cy="209" r="6"/><text x="120" y="232" class="lbl r">RECIPE</text></g>
+              <g class="mark m3"><circle cx="323" cy="233" r="6"/><text x="338" y="252" class="lbl l">NIGHT SHIFT</text></g>
+              <text x="240" y="188" class="sub">while you're away</text>
+            </svg>
+          </div>
+          <div class="cp-copy">
+            <h3>Useful work, on repeat</h3>
+            <p>Keep a successful process as a recipe, schedule a routine, or configure Night Shift for unattended work &mdash; with per-job budgets and a daily job limit you choose.</p>
+            <a class="cp-link" href="docs/guides/routines.html">Set up a routine &rarr;</a>
+          </div>
+        </div>
+
+        <!-- 05 models -->
+        <div class="cpanel" role="tabpanel" id="cp-models" aria-labelledby="ct-models" hidden>
+          <div class="cp-art" aria-hidden="true">
+            <svg viewBox="0 0 480 300" class="sch sch-models">
+              <rect x="24" y="40" width="210" height="220" class="machine"/>
+              <text x="129" y="30" class="lbl">YOUR MACHINE</text>
+              <g class="store"><rect x="46" y="62" width="166" height="36"/><text x="129" y="85" class="lbl">STATION</text></g>
+              <g class="store"><rect x="46" y="108" width="166" height="36"/><text x="129" y="131" class="lbl">TRANSCRIPTS</text></g>
+              <g class="store"><rect x="46" y="154" width="166" height="36"/><text x="129" y="177" class="lbl">MEMORY</text></g>
+              <g class="store"><rect x="46" y="200" width="166" height="36"/><text x="129" y="223" class="lbl">LEDGER</text></g>
+              <path d="M234 150 H300" class="wire"/>
+              <circle r="3.5" class="pk"><animateMotion dur="1.6s" repeatCount="indefinite" path="M234 150 H300"/></circle>
+              <rect x="300" y="118" width="160" height="64" class="slot"/>
+              <text x="380" y="108" class="sub">only when an agent runs</text>
+              <text x="380" y="158" class="lbl big" data-cycle="OpenRouter|Anthropic|OpenAI|ChatGPT sign-in|Gemini|Grok|Kimi|Mistral|DeepSeek|Groq|Perplexity|Ollama (local)|Your own endpoint">OpenRouter</text>
+            </svg>
+          </div>
+          <div class="cp-copy">
+            <h3>Your models. Your machine.</h3>
+            <p>Choose a model provider or run a local model. Your station, conversations, and work history live on your computer &mdash; and every run shows its real cost.</p>
+            <a class="cp-link" href="docs/providers.html">Choose a provider &rarr;</a>
+          </div>
+        </div>
+
+        <!-- 06 channels -->
+        <div class="cpanel" role="tabpanel" id="cp-reach" aria-labelledby="ct-reach" hidden>
+          <div class="cp-art" aria-hidden="true">
+            <svg viewBox="0 0 480 300" class="sch sch-reach">
+              <circle cx="240" cy="150" r="70" class="orbit"/><circle cx="240" cy="150" r="120" class="orbit o2"/>
+              <g class="hub"><circle cx="240" cy="150" r="30" class="hub-ring"/><circle cx="240" cy="150" r="42" class="hub-pulse"/><text x="240" y="155" class="lbl">STATION</text></g>
+              <g class="chan c1"><circle cx="240" cy="30" r="5"/><text x="240" y="18" class="lbl">TELEGRAM</text><path d="M240 36 V118" class="ray-bg"/><path d="M240 36 V118" class="ray" pathLength="100"/></g>
+              <g class="chan c2"><circle cx="354" cy="113" r="5"/><text x="372" y="104" class="lbl l">DISCORD</text><path d="M349 115 L270 142" class="ray-bg"/><path d="M349 115 L270 142" class="ray" pathLength="100"/></g>
+              <g class="chan c3"><circle cx="311" cy="247" r="5"/><text x="326" y="266" class="lbl l">SLACK</text><path d="M307 242 L258 175" class="ray-bg"/><path d="M307 242 L258 175" class="ray" pathLength="100"/></g>
+              <g class="chan c4"><circle cx="169" cy="247" r="5"/><text x="154" y="266" class="lbl r">MATRIX</text><path d="M173 242 L222 175" class="ray-bg"/><path d="M173 242 L222 175" class="ray" pathLength="100"/></g>
+              <g class="chan c5"><circle cx="126" cy="113" r="5"/><text x="108" y="104" class="lbl r">SIGNAL</text><path d="M131 115 L210 142" class="ray-bg"/><path d="M131 115 L210 142" class="ray" pathLength="100"/></g>
+            </svg>
+          </div>
+          <div class="cp-copy">
+            <h3>Reach your station from anywhere</h3>
+            <p>Send tasks from Telegram, Discord, Slack, Matrix, or Signal, connect external tools, and bring other agent harnesses into your workflow.</p>
+            <a class="cp-link" href="docs/connect-a-platform.html">Connect your tools &rarr;</a>
+          </div>
+        </div>
+      </div>
+      <div class="console-hint" aria-hidden="true">&lsaquo; SWIPE OR TAP A SYSTEM &rsaquo;</div>
     </div>
   </section>
 
-  <!-- ===== features ===== -->
-  <section id="difference" class="section">
-    <div class="section-head">
-      <span class="section-no">02</span>
-      <h2>FEATURES</h2>
+  <!-- ===== provider marquee ===== -->
+  <div class="marquee" aria-label="Supported model providers">
+    <div class="mq-label">BRING YOUR OWN MODEL</div>
+    <div class="mq-track">
+      <div class="mq-row">
+        <span>OpenRouter</span><span>Anthropic</span><span>OpenAI</span><span>ChatGPT sign-in</span><span>Gemini</span><span>Grok</span><span>xAI</span><span>Kimi</span><span>Groq</span><span>Mistral</span><span>DeepSeek</span><span>Together</span><span>Fireworks</span><span>Perplexity</span><span>Cerebras</span><span>Ollama &middot; local</span><span>Any OpenAI-compatible endpoint</span>
+      </div>
+      <div class="mq-row" aria-hidden="true">
+        <span>OpenRouter</span><span>Anthropic</span><span>OpenAI</span><span>ChatGPT sign-in</span><span>Gemini</span><span>Grok</span><span>xAI</span><span>Kimi</span><span>Groq</span><span>Mistral</span><span>DeepSeek</span><span>Together</span><span>Fireworks</span><span>Perplexity</span><span>Cerebras</span><span>Ollama &middot; local</span><span>Any OpenAI-compatible endpoint</span>
+      </div>
     </div>
-    <ul class="feat-grid" data-reveal="stagger">
-<li class="feat"><span class="f-glyph">01</span><h3>A crew shaped around you</h3><p>Recruit specialists, give them personalities, and direct their work from COMMS. Each agent has its own desk and notebook.</p><a class="feature-link" href="docs/agents.html">Meet your crew &rarr;</a></li>
-<li class="feat"><span class="f-glyph">02</span><h3>Workflows you can see</h3><p>Connect agents with conveyors. Use filters, splitters, and joiners to route real jobs and combine their results.</p><a class="feature-link" href="docs/guides/first-line.html">Build a workflow &rarr;</a></li>
-<li class="feat"><span class="f-glyph">03</span><h3>Tools that do real work</h3><p>Let agents browse, work with files, run code, and use connected services. Placed gear grants capabilities to your crew.</p><a class="feature-link" href="docs/station.html">Explore capabilities &rarr;</a></li>
-<li class="feat"><span class="f-glyph">04</span><h3>Useful work, on repeat</h3><p>Keep a successful process as a recipe, schedule a routine, or configure Night Shift for unattended work.</p><a class="feature-link" href="docs/guides/routines.html">Set up a routine &rarr;</a></li>
-<li class="feat"><span class="f-glyph">05</span><h3>Your models. Your machine.</h3><p>Choose a model provider or use a local model. Your station, conversations, and work history live on your computer.</p><a class="feature-link" href="docs/providers.html">Choose a provider &rarr;</a></li>
-<li class="feat"><span class="f-glyph">06</span><h3>Stay connected to your station</h3><p>Send tasks through messaging channels, connect external tools, and bring other agent harnesses into your workflow.</p><a class="feature-link" href="docs/connect-a-platform.html">Connect your tools &rarr;</a></li>
-</ul>
-  </section>
+  </div>
 
   <!-- ===== download ===== -->
   <section id="download" class="section">
     <div class="section-head">
       <span class="section-no">03</span>
-      <h2>DOWNLOAD STARNET</h2>
+      <h2 data-scramble>BOOT YOUR STATION</h2>
+      <span class="section-tag">// three steps, about five minutes</span>
     </div>
-    <p class="dl-sub" data-reveal>Choose the installer for your computer. Current stable version: <span class="ver">v0.11.2</span>. See what changed in the <a id="rel-page" href="https://github.com/androoAGI/starnet-releases/releases/latest" target="_blank" rel="noopener">release notes</a>. The station preview and docs follow current source, which may include features coming in the next release.</p>
+    <ol class="boot-steps" data-reveal="stagger">
+      <li><span>01</span>Install StarNet</li>
+      <li><span>02</span>Connect a model</li>
+      <li><span>03</span>Send your first task</li>
+    </ol>
+    <p class="dl-sub" data-reveal>Choose the installer for your computer. Current stable version: <span class="ver">v0.12.4</span>. See what changed in the <a id="rel-page" href="https://github.com/androoAGI/starnet-releases/releases/latest" target="_blank" rel="noopener">release notes</a>. The station preview and docs follow current source, which may include features coming in the next release.</p>
     <div class="dl-grid" data-reveal="stagger">
       <article class="dl-card" data-os="windows">
         <div class="dl-os">WINDOWS</div>
@@ -159,7 +327,7 @@ cd starnet &amp;&amp; npm install &amp;&amp; npm start</code></pre>
   <section id="docs" class="section">
     <div class="section-head">
       <span class="section-no">04</span>
-      <h2>DOCS &amp; HELP</h2>
+      <h2 data-scramble>DOCS &amp; HELP</h2>
     </div>
     <div class="site-doc-paths" data-reveal="stagger">
     <a href="docs/getting-started.html"><span class="eyebrow">FIRST VISIT</span><h3>Get up and running</h3><p>Install StarNet, connect a model, and send your first task.</p><span>Start here &rarr;</span></a>
@@ -172,7 +340,7 @@ cd starnet &amp;&amp; npm install &amp;&amp; npm start</code></pre>
   <section id="faq" class="section">
     <div class="section-head">
       <span class="section-no">05</span>
-      <h2>FAQ</h2>
+      <h2 data-scramble>FAQ</h2>
     </div>
     <div class="faq" data-reveal="stagger">
       <details>
@@ -206,6 +374,19 @@ cd starnet &amp;&amp; npm install &amp;&amp; npm start</code></pre>
     </div>
   </section>
 
+  <!-- ===== final call ===== -->
+  <section class="finale" aria-label="Get StarNet">
+    <div class="grid-floor" aria-hidden="true"><div></div></div>
+    <div class="finale-inner" data-reveal>
+      <p class="mf-kicker">// YOUR CREW IS WAITING</p>
+      <h2 class="finale-title">Boot the station.</h2>
+      <div class="cta-row">
+        <a class="btn btn-primary btn-hot" href="#download">[ DOWNLOAD ]</a>
+        <a class="btn" href="docs/index.html">[ READ THE DOCS ]</a>
+      </div>
+    </div>
+  </section>
+
 </main>
 
 <a class="to-top" href="#top" aria-label="Back to top">&uarr; TOP</a>
@@ -224,10 +405,11 @@ cd starnet &amp;&amp; npm install &amp;&amp; npm start</code></pre>
     <a href="legal/terms.html">TERMS</a>
     <a href="mailto:androo.agi@gmail.com">CONTACT</a>
   </div>
-  <div class="footer-fine">MIT license &middot; <span id="ver-foot">v0.11.2</span> &middot; &copy; <span id="year">2026</span> StarNet &middot; no telemetry, no tracking &mdash; <a href="legal/privacy.html">we collect nothing</a></div>
+  <div class="footer-fine">MIT license &middot; <span id="ver-foot">v0.12.4</span> &middot; &copy; <span id="year">2026</span> StarNet &middot; no telemetry, no tracking &mdash; <a href="legal/privacy.html">we collect nothing</a></div>
 </footer>
 
 <script src="site.js?v=20260913-brand-nav"></script>
-<script src="live-preview.js?v=20260809"></script>
+<script src="live-preview.js?v=20260921"></script>
+<script src="home.js?v=20260922-glowup"></script>
 </body>
 </html>

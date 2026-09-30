@@ -638,11 +638,11 @@ being built by parallel lanes when the runbook was first written:
 
 **Still unverified — do not trust these until proven:**
 
-- **The release train has never completed a fully-green end-to-end run, and nothing has ever been
-  published.** The last version *built* is `0.4.1`; `starnet-releases` has no public release, so
-  `releases/latest` currently 404s. Sections 1–2 are written to the workflow as it stands, but the
-  tag-push → gate → build → assemble → stage-draft path has not been proven green on live CI (a prior
-  cut stalled at the P1.5 build-provenance stamp). Treat the first real cut as the shakedown run.
+- ~~The release train has never completed a fully-green end-to-end run~~ — **superseded.** The train has
+  run green end to end for every public cut since; most recently v0.12.4 (2026-09-20): release-train run
+  35503655947 staged the draft, then t0-clean-install-proof 35505964904 and g1-packaged-lifecycle
+  35506471983 passed against it, and `releases/latest` resolves to the newest published release. Read
+  the current state with `gh release list -R androoAGI/starnet-releases`, never from this file.
 - **The exact top-level click to reach Settings** in the packaged app was not pinned from code;
   the verified path *inside* Settings is `UPDATES` section → `UPDATE CENTER` button → then
   `CHECK NOW` / `INSTALL UPDATE` (`frontend/app/updates.js`). Confirm the Settings entry point

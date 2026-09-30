@@ -18,7 +18,16 @@ const IndustrialTextures = (() => {
   // Values read back from the live CRT lab after the combined-room review.
   const lighting = { fixtureTint: projectionReview?.14:.04, propTint: projectionReview?.65:.48,
     propLift: projectionReview?.85:.65, ambientLift: projectionReview?.10:0,
-    floorGain: projectionReview?1.04:1, wallGain: projectionReview?.86:1, contact: .28 };
+    floorGain: projectionReview?1.04:1, wallGain: projectionReview?.86:1, contact: .28,
+    // 2026-09-22 key light (WorldLight KEY buffer): pools open further (cut) and then
+    // carry a warm gain ON the surface (key), tighter than the cut; screens and beacons
+    // splash their own colour (keyProps); unlit deck leans cool (shadeCool).
+    // RESTORED 2026-09-23 to the pre-key-light look (Andrew: the station before the key light
+    // was "literally almost perfect", every brighter step "TOO BRIGHT"). key 0 + shadeCool 0
+    // keep the KEY buffer off entirely and cut 1 is the original pool size, so this renders the
+    // 29bb21d80 station. The KEY machinery stays in worldlight.js for opt-in use (crtlab).
+    // Tried and rejected: cut 2.2/key 2, cut 1.6/key 1.7, cut 1.3/key .85 — all too bright.
+    cut: 1, key: 0, keyReach: .5, keyProps: 1, keyPropReach: 1.5, shadeCool: 0 };
   const plates = new WeakMap();
   const platePyramids = new WeakMap();
   const detailTargets = new WeakMap(), wallStrips = new Map(), materials = new Map(), emitters = new Map();

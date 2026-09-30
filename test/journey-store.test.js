@@ -62,6 +62,15 @@ const fresh = fs => makeJourneyStore({ fs: fs || memFs(), path, workspaces: '/ws
   A.ok(s.snapshot().receipts.filter(r => r.agentId === 'builder').every(r => r.dismissedAt === 300), 'suppression is visible on its receipts');
   await s.setSuppressed('builder', 'building', false, 301);
   A.ok(/building: 7 verified outcomes/.test(s.adaptationBlock('builder')), 'Commander can resume the corrected track');
+  // PROTOTYPE POLLUTION (security audit 2026-09-25): '__proto__' passes the agent-id regex, and
+  // rec.suppressed['__proto__'] is Object.prototype — one /api/journey call used to set Object.prototype.building.
+  for (const bad of ['__proto__', 'constructor', 'prototype']) {
+    const r = await s.setSuppressed(bad, 'building', true, 310);
+    A.ok(r.ok === false, 'setSuppressed refuses object-model key ' + bad + ' as an agent id');
+  }
+  A.ok(!Object.prototype.hasOwnProperty('building') && ({}).building === undefined, 'Object.prototype was not polluted');
+  A.ok(typeof Object.building === 'undefined', 'the Object constructor was not written to');
+  A.eq(Object.keys(normalize({ suppressed: JSON.parse('{"__proto__":{"building":1},"builder":{"research":2}}') }).suppressed), ['builder'], 'a __proto__ row on disk is dropped on load');
 
   const milestone = { goalId: 'goal:game', milestoneId: 'm:launch', milestoneText: 'Launch the playable game', evidence: 'Release build linked in the task', agentId: 'builder', domain: 'building', goalDone: true };
   A.ok((await s.recordMilestone(milestone, 400)).ok, 'a final work milestone records the completed action');

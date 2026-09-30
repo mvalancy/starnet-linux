@@ -33,7 +33,9 @@ const CAPS = [
   // stripped unconditionally by enforceSyntheticOnly, so claiming desktop control here was a standing lie.
   { id: 'workbench',    probe: 'shell.exec',      have: 'run shell commands and verify code', object: 'a WORKBENCH' },
   { id: 'memory',       probe: 'notebook.write',  have: 'keep long-term memory, reusable skills, and recall conversation history', object: 'a NOTEBOOK' },   // task plans ride the computer now (taskplan freebie, 2026-08-17)
-  { id: 'studio',       probe: 'image_generate',  have: 'generate and analyze images', object: 'a STUDIO' },
+  // `alt`: a narrower true claim when the headline tool is gone but a sibling survives (image generation deferred as
+  // certainly unavailable -- no image connection -- while image_analyze still works). Never claim the headline then.
+  { id: 'studio',       probe: 'image_generate',  have: 'generate and analyze images', object: 'a STUDIO', alt: { probe: 'image_analyze', have: 'analyze images' } },
   { id: 'jukebox',      probe: 'spotify_play',    have: 'search and control Spotify', object: 'a JUKEBOX' }
 ];
 
@@ -57,9 +59,10 @@ function summarizeCapabilities(resolved, opts) {
 
   const hasConnectorTools = toolNames.some((t) => /^mcp__/.test(String(t || '')));
   const have = CAPS.filter(holds);
+  const altHave = CAPS.filter((c) => c.alt && byTool && !holds(c) && capIds.has(c.id) && toolNames.indexOf(c.alt.probe) !== -1);
   const lackCore = CAPS.filter((c) => CORE.indexOf(c.id) !== -1 && !holds(c));
 
-  const havePhrases = have.map((c) => c.have);
+  const havePhrases = have.map((c) => c.have).concat(altHave.map((c) => c.alt.have));
   if (hasConnectorTools) havePhrases.push('use live MCP connector tools listed above');
   if (unrestrictedHost) havePhrases.push('use arbitrary local host commands and host paths');
   if (unrestrictedHost && toolNames.indexOf('computer.use') >= 0 && toolNames.indexOf('desktop.open') >= 0)

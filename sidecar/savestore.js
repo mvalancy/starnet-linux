@@ -49,6 +49,30 @@
     let tmpSeq = 0;   // deterministic process-unique tmp suffix (a single host; no pid/rng needed)
     const recoveredMissing = new Set();
 
+    /* Rejected-save snapshots are recoveries, not history: every stale client (a reopened tab, a flaky beacon)
+       used to add one forever (audit 2026-09-25 #18). Keep the newest CONFLICT_KEEP per agent — the file just
+       written always survives — and drop the rest. Best-effort: a failed prune never fails the save response. */
+    const CONFLICT_KEEP = Number(d.conflictKeep) > 0 ? Math.floor(Number(d.conflictKeep)) : 20;
+    function pruneConflicts(agentId, keepName) {
+      if (typeof fs.readdirSync !== 'function' || typeof fs.unlinkSync !== 'function' || typeof fs.statSync !== 'function') return 0;
+      const prefix = agentId + '.save-conflict-';
+      let names;
+      try { names = fs.readdirSync(rootDir).filter(n => typeof n === 'string' && n.indexOf(prefix) === 0 && /\.json$/.test(n)); }
+      catch (e) { failNote('savestore.conflict-prune.list', e); return 0; }
+      if (names.length <= CONFLICT_KEEP) return 0;
+      const rows = [];
+      for (const n of names) {
+        let m = 0;
+        try { m = Number(fs.statSync(pathMod.join(rootDir, n)).mtimeMs) || 0; } catch (e) { failNote('savestore.conflict-prune.stat', e); }
+        rows.push({ n, m: n === keepName ? Infinity : m });
+      }
+      rows.sort((a, b) => (b.m - a.m) || (a.n < b.n ? 1 : a.n > b.n ? -1 : 0));
+      let removed = 0;
+      for (const r of rows.slice(CONFLICT_KEEP)) {
+        try { fs.unlinkSync(pathMod.join(rootDir, r.n)); removed++; } catch (e) { failNote('savestore.conflict-prune.unlink', e); }
+      }
+      return removed;
+    }
     function ensureRoot() { try { if (fs.mkdirSync) fs.mkdirSync(rootDir, { recursive: true }); } catch (_) {} }
     function saveFile(agentId) {
       if (!AID_RE.test(String(agentId))) throw new Error('bad save agentId: ' + agentId);
@@ -239,6 +263,7 @@
             const client = /^[A-Za-z0-9_-]{1,80}$/.test(String(doc._saveClient || '')) ? doc._saveClient : clock.now() + '-' + (++tmpSeq);
             const recovery = String(agentId) + '.save-conflict-' + client + '.json';
             writeAtomic(pathMod.join(rootDir, recovery), doc);
+            pruneConflicts(String(agentId), recovery);
             return { ok: false, stale: true, conflict: true, revision, recovery, updatedAt: prevUpdated };
           }
           incomingUpdated = Math.max(incomingUpdated, prevUpdated + 1);

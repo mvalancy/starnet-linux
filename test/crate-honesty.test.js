@@ -34,7 +34,7 @@ const shipCode = strip(ship);
 /* ---- the suppression is a WAIT, not a drop ---- */
 A.ok(/deferredShip\.set\(/.test(shipCode), 'a suppressed crate is HELD, not dropped');
 A.ok(/setTimeout\(/.test(shipCode), '…on a timer');
-A.ok(/emitProductCrate\(cAid, spec\)/.test(shipCode), '…that ships the dock’s own crate when it expires');
+A.ok(/emitProductCrate\(cAid, spec(, runDock)?\)/.test(shipCode), '…that ships the dock’s own crate when it expires');
 // the branch must not simply `return` without arming something
 const branch = shipCode.slice(shipCode.indexOf('dockLineTake(cAid)'), shipCode.indexOf('dockLineTake(cAid)') + 500);
 A.ok(/deferredShip\.set/.test(branch), 'the line-work branch arms the wait before it returns');
@@ -52,7 +52,7 @@ A.ok(/const runWork = new Map\(\);\s*\/\/ runId/.test(world) || /runId \(or agen
   'runWork is keyed per run, not per agent');
 A.ok(/runWorked\(p\)\) shipProductCrate\(p\)/.test(strip(world)), 'the ship gate reads the ENDING run’s own tally');
 // and the un-suppressed path still ships immediately
-A.ok(shipCode.trim().endsWith('emitProductCrate(cAid, spec);\n  }') || /emitProductCrate\(cAid, spec\);\s*\}\s*$/.test(shipCode),
+A.ok(shipCode.trim().endsWith('emitProductCrate(cAid, spec);\n  }') || /emitProductCrate\(cAid, spec(, runDock)?\);\s*\}\s*$/.test(shipCode),
   'a dock with no downstream handoff ships its crate immediately');
 
 /* ---- the real handoff CANCELS the wait (never both crates) ---- */

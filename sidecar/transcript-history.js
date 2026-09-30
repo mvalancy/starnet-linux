@@ -3,12 +3,13 @@
    Closed JSONL segments are immutable. A small durable manifest records segment ranges and
    per-stream summaries; each closed segment has a durable term index. Queries load indexes and
    segment bodies one at a time, so lifetime history is retained without becoming boot-time RAM.
-   The active segment is append-only + fsync'd, and appendDurable() reads the exact appended byte
-   range back before claiming success. Legacy transcript.jsonl(.1) files are imported without
-   deleting or rewriting the originals. */
+   The active segment is append-only + fsync'd, and appendDurable() reads the appended row back as a
+   complete, newline-bounded LINE of the file before claiming success (a torn tail is isolated first).
+   Legacy transcript.jsonl(.1) files are imported without deleting or rewriting the originals. */
 'use strict';
 
 const { writeFileDurable } = require('./durable-write.js');
+const { note: failNote } = require('./failopen.js');   // a new catch here is never silent (fail-open ratchet)
 const crypto = require('node:crypto');
 
 const VERSION = 2;
@@ -225,26 +226,62 @@ function makeSegmentedTranscriptIo(opts) {
     const file = segFile(manifest.activeSegment);
     let offset = 0;
     try { offset = fs.statSync(file).size; } catch (_) {}
-    let fd = null;
+    /* TORN TAIL (H2). A crash mid-append can leave the segment ending in a partial row with no newline. Appending
+       straight after it glued the new row onto that fragment: one unparsable line, so readRows() dropped the NEW
+       row too — after the read-back below had already "proven" it by parsing only its own byte range, and a run
+       journal had been retired on that proof. A lone '\n' first isolates the fragment on its own line (readRows
+       skips and counts it as corrupt), and the read-back now proves the row is a complete LINE of the file. */
+    let sep = 0;
+    if (offset > 0) {
+      let tailFd = null;
+      try {
+        const last = Buffer.alloc(1);
+        tailFd = fs.openSync(file, 'r');
+        if (fs.readSync(tailFd, last, 0, 1, offset - 1) !== 1) throw new Error('transcript tail byte unreadable');
+        if (last[0] !== 0x0a) sep = 1;
+      } finally { if (tailFd != null) try { fs.closeSync(tailFd); } catch (e) { failNote('transcript.append.tail-close', e); } }
+    }
+    const bytes = sep ? Buffer.concat([Buffer.from('\n', 'utf8'), encoded]) : encoded;
+    const rowStart = offset + sep;
+    let fd = null, opened = false;
     try {
       fd = fs.openSync(file, 'a');
-      fs.writeSync(fd, encoded);
+      opened = true;
+      // writeSync may write fewer bytes than asked; any positive count used to be taken as the whole row.
+      let at = 0;
+      while (at < bytes.length) {
+        const wrote = fs.writeSync(fd, bytes, at, bytes.length - at);
+        if (!Number.isInteger(wrote) || wrote <= 0 || wrote > bytes.length - at) throw new Error('incomplete transcript append (' + at + '/' + bytes.length + ' bytes)');
+        at += wrote;
+      }
       fs.fsyncSync(fd);
-    } finally { if (fd != null) try { fs.closeSync(fd); } catch (_) {} }
+      fs.closeSync(fd);
+      fd = null;
+      // Strict read-back: prove the bytes just fsync'd are a complete LINE of the file — preceded by a newline (or
+      // the file start), newline-terminated — and parse as the row we assigned.
+      let checkFd = null;
+      try {
+        const lead = rowStart > 0 ? 1 : 0;
+        const check = Buffer.alloc(encoded.length + lead);
+        checkFd = fs.openSync(file, 'r');
+        const got = fs.readSync(checkFd, check, 0, check.length, rowStart - lead);
+        if (got !== check.length) throw new Error('short transcript read-back');
+        if (lead && check[0] !== 0x0a) throw new Error('transcript read-back: row does not start a line');
+        if (check[check.length - 1] !== 0x0a) throw new Error('transcript read-back: row is not newline-terminated');
+        const proven = JSON.parse(check.toString('utf8', lead, check.length - 1));
+        if (num(proven.rowId) !== num(row.rowId)) throw new Error('transcript read-back rowId mismatch');
+        row = proven;
+      } finally { if (checkFd != null) try { fs.closeSync(checkFd); } catch (_) {} }
+    } catch (e) {
+      // A rejected append (short/stalled write, failed fsync, failed proof) is rolled back to the prior boundary —
+      // strict means all or nothing. Windows refuses truncation through an append handle, so close first. If the
+      // rollback fails too, the bytes are left unterminated or unparsable and the NEXT append isolates them.
+      if (fd != null) { try { fs.closeSync(fd); } catch (closeError) { failNote('transcript.append.write-close', closeError); } fd = null; }
+      if (opened) { try { fs.truncateSync(file, offset); } catch (rollbackError) { failNote('transcript.append.rollback', rollbackError); } }
+      throw e;
+    }
 
-    // Strict read-back: prove the exact bytes just fsync'd parse as the row we assigned.
-    let checkFd = null;
-    try {
-      const check = Buffer.alloc(encoded.length);
-      checkFd = fs.openSync(file, 'r');
-      const got = fs.readSync(checkFd, check, 0, check.length, offset);
-      if (got !== encoded.length) throw new Error('short transcript read-back');
-      const proven = JSON.parse(check.toString('utf8').trim());
-      if (num(proven.rowId) !== num(row.rowId)) throw new Error('transcript read-back rowId mismatch');
-      row = proven;
-    } finally { if (checkFd != null) try { fs.closeSync(checkFd); } catch (_) {} }
-
-    activeIndex.bytes += encoded.length;
+    activeIndex.bytes += bytes.length;
     noteIndex(activeIndex, row);
     upsertMeta(activeIndex);
     // The JSONL row is the source of truth. Persist the small manifest only at segment boundaries/migration;

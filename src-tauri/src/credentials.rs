@@ -65,10 +65,16 @@ pub(crate) const KEYCHAIN_PROVIDERS: [&str; 13] = [
 ];
 
 // Channel bot tokens live under account "channel:<id>" and inject into the sidecar env.
-// (id, env_name) drives spawn injection and the store/has commands.
-pub(crate) const SIDECAR_CHANNEL_TOKEN_ENVS: [(&str, &str); 2] = [
+// (id, env_name) drives spawn injection, the one-time plaintext migration, and the store/has commands.
+// EVERY channel credential the sidecar persists lives here: Slack's value is the combined "xoxb-… xapp-…"
+// pair (one opaque secret, split by prefix in slack.js), Matrix's is the access token. Signal has NO secret
+// (signal-cli endpoint + registered number are non-secret config), so it has no row. The sidecar reads
+// these names in index.js CHANNEL_TOKEN_ENV — keep the two tables in step.
+pub(crate) const SIDECAR_CHANNEL_TOKEN_ENVS: [(&str, &str); 4] = [
     ("telegram", "SKYNET_TELEGRAM_TOKEN"),
     ("discord", "SKYNET_DISCORD_TOKEN"),
+    ("slack", "SKYNET_SLACK_TOKEN"),
+    ("matrix", "SKYNET_MATRIX_TOKEN"),
 ];
 
 pub(crate) const SIDECAR_PROVIDER_KEY_ENVS: [(&str, &str); 12] = [
@@ -306,9 +312,43 @@ pub(crate) fn migrate_credits_token_from_plaintext(workspaces: &Path) -> bool {
     keychain_has_it
 }
 
+/// The credential-store seam the channel-token migration writes through. Production uses the OS
+/// keychain (`KeyringChannelStore`); tests inject a store whose writes fail or read back wrong, which
+/// is the only way to prove the "never destroy the last copy" path without touching a real keychain.
+pub(crate) trait ChannelSecretStore {
+    /// The stored token for a channel id (`telegram`, `slack`, `telegram:<bot id>`, …), `None` if unset/empty.
+    fn read(&self, channel: &str) -> Option<String>;
+    /// Write a token. A failure is reported, never assumed away.
+    fn write(&self, channel: &str, token: &str) -> Result<(), String>;
+}
+
+/// The OS keychain (`ai.skynet.harness` / `channel:<id>`).
+pub(crate) struct KeyringChannelStore;
+
+impl ChannelSecretStore for KeyringChannelStore {
+    fn read(&self, channel: &str) -> Option<String> {
+        read_channel_token(channel)
+    }
+    fn write(&self, channel: &str, token: &str) -> Result<(), String> {
+        channel_keychain_entry(channel)
+            .map_err(|error| error.to_string())?
+            .set_password(token)
+            .map_err(|error| error.to_string())
+    }
+}
+
 /// Import plaintext channel bot tokens from legacy `secrets.json` into the OS keychain.
 /// A plaintext token is removed only after read-back proves the exact value arrived.
 pub(crate) fn migrate_channel_tokens_from_plaintext(workspaces: &Path) {
+    migrate_channel_tokens_with(&KeyringChannelStore, workspaces);
+}
+
+/// Store-injected core of the migration. For every keychained channel (Telegram, Discord, Slack,
+/// Matrix, plus agent-bound Telegram bots): write the plaintext token into the store when the store
+/// holds nothing, READ IT BACK, and strip the plaintext copy only on an exact match. A failed write, a
+/// locked store, or a mismatched read-back leaves the file untouched and the channel working from its
+/// plaintext copy; the next launch retries. Never destroys the last copy of a secret.
+pub(crate) fn migrate_channel_tokens_with(store: &dyn ChannelSecretStore, workspaces: &Path) {
     let file = workspaces.join("channels").join("secrets.json");
     let raw = match std::fs::read_to_string(&file) {
         Ok(raw) => raw,
@@ -330,14 +370,13 @@ pub(crate) fn migrate_channel_tokens_from_plaintext(workspaces: &Path) {
             .map(str::to_string);
 
         if let Some(token) = token {
-            if read_channel_token(channel).is_none() {
-                if let Ok(entry) = channel_keychain_entry(channel) {
-                    let _ = entry.set_password(&token);
-                }
+            if store.read(channel).is_none() {
+                let _ = store.write(channel, &token); // outcome is judged by the read-back below
             }
 
             // Never destroy the last copy: verify the exact destination value first.
-            let keychain_has_it = read_channel_token(channel)
+            let keychain_has_it = store
+                .read(channel)
                 .map(|stored| stored == token)
                 .unwrap_or(false);
             if keychain_has_it {
@@ -375,12 +414,11 @@ pub(crate) fn migrate_channel_tokens_from_plaintext(workspaces: &Path) {
         .collect();
     for (bot_id, token) in nested_tokens {
         let channel = format!("telegram:{bot_id}");
-        if read_channel_token(&channel).is_none() {
-            if let Ok(entry) = channel_keychain_entry(&channel) {
-                let _ = entry.set_password(&token);
-            }
+        if store.read(&channel).is_none() {
+            let _ = store.write(&channel, &token); // outcome is judged by the read-back below
         }
-        let keychain_has_it = read_channel_token(&channel)
+        let keychain_has_it = store
+            .read(&channel)
             .map(|stored| stored == token)
             .unwrap_or(false);
         if keychain_has_it {
@@ -490,9 +528,12 @@ mod tests {
     fn channel_namespace_is_closed_and_env_mapping_is_stable() {
         assert!(is_known_channel("telegram"));
         assert!(is_known_channel("discord"));
+        assert!(is_known_channel("slack"));
+        assert!(is_known_channel("matrix"));
         assert!(is_known_channel("telegram:123456789"));
         assert!(!is_known_channel("Telegram"));
-        assert!(!is_known_channel("matrix"));
+        assert!(!is_known_channel("signal")); // signal has no secret to keychain
+        assert!(!is_known_channel("slack:1"));
         assert!(!is_known_channel("telegram:"));
         assert!(!is_known_channel("telegram:12/34"));
         assert!(!is_known_channel("telegram:123456789012345678901"));
@@ -506,8 +547,228 @@ mod tests {
             [
                 ("telegram", "SKYNET_TELEGRAM_TOKEN"),
                 ("discord", "SKYNET_DISCORD_TOKEN"),
+                ("slack", "SKYNET_SLACK_TOKEN"),
+                ("matrix", "SKYNET_MATRIX_TOKEN"),
             ]
         );
+    }
+
+    // ---- plaintext -> keychain migration, driven through an injected store (never the real keychain) ----
+
+    use std::cell::RefCell;
+    use std::collections::BTreeSet;
+
+    /// In-memory store. `fail` channels reject every write; `garble` channels accept the write but
+    /// read back a different value (a store that lies about what it holds).
+    #[derive(Default)]
+    struct FakeStore {
+        held: RefCell<BTreeMap<String, String>>,
+        fail: BTreeSet<String>,
+        garble: BTreeSet<String>,
+        writes: RefCell<Vec<String>>,
+    }
+
+    impl FakeStore {
+        fn failing(channels: &[&str]) -> Self {
+            FakeStore {
+                fail: channels.iter().map(|c| c.to_string()).collect(),
+                ..Default::default()
+            }
+        }
+    }
+
+    impl ChannelSecretStore for FakeStore {
+        fn read(&self, channel: &str) -> Option<String> {
+            self.held.borrow().get(channel).cloned()
+        }
+        fn write(&self, channel: &str, token: &str) -> Result<(), String> {
+            self.writes.borrow_mut().push(channel.to_string());
+            if self.fail.contains(channel) {
+                return Err("keychain locked".into());
+            }
+            let value = if self.garble.contains(channel) {
+                format!("{token}-truncated")
+            } else {
+                token.to_string()
+            };
+            self.held.borrow_mut().insert(channel.to_string(), value);
+            Ok(())
+        }
+    }
+
+    struct TempWorkspace(std::path::PathBuf);
+    impl TempWorkspace {
+        fn new(name: &str, secrets: &serde_json::Value) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "starnet-channel-migrate-{}-{name}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join("channels")).unwrap();
+            std::fs::write(
+                dir.join("channels").join("secrets.json"),
+                serde_json::to_string(secrets).unwrap(),
+            )
+            .unwrap();
+            TempWorkspace(dir)
+        }
+        fn raw(&self) -> String {
+            std::fs::read_to_string(self.0.join("channels").join("secrets.json")).unwrap()
+        }
+        fn json(&self) -> serde_json::Value {
+            serde_json::from_str(&self.raw()).unwrap()
+        }
+    }
+    impl Drop for TempWorkspace {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn every_channel_secrets() -> serde_json::Value {
+        serde_json::json!({
+            "telegram": { "token": "TG:1", "model": "m", "ownerId": "7" },
+            "discord": { "token": "DC.2", "model": "m" },
+            "slack": { "token": "xoxb-3 xapp-3", "model": "m", "enabled": true },
+            "matrix": { "token": "syt_4", "endpoint": "https://matrix.example", "model": "m" },
+            "signal": { "endpoint": "http://127.0.0.1:8080", "account": "+15550001111", "model": "m" },
+            "telegramBots": { "555": { "token": "BOT:5", "username": "NovaBot" } },
+            "notifyAutonomous": true
+        })
+    }
+
+    #[test]
+    fn migration_moves_every_channel_credential_after_exact_read_back() {
+        let ws = TempWorkspace::new("all-ok", &every_channel_secrets());
+        let store = FakeStore::default();
+        migrate_channel_tokens_with(&store, &ws.0);
+
+        for (channel, token) in [
+            ("telegram", "TG:1"),
+            ("discord", "DC.2"),
+            ("slack", "xoxb-3 xapp-3"),
+            ("matrix", "syt_4"),
+            ("telegram:555", "BOT:5"),
+        ] {
+            assert_eq!(
+                store.read(channel).as_deref(),
+                Some(token),
+                "{channel} adopted"
+            );
+        }
+        assert!(
+            store.read("signal").is_none(),
+            "signal has no secret to adopt"
+        );
+
+        let after = ws.json();
+        for channel in ["telegram", "discord", "slack", "matrix"] {
+            assert!(
+                after[channel].get("token").is_none(),
+                "{channel} plaintext stripped"
+            );
+        }
+        assert!(after["telegramBots"]["555"].get("token").is_none());
+        // non-secret config survives exactly
+        assert_eq!(after["matrix"]["endpoint"], "https://matrix.example");
+        assert_eq!(after["slack"]["enabled"], true);
+        assert_eq!(after["telegram"]["ownerId"], "7");
+        assert_eq!(after["signal"], every_channel_secrets()["signal"]);
+        assert_eq!(after["notifyAutonomous"], true);
+    }
+
+    #[test]
+    fn failed_keychain_writes_leave_the_plaintext_file_byte_identical() {
+        let ws = TempWorkspace::new("all-fail", &every_channel_secrets());
+        let before = ws.raw();
+        let store = FakeStore::failing(&["telegram", "discord", "slack", "matrix", "telegram:555"]);
+        migrate_channel_tokens_with(&store, &ws.0);
+        assert_eq!(
+            store.writes.borrow().len(),
+            5,
+            "every channel was attempted"
+        );
+        assert_eq!(
+            ws.raw(),
+            before,
+            "no write proved -> the file is never rewritten"
+        );
+    }
+
+    #[test]
+    fn one_failed_write_keeps_only_that_channels_plaintext_copy() {
+        let ws = TempWorkspace::new("slack-fail", &every_channel_secrets());
+        let store = FakeStore::failing(&["slack"]);
+        migrate_channel_tokens_with(&store, &ws.0);
+        let after = ws.json();
+        assert_eq!(
+            after["slack"]["token"], "xoxb-3 xapp-3",
+            "the last copy of the Slack pair survives"
+        );
+        assert!(store.read("slack").is_none());
+        assert!(
+            after["matrix"].get("token").is_none(),
+            "matrix still migrates"
+        );
+        assert_eq!(store.read("matrix").as_deref(), Some("syt_4"));
+    }
+
+    #[test]
+    fn a_store_that_reads_back_a_different_value_never_earns_the_strip() {
+        let ws = TempWorkspace::new("garble", &every_channel_secrets());
+        let mut store = FakeStore::default();
+        store.garble.insert("matrix".into());
+        migrate_channel_tokens_with(&store, &ws.0);
+        let after = ws.json();
+        assert_eq!(
+            after["matrix"]["token"], "syt_4",
+            "mismatched read-back keeps the plaintext"
+        );
+        assert!(after["slack"].get("token").is_none());
+    }
+
+    #[test]
+    fn an_existing_keychain_value_is_never_overwritten_by_the_file() {
+        let ws = TempWorkspace::new("held", &every_channel_secrets());
+        let store = FakeStore::default();
+        store
+            .held
+            .borrow_mut()
+            .insert("slack".into(), "xoxb-3 xapp-3".into());
+        store
+            .held
+            .borrow_mut()
+            .insert("matrix".into(), "syt_OTHER".into());
+        migrate_channel_tokens_with(&store, &ws.0);
+        assert!(
+            !store
+                .writes
+                .borrow()
+                .iter()
+                .any(|c| c == "slack" || c == "matrix"),
+            "a held value is never rewritten"
+        );
+        let after = ws.json();
+        assert!(
+            after["slack"].get("token").is_none(),
+            "same value already held -> strip"
+        );
+        assert_eq!(
+            after["matrix"]["token"], "syt_4",
+            "different value held -> plaintext kept"
+        );
+        assert_eq!(store.read("matrix").as_deref(), Some("syt_OTHER"));
+    }
+
+    #[test]
+    fn unreadable_secrets_file_is_left_alone() {
+        let ws = TempWorkspace::new("corrupt", &serde_json::json!({}));
+        let file = ws.0.join("channels").join("secrets.json");
+        std::fs::write(&file, b"{\"slack\":{\"token\":\"xoxb").unwrap();
+        let store = FakeStore::default();
+        migrate_channel_tokens_with(&store, &ws.0);
+        assert!(store.writes.borrow().is_empty());
+        assert_eq!(ws.raw(), "{\"slack\":{\"token\":\"xoxb");
     }
 
     #[test]

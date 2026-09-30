@@ -1,0 +1,7 @@
+{
+  "id": "candyprincess",
+  "skin": "candyprincess",
+  "targetStandingHeight": 19,
+  "characterId": "5c818a0a-1109-4486-8314-e7ca0bee8209",
+  "detail": "status: completed\nid: 5c818a0a-1109-4486-8314-e7ca0bee8209\nrotations:\n  south: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/5c818a0a-1109-4486-8314-e7ca0bee8209/rotations/south.png?t=1\n  east: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/5c818a0a-1109-4486-8314-e7ca0bee8209/rotations/east.png?t=1\n  north: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/5c818a0a-1109-4486-8314-e7ca0bee8209/rotations/north.png?t=1\n  west: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/5c818a0a-1109-4486-8314-e7ca0bee8209/rotations/west.png?t=1\n  south-east: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/5c818a0a-1109-4486-8314-e7ca0bee8209/rotations/south-east.png?t=1\n  north-east: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/5c818a0a-1109-4486-8314-e7ca0bee8209/rotations/north-east.png?t=1\n  north-west: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/5c818a0a-1109-4486-8314-e7ca0bee8209/rotations/north-west.png?t=1\n  south-west: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/5c818a0a-1109-4486-8314-e7ca0bee8209/rotations/south-west.png?t=1\n"
+}

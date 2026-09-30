@@ -5,6 +5,8 @@
 // manager owns permissions, refresh, reconnect, cancellation and tool projection.
 const ENDPOINTS = Object.freeze({
   gmail: 'https://gmail.googleapis.com/gmail/v1/users/me',
+  // gmail.send alone (a SENSITIVE scope, not restricted): sends, cannot read, search or draft.
+  'gmail-send': 'https://gmail.googleapis.com/gmail/v1/users/me#send-only',
   'google-drive': 'https://www.googleapis.com/drive/v3',
   'google-calendar': 'https://www.googleapis.com/calendar/v3',
   'google-docs': 'https://docs.googleapis.com/v1/documents',
@@ -24,6 +26,9 @@ const TOOLS = {
     tool('read_attachment', 'Read a Gmail attachment as base64url data (bounded to 8 MiB).', { messageId: STR, attachmentId: STR }, ['messageId', 'attachmentId'], true),
     tool('create_draft', 'Save an email draft. Does not send. raw is a base64url-encoded RFC 2822 MIME message.', { raw: STR, threadId: STR }, ['raw']),
     tool('send_draft', 'SEND an existing draft to its recipients. This is an external message; obtain the user’s authorization before sending.', { draftId: STR }, ['draftId'])
+  ],
+  'gmail-send': [
+    tool('send_email', 'SEND a plain-text email from the signed-in Gmail account. This is an external message; obtain the user’s authorization of the exact recipients and text before sending. This connection cannot read, search or draft mail.', { to: { type: 'array', items: STR, minItems: 1, maxItems: 50 }, cc: { type: 'array', items: STR, maxItems: 50 }, bcc: { type: 'array', items: STR, maxItems: 50 }, subject: STR, body: STR, replyTo: STR }, ['to', 'subject', 'body'])
   ],
   'google-drive': [
     tool('list_files', 'Search Drive with a Drive query; follows pageToken for pagination.', { query: STR, pageToken: STR, pageSize: { type: 'integer', minimum: 1, maximum: 100 } }, [], true),
@@ -74,13 +79,36 @@ function validate(def, args) {
   }
   for (const k of def.inputSchema.required) if (!(k in args)) throw new Error('Missing argument: ' + k);
 }
+/* RFC 5322 message for send_email. Every header value is refused if it carries CR/LF (header injection),
+   addresses must be a bare mailbox or 'Name <mailbox>', non-ASCII subjects are RFC 2047 encoded and the
+   body travels base64 so no line of user text can be read as a header or boundary. */
+const MAILBOX = /[^\s<>@",;]+@[^\s<>@",;]+\.[^\s<>@",;]+/.source;
+const ADDRESS = new RegExp('^(?:' + MAILBOX + '|' + /[^<>@\r\n",;]{0,200} ?</.source + MAILBOX + '>)$');
+function addressList(list, field) {
+  return list.map(v => {
+    const t = String(v).trim();
+    if (/[\r\n]/.test(t) || !ADDRESS.test(t)) throw new Error('Invalid ' + field + ' address');
+    return t;
+  }).join(', ');
+}
+function mimeMessage(a) {
+  if (/[\r\n]/.test(a.subject)) throw new Error('Subject cannot contain line breaks');
+  const subject = /^[\x20-\x7e]*$/.test(a.subject) ? a.subject : '=?UTF-8?B?' + Buffer.from(a.subject, 'utf8').toString('base64') + '?=';
+  const head = ['To: ' + addressList(a.to, 'to')];
+  if (a.cc && a.cc.length) head.push('Cc: ' + addressList(a.cc, 'cc'));
+  if (a.bcc && a.bcc.length) head.push('Bcc: ' + addressList(a.bcc, 'bcc'));
+  if (a.replyTo) head.push('Reply-To: ' + addressList([a.replyTo], 'reply-to'));
+  head.push('Subject: ' + subject, 'MIME-Version: 1.0', 'Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: base64');
+  const body = Buffer.from(a.body, 'utf8').toString('base64').replace(/.{76}/g, '$&\r\n');
+  return Buffer.from(head.join('\r\n') + '\r\n\r\n' + body, 'utf8').toString('base64url');
+}
 function requestFor(product, name, a) {
   if (product === 'google-files') {
     if (name.startsWith('docs_')) return requestFor('google-docs', name.slice(5), a);
     if (name.startsWith('sheets_')) return requestFor('google-sheets', name.slice(7), a);
     return requestFor('google-drive', name, a);
   }
-  const base = ENDPOINTS[product];
+  const base = ENDPOINTS[product].replace(/#.*$/, '');
   const get = (path, query) => ({ url: base + path, query, method: 'GET' });
   const write = (path, body, method = 'POST', query) => ({ url: base + path, body, method, query });
   if (product === 'gmail') {
@@ -94,6 +122,7 @@ function requestFor(product, name, a) {
     }
     if (name === 'send_draft') return write('/drafts/send', { id: a.draftId });
   }
+  if (product === 'gmail-send' && name === 'send_email') return write('/messages/send', { raw: mimeMessage(a) });
   if (product === 'google-drive') {
     if (name === 'list_files') return get('/files', { q: a.query, pageToken: a.pageToken, pageSize: a.pageSize || 25, fields: 'nextPageToken,files(id,name,mimeType,modifiedTime,webViewLink)' });
     if (name === 'get_file') return get('/files/' + segment(a.fileId), { fields: 'id,name,mimeType,description,modifiedTime,webViewLink,parents,size' });
@@ -161,7 +190,9 @@ function makeGoogleTransport({ url, token, fetchImpl = fetch, timeoutMs = 30000 
       let result;
       if (msg.method === 'initialize') {
         // Prove the account/service responds before publishing connected status.
-        const probe = product === 'gmail' ? { url: url + '/profile' } : product === 'google-calendar' ? { url: url + '/users/me/calendarList', query: { maxResults: 1 } }
+        // gmail.send cannot read the mailbox profile; the granted openid/email scopes prove the account instead.
+        const probe = product === 'gmail-send' ? { url: 'https://openidconnect.googleapis.com/v1/userinfo' }
+          : product === 'gmail' ? { url: url + '/profile' } : product === 'google-calendar' ? { url: url + '/users/me/calendarList', query: { maxResults: 1 } }
           : { url: ENDPOINTS['google-drive'] + '/files', query: { pageSize: 1, fields: 'files(id)' } };
         await request(probe);
         result = { protocolVersion: msg.params?.protocolVersion || '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'StarNet Google API connector', version: '1' } };
@@ -183,4 +214,4 @@ function makeGoogleTransport({ url, token, fetchImpl = fetch, timeoutMs = 30000 
   }
   return { send, onMessage(cb) { receive = cb; }, close() { closed = true; for (const ctrl of controllers) ctrl.abort(); controllers.clear(); } };
 }
-module.exports = { ENDPOINTS, TOOLS, productForUrl, makeGoogleTransport, requestFor, validate };
+module.exports = { ENDPOINTS, TOOLS, productForUrl, makeGoogleTransport, requestFor, validate, mimeMessage };

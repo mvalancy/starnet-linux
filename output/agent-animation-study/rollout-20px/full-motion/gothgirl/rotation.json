@@ -1,0 +1,7 @@
+{
+  "id": "gothgirl",
+  "skin": "gothgirl",
+  "targetStandingHeight": 19,
+  "characterId": "8ad65472-da44-4aed-bb29-ff11026dafef",
+  "detail": "status: completed\nid: 8ad65472-da44-4aed-bb29-ff11026dafef\nrotations:\n  south: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/8ad65472-da44-4aed-bb29-ff11026dafef/rotations/south.png?t=1\n  east: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/8ad65472-da44-4aed-bb29-ff11026dafef/rotations/east.png?t=1\n  north: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/8ad65472-da44-4aed-bb29-ff11026dafef/rotations/north.png?t=1\n  west: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/8ad65472-da44-4aed-bb29-ff11026dafef/rotations/west.png?t=1\n  south-east: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/8ad65472-da44-4aed-bb29-ff11026dafef/rotations/south-east.png?t=1\n  north-east: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/8ad65472-da44-4aed-bb29-ff11026dafef/rotations/north-east.png?t=1\n  north-west: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/8ad65472-da44-4aed-bb29-ff11026dafef/rotations/north-west.png?t=1\n  south-west: https://backblaze.pixellab.ai/file/pixellab-characters/1ff7d2cf-cfe6-44f9-9533-9eea41eb05cb/8ad65472-da44-4aed-bb29-ff11026dafef/rotations/south-west.png?t=1\n\n"
+}

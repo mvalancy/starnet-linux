@@ -207,5 +207,14 @@ const { WorkshopStore } = require('../frontend/app/workshopstore.js');
   const apSrc = fs.readFileSync(path.join(__dirname, '../frontend/app/autopilotstore.js'), 'utf8');
   A.ok(/deps\.onReturn/.test(apSrc), 'autopilotstore.js fires deps.onReturn on a genuine return (independent of the local draft log)');
 
+  const originalFetch = global.fetch;
+  for (const body of [{}, { ok: false, error: 'not saved' }, null]) {
+    global.fetch = async () => ({ ok: true, json: async () => body });
+    const decision = await WorkshopStore.decide('agent', 'run-ack', 'keep');
+    A.eq(decision.ok, false, 'Keep requires explicit success, never a missing or negative acknowledgement');
+  }
+  global.fetch = async () => ({ ok: true, json: async () => ({ ok: true, destPath: '/confirmed/output' }) });
+  A.eq((await WorkshopStore.decide('agent', 'run-ack', 'keep')).destPath, '/confirmed/output', 'a confirmed decision retains its proven output path');
+  global.fetch = originalFetch;
   A.report('workshop-visibility.test');
 })();

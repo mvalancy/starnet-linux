@@ -186,5 +186,21 @@ const failRun = (o) => { o.emit('agent.run.error', { agentId: 'a', runId: o.runI
     A.eq(cp.next[0].nextAt, cDue + 3600000, 'cron-kind next fire is the next wall-clock match');
   }
 
+  // ---- a routine script that TIMES OUT: its error is clipped like the non-zero-exit path (last 4000 chars) ----
+  {
+    const { clipScriptError, SCRIPT_ERROR_TAIL } = require('../sidecar/cron-driver.js');
+    A.eq(SCRIPT_ERROR_TAIL, 4000, 'the same 4000-char tail the non-zero-exit path keeps');
+    const head = 'TIMEOUT: the command did not finish within its 30000ms timeout, so the host KILLED it (the whole process tree). Output captured before the kill:\n';
+    const big = head + 'x'.repeat(64000) + '\nLAST LINE\n[exit -1 — KILLED (timed out after 30000ms)]';
+    const c = clipScriptError(big);
+    A.ok(c.startsWith(head), 'the explanatory TIMEOUT head is kept');
+    A.ok(/LAST LINE\n\[exit -1/.test(c), 'the tail (the part that explains the failure) is kept');
+    A.ok(c.length <= head.length + 1 + 4000, 'and the 64KB body is clipped to 4000 chars (' + c.length + ')');
+    A.eq(clipScriptError('short failure'), 'short failure', 'a short message passes through untouched');
+    const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'sidecar', 'index.js'), 'utf8');
+    const fn = src.slice(src.indexOf('async function executeCronScript('), src.indexOf('async function executeCronScript(') + 1500);
+    A.ok(/catch \(e\)[\s\S]*clipScriptError\(/.test(fn), 'executeCronScript routes a thrown script failure through clipScriptError');
+  }
+
   A.report('cron.hardening');
 })();

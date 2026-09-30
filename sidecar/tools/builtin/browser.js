@@ -17,7 +17,7 @@
   const P = require('node:path');
   const OS = require('node:os');
   const FS = require('node:fs');
-  const CP = require('node:child_process');
+  const CP = require('../../child-env.js').guardChildProcess(require('node:child_process'));   // Chrome never inherits station secrets
   const NET = require('node:net');
   const { swallow } = require('../../failopen.js');
   const Challenge = require('./browserchallenge.js');
@@ -569,19 +569,21 @@
      attacker-controlled A record) walked straight through them. web_fetch has resolved every hop since the
      web lane (web.js assertResolvedSafe); browser.navigate — the tool that then RUNS the page's scripts —
      did not, so the weaker guard sat in front of the more capable tool.
-     Injectable + best-effort, byte-identical to web.js: a resolution failure is left for the navigation to
-     surface, and IP literals are already checked statically above. Pass lookup:null to disable (tests). */
+     Resolution fails closed. The owned browser's proxy pins each validated DNS answer to its TCP dial,
+     including page subresources. Pass lookup:null only in injected driver tests. */
   function nodeLookup(host) { const dns = require('node:dns'); return dns.promises.lookup(host, { all: true }); }
   async function assertResolvedSafe(u, lookup) {
     if (!lookup) return;
     const h = hostOf(u);
     if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.indexOf(':') >= 0) return;   // already a literal
-    let addrs;
-    try { addrs = await lookup(h); } catch (e) { return; }
+    const addrs = await lookup(h);
+    if (!Array.isArray(addrs) || !addrs.length) throw new Error('no verified DNS address for ' + h);
     for (const a of (addrs || [])) {
       const ip = (a && a.address) || '';
+      if (!NET.isIP(ip)) throw new Error('resolver returned an invalid IP address for ' + h);
       if (isPrivateV4(ip) || isPrivateV6(ip)) throw new Error('refusing to navigate: ' + h + ' resolves to private address ' + ip);
     }
+    return addrs[0];
   }
   // Separate from assertSafeUrl: public browsing retains its SSRF boundary. Only the workbench-
   // scoped browser.test_navigate tool may use this validator, and only for an agent's local dev UI.
@@ -660,6 +662,7 @@
     const fetchImpl = deps.fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
     const WebSocketImpl = deps.WebSocketImpl || (typeof WebSocket !== 'undefined' ? WebSocket : null);
     const spawn = deps.spawn || CP.spawn;
+    const startPinnedProxy = require('./browser-proxy.js').startPinnedProxy;
     // HEADLESS BY DEFAULT (2026-07-07 direction): research must never open a window on the user's screen.
     // A window appears only when the CALL asked for one (deps.headed — browser.navigate visible:true, i.e.
     // the Commander asked to watch) and no headless env pins it down (CI/soak rigs still win). Legacy
@@ -719,6 +722,12 @@
     const headed = wantHeaded && !binIsHeadlessOnly;
 
     let proc = null, procExited = false, procError = null, procClosePromise = null, cdp = null, consoleLog = [], dialog = null, attachedPort = null;
+    let networkProxy = null;
+    const allowedLocalOrigins = new Set();
+    function allowLocal(url) {
+      allowedLocalOrigins.add(new URL(url).origin);
+      if (networkProxy) networkProxy.allowLocal(url);
+    }
     const downloads = deps.downloadDir ? makeDownloadLedger(deps.downloadDir) : null;
     // Owned-browser identity is derived after CDP connects. Windows Chrome GUI binaries often emit
     // nothing for `chrome.exe --version`; launch-time probing alone left their UA as HeadlessChrome.
@@ -910,9 +919,18 @@
       // Allocated here, not by Chromium, so the launch carries no automation flag. Chromium still
       // writes the bound port into this profile's DevToolsActivePort, which stays the readiness proof.
       launchPort = privatePort ? await allocateEphemeralPort() : cdpPort;
+      if (spawn === CP.spawn && deps.networkProxy !== false) {
+        networkProxy = await startPinnedProxy({
+          validate: assertSafeUrl,
+          resolve: u => assertResolvedSafe(u, ('lookup' in deps) ? deps.lookup : nodeLookup)
+        });
+        for (const origin of allowedLocalOrigins) networkProxy.allowLocal(origin);
+      }
       const args = ['--disable-blink-features=AutomationControlled', '--no-first-run', '--no-default-browser-check',
         '--remote-debugging-port=' + launchPort, '--window-size=1440,900',
         '--user-data-dir=' + profileDir];
+      if (networkProxy) args.push('--proxy-server=http://127.0.0.1:' + networkProxy.port,
+        '--proxy-bypass-list=<-loopback>');
       args.push('--lang=' + hostBrowserLocale(deps));
       if (headed) {
         // Visible window the user can watch (and hear — no --mute-audio in headed mode).
@@ -1995,13 +2013,14 @@
         exited = await exitedWithin(3000);
         if (!exited) throw new Error('owned Chromium did not exit after synthetic test session closed');
       }
+      if (networkProxy) { const proxy = networkProxy; networkProxy = null; await proxy.close(); }
       if (deps.cleanupProfile === true) { try { FS.rmSync(profileDir, { recursive: true, force: true }); } catch (_) {} }
     }
     // visible() is the TRUTH the model reports: true only if the controlled window is
     // actually on the user's screen. Headless mode, or a headless-only binary fallback in
     // a headed request, both read as not visible.
     function visible() { return headed; }
-    return { navigate, snapshot, click, type, press, hover, drag, selectOption, viewport, forward, upload, tabs, waitForTabCount, selectTab, closeTab, inspect, evalPublic, waitFor, pdf, intercept, emulate, usingPersistentProfile: () => !!deps.profileIsPersistent, testInput, testEval, testState, scroll, back, getText, challengeStatus, handleDialog, screenshot, close, consoleLog: readConsoleLog, networkLog: () => netLog.map(r => Object.assign({}, r)), lastDialog: () => dialog, lastResponse: () => lastResponse, visible, headed, headlessFallback: wantHeaded && binIsHeadlessOnly, attachedPort: () => attachedPort, profileDir };
+    return { navigate, snapshot, click, type, press, hover, drag, selectOption, viewport, forward, upload, tabs, waitForTabCount, selectTab, closeTab, inspect, evalPublic, waitFor, pdf, intercept, emulate, usingPersistentProfile: () => !!deps.profileIsPersistent, testInput, testEval, testState, scroll, back, getText, challengeStatus, handleDialog, screenshot, close, consoleLog: readConsoleLog, networkLog: () => netLog.map(r => Object.assign({}, r)), lastDialog: () => dialog, lastResponse: () => lastResponse, visible, headed, headlessFallback: wantHeaded && binIsHeadlessOnly, attachedPort: () => attachedPort, allowLocal, profileDir };
   }
 
   function makeBrowserSession(deps) {
@@ -2205,6 +2224,7 @@
       if (!local) await assertResolvedSafe(u, doLookup);   // refuse names that RESOLVE private (rebinding)
       const wantedMode = local ? false : ('visible' in opts ? !!opts.visible : undefined);
       const d = wantedMode === undefined ? ensureDriver() : await ensureDriverMode(wantedMode);
+      if (local && typeof d.allowLocal === 'function') d.allowLocal(u.href);
       const finalUrl = await d.navigate(u.href);
       if (finalUrl) {
         try {

@@ -11,6 +11,24 @@ const { fork: defaultFork } = require('node:child_process');
 
 const DEFAULTS = Object.freeze({ timeoutMs: 30000, maxCalls: 50, maxOutputBytes: 32000, maxCodeBytes: 48000 });
 
+// Node's permission model is the worker's second isolation layer (see code-worker.js). The stable `--permission`
+// flag landed in Node 22.13 / 23.5; every desktop target bundles 22.23.x (scripts/prepare-node.mjs). On an older
+// runtime code.run is REFUSED — it never falls back to the bare node:vm child.
+function permissionFlagSupported(version) {
+  const m = /^v?(\d+)\.(\d+)/.exec(String(version || ''));
+  if (!m) return false;
+  const major = Number(m[1]), minor = Number(m[2]);
+  return major > 23 || (major === 23 && minor >= 5) || (major === 22 && minor >= 13);
+}
+
+function workerExecArgv(workerPath) {
+  return [
+    '--permission', '--allow-fs-read=' + workerPath,
+    '--disallow-code-generation-from-strings',
+    '--max-old-space-size=96', '--disable-proto=throw'
+  ];
+}
+
 function clampText(text, max) {
   text = String(text == null ? '' : text);
   if (Buffer.byteLength(text, 'utf8') <= max) return text;
@@ -47,6 +65,7 @@ function makeCodeTools(deps) {
   const fork = deps.fork || defaultFork;
   const workerPath = deps.workerPath || path.join(__dirname, '..', 'code-worker.js');
   const limits = Object.assign({}, DEFAULTS, deps.limits || {});
+  const nodeVersion = deps.nodeVersion || process.version;
 
   const codeTool = {
     name: 'code.run',
@@ -55,15 +74,23 @@ function makeCodeTools(deps) {
       type: 'object', additionalProperties: false, required: ['code'],
       properties: { code: { type: 'string', minLength: 1, maxLength: limits.maxCodeBytes } }
     },
-    scope: 'read', capability: 'code', impact: 'none', requiresConsent: false, timeoutMs: limits.timeoutMs + 2000,
+    // SECURITY (2026-09-23 audit stopgap, KEPT 2026-09-25): classified like shell.exec — execute scope (autonomous
+    // exec lockout), consent on interactive surfaces, and workspace-process impact so an untrusted-content taint
+    // revokes it for the rest of the run. The worker is now rebuilt on a primitive-only bridge under Node's
+    // permission model (code-worker.js), but Node 22's permission model does not cover the NETWORK, so relaxing
+    // this classification is an owner decision, not a default.
+    scope: 'execute', capability: 'code', impact: 'workspace-process', requiresConsent: true, timeoutMs: limits.timeoutMs + 2000,
     async run(args, ctx) {
       if (!ctx || typeof ctx.composeDispatch !== 'function') throw new Error('code-mode parent dispatcher unavailable');
       const source = String(args && args.code || '');
       if (Buffer.byteLength(source, 'utf8') > limits.maxCodeBytes) throw new Error('code exceeds ' + limits.maxCodeBytes + ' bytes');
 
+      if (!permissionFlagSupported(nodeVersion)) {
+        throw new Error('code.run is unavailable on Node ' + nodeVersion + ': it needs the Node permission model (22.13+) to isolate model code');
+      }
       const child = fork(workerPath, [], {
         cwd: os.tmpdir(), env: secretFreeEnv(process.platform), silent: true,
-        execArgv: ['--max-old-space-size=96', '--disable-proto=throw'],
+        execArgv: workerExecArgv(workerPath),
         stdio: ['ignore', 'pipe', 'pipe', 'ipc']
       });
       let calls = 0, settled = false, stderr = '';
@@ -106,7 +133,12 @@ function makeCodeTools(deps) {
               return;
             }
             try {
-              const result = await ctx.composeDispatch({ name: msg.name, args: msg.args || {} }, {
+              // Only JSON TEXT crosses from the worker; parse it here, in the parent's realm.
+              let nestedArgs;
+              try { nestedArgs = JSON.parse(String(msg.argsJson || '{}')); }
+              catch (e) { throw new Error('nested tool arguments are not valid JSON'); }
+              if (!nestedArgs || typeof nestedArgs !== 'object' || Array.isArray(nestedArgs)) nestedArgs = {};
+              const result = await ctx.composeDispatch({ name: String(msg.name || ''), args: nestedArgs }, {
                 parentCallId: ctx.callId, sequence: calls, signal: nestedController.signal
               });
               if (!settled) safeSend({ type: 'tool_result', id: msg.id, ok: true, result });
@@ -117,9 +149,11 @@ function makeCodeTools(deps) {
           }
           if (msg.type === 'error') return done(new Error('code failed: ' + String(msg.error || 'unknown error')));
           if (msg.type === 'done') {
-            let rendered;
-            try { rendered = typeof msg.result === 'string' ? msg.result : JSON.stringify(msg.result); }
-            catch (_) { rendered = String(msg.result); }
+            // The worker sends the result as JSON TEXT (only primitives cross the boundary): a string result
+            // renders bare, anything else as its JSON.
+            let rendered = String(msg.resultJson == null ? 'null' : msg.resultJson);
+            try { const v = JSON.parse(rendered); if (typeof v === 'string') rendered = v; }
+            catch (e) { void e; }
             const full = rendered == null ? '' : rendered;
             const bounded = clampText(full, limits.maxOutputBytes);
             done(null, {
@@ -134,7 +168,7 @@ function makeCodeTools(deps) {
     }
   };
 
-  return { codeTool, register(reg) { reg.register(codeTool); return reg; }, _internals: { clampText, secretFreeEnv, refusalForNested, DEFAULTS } };
+  return { codeTool, register(reg) { reg.register(codeTool); return reg; }, _internals: { clampText, secretFreeEnv, refusalForNested, permissionFlagSupported, workerExecArgv, DEFAULTS } };
 }
 
-module.exports = { makeCodeTools, _internals: { clampText, secretFreeEnv, refusalForNested, DEFAULTS } };
+module.exports = { makeCodeTools, _internals: { clampText, secretFreeEnv, refusalForNested, permissionFlagSupported, workerExecArgv, DEFAULTS } };

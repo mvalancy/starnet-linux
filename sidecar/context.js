@@ -4,7 +4,7 @@
    folds older turns into a summary (given an injected summarizer), and redacts
    key-shaped secrets from anything bound for logs/persistence.
 
-   makeContext({ contextLimit, compactAt?, keepTail?, estimateTokens? }) -> {
+   makeContext({ contextLimit, compactAt?, keepTail?, keepTailTurns?, tailShare?, estimateTokens? }) -> {
      systemPrompt({identity, capabilities, rules}) -> string,   // frozen, sectioned
      assemble({system, summary, history}) -> messages[],         // system + (summary) + history
      estimateTokens(text) -> int,  estimateMessages(msgs) -> int,
@@ -23,9 +23,104 @@
   'use strict';
 
   const MSG_OVERHEAD = 4; // rough per-message framing tokens
+  // The estimator's text ratio. Exported so the host's window-scaled tool-output caps (tools/registry.js
+  // outputBudgetFor) convert "15% of the window" to characters with the SAME ruler compaction measures with.
+  const CHARS_PER_TOKEN = 4;
 
   function defaultEstimate(text) {
-    return Math.ceil(String(text == null ? '' : text).length / 4);
+    return Math.ceil(String(text == null ? '' : text).length / CHARS_PER_TOKEN);
+  }
+
+  /* IMAGE COST (Step 2 wave 2, Hermes audit 2026-09-22). A multimodal message's content is an ARRAY of parts, and
+     the text estimator stringified it: String([{…},{…}]) is "[object Object],[object Object]", so a 300k-char
+     screenshot counted ~12 tokens against the ~1,500 the provider really bills. Every image part is now charged
+     a realistic cost: from its pixel dimensions when the data carries them (PNG/GIF/WebP/JPEG headers, or explicit
+     width/height on the part), using the resize-then-(w*h)/750 rule vision APIs document (long edge <= 1568,
+     ~1.15 MP ceiling, so ~1,600 tokens at most), else a flat IMAGE_TOKENS_DEFAULT = 1,500 (the reference harness's
+     per-image constant). Text parts keep the text estimator; any other part is measured as its JSON. Pure. */
+  const IMAGE_TOKENS_DEFAULT = 1500;
+  const IMAGE_TOKENS_MIN = 85;               // the smallest image still costs a fixed base on every vision API
+  const IMAGE_MAX_EDGE = 1568;
+  const IMAGE_MAX_PIXELS = 1150000;
+  const IMAGE_PIXELS_PER_TOKEN = 750;
+  const IMAGE_HEAD_B64 = 65536;              // base64 decoded to find dimensions (reaches a JPEG SOF past typical EXIF)
+  const imageTokenCache = (typeof WeakMap === 'function') ? new WeakMap() : null;
+
+  function b64Head(b64) {
+    if (typeof Buffer === 'undefined' || typeof Buffer.from !== 'function') return null;   // browser build: no dims
+    const s = String(b64).slice(0, IMAGE_HEAD_B64);
+    return Buffer.from(s.slice(0, s.length - (s.length % 4)), 'base64');
+  }
+  function u16be(b, i) { return (b[i] << 8) | b[i + 1]; }
+  function u32be(b, i) { return ((b[i] << 24) >>> 0) + (b[i + 1] << 16) + (b[i + 2] << 8) + b[i + 3]; }
+  function tag(b, i, s) { for (let k = 0; k < s.length; k++) if (b[i + k] !== s.charCodeAt(k)) return false; return true; }
+  // {w,h} from the leading bytes of PNG / GIF / WebP / JPEG data, or null when the format is unknown or truncated.
+  function imageDims(b) {
+    if (!b || b.length < 10) return null;
+    if (b[0] === 0x89 && tag(b, 1, 'PNG') && b.length >= 24 && tag(b, 12, 'IHDR')) return { w: u32be(b, 16), h: u32be(b, 20) };
+    if (tag(b, 0, 'GIF8')) return { w: b[6] | (b[7] << 8), h: b[8] | (b[9] << 8) };
+    if (tag(b, 0, 'RIFF') && b.length >= 30 && tag(b, 8, 'WEBP')) {
+      if (tag(b, 12, 'VP8 ')) return { w: (b[26] | (b[27] << 8)) & 0x3fff, h: (b[28] | (b[29] << 8)) & 0x3fff };
+      if (tag(b, 12, 'VP8L')) { const bits = b[21] | (b[22] << 8) | (b[23] << 16) | (b[24] << 24); return { w: (bits & 0x3fff) + 1, h: ((bits >> 14) & 0x3fff) + 1 }; }
+      if (tag(b, 12, 'VP8X')) return { w: 1 + (b[24] | (b[25] << 8) | (b[26] << 16)), h: 1 + (b[27] | (b[28] << 8) | (b[29] << 16)) };
+      return null;
+    }
+    if (b[0] === 0xff && b[1] === 0xd8) {
+      let i = 2;
+      while (i + 9 < b.length) {
+        if (b[i] !== 0xff) return null;                        // lost segment alignment: give up, never guess
+        const mk = b[i + 1];
+        if (mk === 0xff) { i++; continue; }                    // fill byte
+        if (mk === 0xd8 || mk === 0x01 || (mk >= 0xd0 && mk <= 0xd7)) { i += 2; continue; }   // standalone markers
+        if (mk >= 0xc0 && mk <= 0xcf && mk !== 0xc4 && mk !== 0xc8 && mk !== 0xcc) return { w: u16be(b, i + 7), h: u16be(b, i + 5) };
+        i += 2 + u16be(b, i + 2);
+      }
+    }
+    return null;
+  }
+  function tokensForDims(w, h) {
+    if (!(w > 0 && h > 0)) return IMAGE_TOKENS_DEFAULT;
+    const s = Math.min(1, IMAGE_MAX_EDGE / Math.max(w, h));
+    let sw = w * s, sh = h * s;
+    if (sw * sh > IMAGE_MAX_PIXELS) { const k = Math.sqrt(IMAGE_MAX_PIXELS / (sw * sh)); sw *= k; sh *= k; }
+    return Math.max(IMAGE_TOKENS_MIN, Math.ceil((sw * sh) / IMAGE_PIXELS_PER_TOKEN));
+  }
+  function isImagePart(p) {
+    return !!p && typeof p === 'object' && (p.type === 'image_url' || p.type === 'image' || p.type === 'input_image' || p.image_url != null);
+  }
+  // One image part -> tokens. Explicit width/height win; else a data: URL (OpenAI shape) or a base64 `source`
+  // (Anthropic shape) is sniffed for dimensions; a remote URL or an unreadable header costs the flat default.
+  function imageTokens(part) {
+    if (!isImagePart(part)) return 0;
+    if (imageTokenCache && imageTokenCache.has(part)) return imageTokenCache.get(part);
+    let t = IMAGE_TOKENS_DEFAULT;
+    const w = Number(part.width), h = Number(part.height);
+    if (w > 0 && h > 0) t = tokensForDims(w, h);
+    else {
+      const iu = part.image_url;
+      const url = typeof iu === 'string' ? iu : (iu && typeof iu.url === 'string' ? iu.url : (typeof part.url === 'string' ? part.url : ''));
+      const comma = url.indexOf(',');
+      const b64 = (url.indexOf('data:') === 0 && comma > 0 && /;base64$/i.test(url.slice(0, comma))) ? url.slice(comma + 1)
+        : (part.source && typeof part.source.data === 'string' ? part.source.data : '');
+      const d = b64 ? imageDims(b64Head(b64)) : null;
+      if (d) t = tokensForDims(d.w, d.h);
+    }
+    if (imageTokenCache) imageTokenCache.set(part, t);
+    return t;
+  }
+  // A message's `content` -> tokens: a string through the text estimator (unchanged), a parts array part by part.
+  function estimateContentTokens(content, estimateText) {
+    const est = typeof estimateText === 'function' ? estimateText : defaultEstimate;
+    if (!Array.isArray(content)) return est(content);
+    let t = 0;
+    for (const p of content) {
+      if (p == null) continue;
+      if (isImagePart(p)) t += imageTokens(p);
+      else if (typeof p === 'string') t += est(p);
+      else if (typeof p.text === 'string') t += est(p.text);
+      else t += est(JSON.stringify(p));
+    }
+    return t;
   }
 
   // ---- secret redaction (module-level so it's usable without a context instance) ----
@@ -35,6 +130,12 @@
   // run first; the broad `sk-` catch-all and `Bearer` run last. All replacements are length-shrinking,
   // so a single pass per pattern fully scrubs (no pattern reintroduces a matchable shape).
   const SECRET_PATTERNS = [
+    // A MASKED or TRUNCATED key is still part of a key. OpenAI's 401 echoes `Incorrect API key provided:
+    // sk-proj-Ab12****…Wx9Z`, and a truncated log line ends `sk-or-v1-abc…`. The mask characters break every
+    // full-key pattern below, so the visible head/tail went into diag.errors.json verbatim (reported against
+    // 0.12.4). Any vendor-prefixed token that contains a mask run (** / •• / … / ...) is scrubbed whole.
+    // The prefix needs its separator, so prose like "skip..." is never touched.
+    [/\b(?:(?:sk|pk|rk|xai|pplx|glpat|xox[abeprs])-|sk_(?:live|test)_|(?:gsk|hf|gh[pousr]|whk|ntn|lin_api)_|AIza|ya29\.)[-_.A-Za-z0-9]*?(?:[*•]{2,}|…|\.{3})(?:[-_A-Za-z0-9*•…]|\.{3})*/g, '[redacted-key]'],
     [/-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z]+ )?PRIVATE KEY-----/g, '[redacted-private-key]'],
     [/sk-or-v1-[A-Za-z0-9_\-]{8,}/g, '[redacted-key]'],                 // OpenRouter
     [/sk-ant-[A-Za-z0-9_\-]{8,}/g, '[redacted-key]'],                   // Anthropic
@@ -46,7 +147,17 @@
     [/\bgh[pousr]_[A-Za-z0-9]{36,}\b/g, '[redacted-key]'],              // GitHub token (classic)
     [/\bgithub_pat_[A-Za-z0-9_]{60,}\b/g, '[redacted-key]'],            // GitHub fine-grained PAT
     [/\bglpat-[A-Za-z0-9_\-]{20,}\b/g, '[redacted-key]'],               // GitLab PAT
-    [/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, '[redacted-key]'],            // Slack token
+    [/\bxox[abeprs]-[A-Za-z0-9-]{10,}\b/g, '[redacted-key]'],           // Slack token (bot/user/app/refresh/config)
+    [/\bxapp-\d-[A-Za-z0-9-]{10,}\b/g, '[redacted-key]'],               // Slack app-level (Socket Mode) token
+    [/\b[MNO][A-Za-z0-9_-]{23,27}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,40}\b/g, '[redacted-token]'], // Discord bot token
+    [/\bsyt_[A-Za-z0-9_]{10,}\b/g, '[redacted-token]'],                 // Matrix (Synapse) access token
+    [/\b1\/\/0[A-Za-z0-9_-]{30,}/g, '[redacted-token]'],                 // Google OAuth refresh token
+    [/\bgsk_[A-Za-z0-9]{20,}\b/g, '[redacted-key]'],                    // Groq
+    [/\bpplx-[A-Za-z0-9]{20,}\b/g, '[redacted-key]'],                   // Perplexity
+    [/\bntn_[A-Za-z0-9]{20,}\b/g, '[redacted-key]'],                    // Notion integration token
+    [/\blin_api_[A-Za-z0-9]{20,}\b/g, '[redacted-key]'],                // Linear API key
+    [/\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}/g, '[redacted-key]'], // SendGrid
+    [/\bwhk_[A-Za-z0-9_-]{20,}/g, '[redacted-secret]'],                 // StarNet line-trigger webhook secret (routing/triggers.js)
     [/\bhf_[A-Za-z0-9]{30,}\b/g, '[redacted-key]'],                     // HuggingFace
     [/\bxai-[A-Za-z0-9]{20,}\b/g, '[redacted-key]'],                    // xAI
     [/\bAC[a-f0-9]{32}\b/g, '[redacted-key]'],                          // Twilio account SID
@@ -57,23 +168,58 @@
     // Synthetic/local connectors frequently use ordinary canaries rather than vendor-shaped tokens. Scrub
     // explicit credential assignments too, including URL query strings, so upstream diagnostics cannot turn a
     // `password=...` or `client_secret: ...` value into a credential disclosure.
-    [/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|authorization)\b(\s*[=:]\s*)(?!\[redacted-)[^\s&,;"']{4,}/gi, '$1$2[redacted-secret]'],
+    // JSON (`"refresh_token": "…"`) and quoted-YAML forms too: the quote between the key and the colon, and the one
+    // opening the value, used to stop this rule cold — so `cat codex/tokens.json` reached the model verbatim.
+    [/\b(api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|private[_-]?key|secret[_-]?key|bot[_-]?token|webhook[_-]?secret|password|passwd|authorization)\b(["']?\s*[=:]\s*["']?)(?!\[redacted-)[^\s&,;"']{4,}/gi, '$1$2[redacted-secret]'],
   ];
-  function redactStr(s) {
+  /* KNOWN-VALUE redaction. Shape patterns only catch vendor-shaped secrets; a service key, a custom connector
+     token, a Mistral key or a rotated OAuth token has no shape at all. The host (index.js) registers ONE source
+     that returns every secret value it currently holds (provider keys, channel tokens, OAuth access/refresh
+     tokens, connector tokens/headers/env, service keys, the API/IPC tokens). Every redact() call scrubs those
+     exact strings first, so `echo $MY_SERVICE_KEY` in a shell, a server echoing a key in an error body, or a
+     token in a log line can never reach the model, the bus, a transcript or diagnostics — whatever its shape.
+     The source is read once per top-level redact() call; values shorter than KNOWN_MIN are ignored (too likely
+     to collide with ordinary text). A throwing source degrades to shape-only redaction, never to a crash. */
+  const KNOWN_MIN = 8;
+  let knownSecretSource = null;
+  function setKnownSecretSource(fn) { knownSecretSource = typeof fn === 'function' ? fn : null; }
+  function knownSecrets() {
+    if (!knownSecretSource) return null;
+    let raw;
+    try { raw = knownSecretSource(); } catch (_) { return null; }
+    if (!raw || typeof raw[Symbol.iterator] !== 'function') return null;
+    const seen = new Set();
+    for (const v of raw) {
+      if (typeof v !== 'string') continue;
+      const t = v.trim();
+      if (t.length >= KNOWN_MIN && t.indexOf('[redacted-') < 0) seen.add(t);
+    }
+    if (!seen.size) return null;
+    // longest first: a key that contains another known key is scrubbed whole, never left as a partial tail
+    return Array.from(seen).sort((a, b) => b.length - a.length);
+  }
+  function redactStr(s, known) {
+    if (known) for (let i = 0; i < known.length; i++) if (s.indexOf(known[i]) >= 0) s = s.split(known[i]).join('[redacted-secret]');
     for (let i = 0; i < SECRET_PATTERNS.length; i++) s = s.replace(SECRET_PATTERNS[i][0], SECRET_PATTERNS[i][1]);
     return s;
   }
-  const SECRET_FIELD = /^(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|authorization|cookie|credentials?)$/i;
-  function redact(x) {
-    if (typeof x === 'string') return redactStr(x);
-    if (Array.isArray(x)) return x.map(redact);
+  const SECRET_FIELD = /^(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|password|passwd|authorization|cookie|credentials?)$/i;
+  function redactWith(x, known) {
+    if (typeof x === 'string') return redactStr(x, known);
+    if (Array.isArray(x)) return x.map(v => redactWith(v, known));
     if (x && typeof x === 'object') {
       const o = {};
-      for (const k in x) o[k] = SECRET_FIELD.test(k) ? '[redacted-secret]' : redact(x[k]);
+      // own keys only, and never re-create an object-model key: a parsed '__proto__' member would otherwise
+      // re-parent the copy (and an inherited, polluted key would be copied into every redacted payload).
+      for (const k of Object.keys(x)) {
+        if (k === '__proto__') continue;
+        o[k] = SECRET_FIELD.test(k) ? '[redacted-secret]' : redactWith(x[k], known);
+      }
       return o;
     }
     return x;
   }
+  function redact(x) { return redactWith(x, knownSecrets()); }
 
   // ---- recalled-memory fence (Cortex): surface the agent's own memory in-prompt without it having to call a
   //      read tool. Pure + deterministic + char-capped. renderRecall returns {text:'',count:0,chars:0} when there
@@ -224,14 +370,49 @@
     }
     return { scores, queried: true };
   }
+  // PROJECT SCOPE (memory-compound lane): the comparable key for a run's project root. Paths are compared
+  // slash-agnostic, trailing-slash-agnostic and case-folded (a Windows root differs only by case between the
+  // picker and realpath — isBlessedRoot folds case the same way). '' = no project (an unscoped run / a global record).
+  // semantic lane constants: cosine >= SEMANTIC_FLOOR admits a zero-overlap record (text-embedding-3 / gemini
+  // embeddings put unrelated prose around 0.1–0.25 and paraphrases above 0.5); SEMANTIC_WEIGHT keeps a strong
+  // semantic match on par with a one-term BM25 hit in a small notebook (idf ~ 0.7–1.5).
+  const SEMANTIC_FLOOR = 0.35;
+  const SEMANTIC_WEIGHT = 1.5;
+  function cosine(a, b) {
+    if (!Array.isArray(a) || !Array.isArray(b) || !a.length || a.length !== b.length) return 0;
+    let dot = 0, na = 0, nb = 0;
+    for (let i = 0; i < a.length; i++) { const x = Number(a[i]) || 0, y = Number(b[i]) || 0; dot += x * y; na += x * x; nb += y * y; }
+    if (!na || !nb) return 0;
+    return dot / Math.sqrt(na * nb);
+  }
+
+  function projectKey(root) {
+    const k = String(root == null ? '' : root).trim().replace(/\\/g, '/').replace(/\/+$/, '');
+    return /^[a-z]:\//i.test(k) ? k.toLowerCase() : k;   // Windows drive paths are case-insensitive; POSIX paths are not
+  }
+
   function rank(records, query, rankOpts) {
     rankOpts = rankOpts || {};
     const now = typeof rankOpts.now === 'number' ? rankOpts.now : 0;
     const streamId = rankOpts.streamId || null;   // M-mem.2b: the active workstream — same-stream working memory gets a recall boost
+    const project = projectKey(rankOpts.projectRoot);   // the run's project (blessed root) — '' when unscoped
+    // HYBRID RETRIEVAL (memory-compound lane): an OPTIONAL semantic lane. `vectors` (record id -> embedding) and
+    // `queryVec` come from the host's embedding store (sidecar/embed.js); absent => pure BM25, byte-identical to
+    // before. A record whose cosine to the query clears `semanticFloor` is admitted even with ZERO lexical
+    // overlap — the case BM25 alone can never cover ("registry pushes rate-limit" vs "uploads keep getting
+    // throttled") — and the similarity adds to the score alongside the lexical relevance.
+    const vectors = (rankOpts.vectors && typeof rankOpts.vectors === 'object') ? rankOpts.vectors : null;
+    const queryVec = (vectors && Array.isArray(rankOpts.queryVec) && rankOpts.queryVec.length) ? rankOpts.queryVec : null;
+    const semanticFloor = typeof rankOpts.semanticFloor === 'number' ? rankOpts.semanticFloor : SEMANTIC_FLOOR;
     const k = rankOpts.k || 8;
     const halfLife = rankOpts.halfLifeMs || 6048e5;   // 7 days (usage recency)
     const trustHalfLife = rankOpts.trustHalfLifeMs || 2592e6;   // 30 days (endorsement fade — mirrors memcore.TRUST_HALFLIFE_MS)
-    const recs = Array.isArray(records) ? records.filter(Boolean) : [];
+    // PROJECT TIER: a record scoped 'project' belongs to ONE root — it is NEVER injected into a different project
+    // (or an unscoped run): a lesson about repo A's flaky registry must not steer work in repo B. Global records
+    // (no projectRoot, or scope global/stream) always compete, exactly as before. Same-project records get the
+    // same-stream boost below so a project's own lessons float up inside it.
+    const recs = (Array.isArray(records) ? records.filter(Boolean) : [])
+      .filter(r => !(r.scope === 'project' && projectKey(r.projectRoot) && projectKey(r.projectRoot) !== project));
     if (!recs.length) return [];
     const rel = bm25(recs, query);   // shared lexical core — scores align with recs
     let scored = recs.map((r, i) => {
@@ -247,12 +428,13 @@
       // M-mem.2b: same-stream working memory floats up; global records always compete; OTHER streams stay
       // searchable (no boost, not filtered) — "global always-on, workstream-scoped, cross-stream searchable".
       const sameStream = (streamId && r.scope === 'stream' && r.streamId === streamId) ? 0.5 : 0;
-      const projectKey = p => { const s = String(p || '').replace(/\\/g, '/').replace(/\/+$/, ''); return /^[a-z]:\//i.test(s) ? s.toLowerCase() : s; };
-      const sameProject = r.projectRoot && rankOpts.projectRoot && projectKey(r.projectRoot) === projectKey(rankOpts.projectRoot);
-      const pinnedHere = r.pinned && (r.scope !== 'stream' || (streamId && r.streamId === streamId) || sameProject);
-      const score = relevance + 0.5 * recency + 0.3 * trust + sameStream + (pinnedHere ? 1000 : 0);
-      const eligible = !(r.pinned && r.projectRoot) || sameProject || (!rankOpts.projectRoot && streamId && r.streamId === streamId);
-      return { r: r, i: i, score: score, relevance: relevance, pinnedHere: pinnedHere, eligible: eligible };
+      const inProject = !!(project && r.projectRoot && projectKey(r.projectRoot) === project);
+      const sameProject = inProject ? 0.5 : 0;   // this project's own lessons float up (memory-compound lane)
+      const pinnedHere = r.pinned && (r.scope !== 'stream' || (streamId && r.streamId === streamId) || inProject);
+      const semantic = queryVec && r.id != null && vectors[r.id] ? Math.max(0, cosine(queryVec, vectors[r.id])) : 0;
+      const score = relevance + SEMANTIC_WEIGHT * semantic + 0.5 * recency + 0.3 * trust + sameStream + sameProject + (pinnedHere ? 1000 : 0);
+      const eligible = !(r.pinned && r.projectRoot) || inProject || (!project && streamId && r.streamId === streamId);
+      return { r: r, i: i, score: score, relevance: relevance, semantic: semantic, pinnedHere: pinnedHere, eligible: eligible };
     });
     // Approved project requirements are not generic facts for another project.
     // Explicit notebook searches remain able to retrieve them (floor:false).
@@ -262,7 +444,7 @@
     // queryless turn (empty / image-only) keeps the recency+trust fallback untouched: the floor must never
     // empty recall for a legitimately generic turn. `floor:false` opts out for a caller whose own gate already
     // admitted the records (notebook.read's substring match — reordering there must never truncate).
-    if (rel.queried && rankOpts.floor !== false) scored = scored.filter(s => s.relevance > 0 || s.pinnedHere);
+    if (rel.queried && rankOpts.floor !== false) scored = scored.filter(s => s.relevance > 0 || s.semantic >= semanticFloor || s.pinnedHere);
     scored.sort((a, b) => (b.score - a.score) || (a.i - b.i));   // deterministic: stable tiebreak by store order
     return scored.slice(0, k).map(s => s.r);
   }
@@ -276,7 +458,7 @@
   function compactionMemoryBlock(records, recentText, opts) {
     opts = opts || {};
     const now = typeof opts.now === 'number' ? opts.now : 0;
-    const ranked = rank(records, recentText || '', { now: now, k: opts.k || 5, streamId: opts.streamId || null, projectRoot: opts.projectRoot || null });
+    const ranked = rank(records, recentText || '', { now: now, k: opts.k || 5, streamId: opts.streamId || null, projectRoot: opts.projectRoot || null, vectors: opts.vectors || null, queryVec: opts.queryVec || null });
     if (!ranked.length) return '';
     const rr = renderRecall(ranked, {
       limit: opts.limit || 800,
@@ -304,6 +486,23 @@
       COMPACTION_SECTIONS.map(s => '## ' + s).join('\n');
   }
 
+  /* THE RUN'S CONTEXT POLICY (index.js runOnce and the tests that must exercise exactly what ships read this one
+     object). compactAt: fold once the prompt passes 65% of the window. tailShare: the verbatim tail is sized in
+     TOKENS — 20% of the window (Hermes' TAIL_MAX_CONTEXT_FRACTION) — instead of a turn count: six turns of
+     79k-char results were ~120k tokens, more than a 64k window, so a fold freed 0.6% and the run died
+     context_overflow at 82,200 tokens (audit probe 09-22). keepTailTurns only applies while the window is unknown. */
+  const RUN_CONTEXT_DEFAULTS = Object.freeze({ compactAt: 0.65, tailShare: 0.2, keepTailTurns: 6 });
+
+  /* TOOL-OUTPUT BUDGET RE-ARM. The per-run tool-byte budget (index.js) is re-armed by a fold because the fold took
+     those bytes out of the prompt — but only a fold that really freed space (>= 10% of the prompt, both ends from
+     the SAME local estimator, as agent.compact reports them) earns it. A fold that freed 0.6% used to re-arm the
+     whole budget and let full-size results straight back into a prompt that was still at the window's edge. */
+  const REARM_MIN_FREED = 0.10;
+  function foldFreedEnough(ev) {
+    const before = Number(ev && ev.beforeTokens) || 0, after = Number(ev && ev.afterTokens) || 0;
+    return before > 0 && (before - after) / before >= REARM_MIN_FREED;
+  }
+
   function makeContext(opts) {
     opts = opts || {};
     let contextLimit = opts.contextLimit || 0;         // 0 = unknown (never auto-compact); mutable — see setContextLimit
@@ -313,6 +512,9 @@
        that pass the legacy keepTail (messages) keep message semantics exactly; default is 6 turns. */
     const keepTailTurns = opts.keepTailTurns > 0 ? opts.keepTailTurns : 0;
     const keepTail = keepTailTurns ? 0 : (opts.keepTail || 6);
+    // TOKEN TAIL (RUN_CONTEXT_DEFAULTS.tailShare): when set and the window is known, the tail is a token budget and
+    // keepTailTurns/keepTail are only the fallback for an unknown window. Unset = every legacy caller unchanged.
+    const tailShare = (opts.tailShare > 0 && opts.tailShare < 1) ? opts.tailShare : 0;
     const estimateTokens = opts.estimateTokens || defaultEstimate;
 
     /* COUNT THE TOOL CALLS. This summed `content` alone — but in an agentic loop the tool-call ARGUMENTS are
@@ -322,7 +524,8 @@
        ONE per-message rule, used by BOTH estimateMessages and fit — the two had their own inline arithmetic,
        which is how they came to disagree in the first place. */
     function estimateMessage(m) {
-      let t = estimateTokens(m && m.content) + MSG_OVERHEAD;
+      // parts arrays (screenshots, attachments) are costed part by part — see IMAGE COST above
+      let t = estimateContentTokens(m && m.content, estimateTokens) + MSG_OVERHEAD;
       if (m && Array.isArray(m.tool_calls)) {
         for (const c of m.tool_calls) {
           const fn = (c && c.function) || {};
@@ -390,7 +593,38 @@
       }
       return cut;
     }
-    function tailStart(history) { return keepTailTurns ? turnCut(history, keepTailTurns) : Math.max(0, history.length - keepTail); }
+    /* Token-budgeted tail: walk turn-groups (an assistant message + its tool results; any other message alone)
+       newest-first and keep them while they fit the budget. The FLOOR is never folded whatever it weighs: everything
+       from the newest assistant message on (its tool calls, their results and anything after, e.g. a screenshot turn),
+       or the newest group when there is no assistant message. Cuts land only on group starts, so a tool result is
+       never separated from the call that produced it. */
+    function tailBudgetTokens() { return (tailShare && contextLimit) ? Math.floor(tailShare * contextLimit) : 0; }
+    function tokenTailCut(history, budget) {
+      const n = history.length;
+      let floor = -1;
+      for (let k = n - 1; k >= 0; k--) { if (history[k] && history[k].role === 'assistant') { floor = k; break; } }
+      if (floor < 0) { floor = n - 1; while (floor > 0 && history[floor] && history[floor].role === 'tool') floor--; }
+      let cut = n, acc = 0;
+      while (cut > 0) {
+        let start = cut - 1;
+        while (start > 0 && history[start] && history[start].role === 'tool') start--;
+        const t = estimateMessages(history.slice(start, cut));
+        if (cut <= floor && acc + t > budget) break;   // past the floor: stop at the first group that would not fit
+        acc += t;
+        cut = start;
+      }
+      return cut;
+    }
+    /* planOpts.scale = real tokens per local-estimate token (the caller's usage anchor / its local ruler, >= 1). The
+       budget is in REAL tokens but groups are measured with the local estimator, which can be blind to what the
+       provider counts (an image part estimates at ~8 tokens and bills ~1.5k): unscaled, a prompt the provider called
+       140k tokens looked like 2k locally, the whole history fit "the tail", and nothing could fold. */
+    function tailStart(history, planOpts) {
+      const budget = tailBudgetTokens();
+      const scale = (planOpts && Number(planOpts.scale) > 1) ? Number(planOpts.scale) : 1;
+      if (budget > 0) return tokenTailCut(history, budget / scale);
+      return keepTailTurns ? turnCut(history, keepTailTurns) : Math.max(0, history.length - keepTail);
+    }
 
     function compact(history, summarize) {
       history = history || [];
@@ -406,9 +640,9 @@
     // verbatim `tail`. Like compact() it keeps ~keepTail messages, but SNAPS the boundary earlier so the tail never
     // begins with an orphan `role:'tool'` result whose owning assistant turn was folded into the summary — that
     // orphan would 400 the next model call. The loop folds `older` into a summary; `tail` is replayed untouched.
-    function planCompaction(history) {
+    function planCompaction(history, planOpts) {
       history = history || [];
-      let cut = tailStart(history);                        // tail = history.slice(cut)
+      let cut = tailStart(history, planOpts);              // tail = history.slice(cut)
       if (cut <= 0) return { older: [], tail: history.slice() };
       while (cut > 0 && history[cut] && history[cut].role === 'tool') cut--;   // snap to a turn-group start
       if (cut <= 0) return { older: [], tail: history.slice() };
@@ -433,9 +667,9 @@
     // micro-compaction tier re-measures against this before paying for an LLM fold.
     function thresholdTokens() { return contextLimit ? compactAt * contextLimit : 0; }
 
-    const api = { systemPrompt, assemble, estimateTokens, estimateMessages, fit, shouldCompact, compact, planCompaction, setContextLimit, thresholdTokens, redact, contextLimit, keepTail, keepTailTurns };
+    const api = { systemPrompt, assemble, estimateTokens, estimateMessages, fit, shouldCompact, compact, planCompaction, setContextLimit, thresholdTokens, tailBudgetTokens, redact, contextLimit, keepTail, keepTailTurns, tailShare };
     return api;
   }
 
-  return { makeContext, redact, renderRecall, injectRecall, rank, bm25, flagInjection, stripRecallFence, compactionMemoryBlock, compactionSummaryPrompt, COMPACTION_SECTIONS };
+  return { makeContext, redact, setKnownSecretSource, renderRecall, injectRecall, rank, bm25, projectKey, cosine, SEMANTIC_FLOOR, flagInjection, stripRecallFence, compactionMemoryBlock, compactionSummaryPrompt, COMPACTION_SECTIONS, CHARS_PER_TOKEN, IMAGE_TOKENS_DEFAULT, imageTokens, estimateContentTokens, RUN_CONTEXT_DEFAULTS, REARM_MIN_FREED, foldFreedEnough };
 });

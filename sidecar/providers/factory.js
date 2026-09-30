@@ -150,6 +150,11 @@
         // profile wire hints: does this endpoint document `reasoning_effort`, and is tool support
         // asserted/denied at the provider level (fallback when the catalog carries no capability data)?
         sendReasoningEffort: profile.wireReasoningEffort === true,
+        // per-model levels the profile documents where the catalog publishes none (openai), the OFF value an
+        // endpoint documents outside its declared lists (deepseek 'none'), and DeepSeek's reasoning_content replay
+        reasoningModels: profile.reasoningModels,
+        reasoningOffEffort: profile.reasoningOffEffort,
+        replayReasoningContent: profile.replayReasoningContent === true,
         supportsTools: typeof profile.supportsTools === 'boolean' ? profile.supportsTools : null,
         // wireStreamOptions:false = endpoint rejects/lacks stream_options (usage streams by default there)
         includeUsage: profile.wireStreamOptions === false ? false : opts.includeUsage,

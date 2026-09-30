@@ -79,6 +79,17 @@ debugging or claiming anything done. Companions: [BRAIN.md](BRAIN.md) · [DECISI
 
 ## Backend / process traps
 
+- **A convergence signal the MODEL has to volunteer is not a convergence signal** (2026-09-17,
+  customer incident). The LOOP subsystem's only "am I done" reads were NOTHING-TO-DO / `DIGEST: 0`,
+  both spoken by the model. A full-access loop that never conceded — 98 passes of "verified the
+  files exist", each auto-approved — ran all night with dryStreak at 0 and no cap in its way. Any
+  keep-going mechanism (loops, routines, night shift, goal loop, delegated workers) needs a
+  breaker that reads what the LEDGER can prove (files, commits, findings, repeated output), plus a
+  spend rail that does not depend on the user having opted in. Built: `loopjob.stallSignal` +
+  the shipped $25/day rail. Inside ONE run this was already covered (`tool-progress-guard.js`
+  blocks a successful call that returns evidence already seen); the hole was CROSS-run — each
+  loop pass is a fresh run with a fresh guard. Still open: routines have no per-routine idle
+  breaker (the day rail covers them).
 - **`npm start` (:8787) is the app.** `npm run serve` is a dead UI-only path — using it
   "works" and then nothing real functions.
 - **Bare `require()` at module top for optional deps** crashes the single-process sidecar at

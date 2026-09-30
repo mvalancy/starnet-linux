@@ -33,7 +33,11 @@ function cloneMessages(messages) {
 
 function checkpointWithPairedResults(state, options) {
   state = state || {};
-  if (state.corrupt || state.repairError || state.forensicOnly) fail('corrupt recovery journals remain forensic-only');
+  // A lone torn FINAL record (damage 'torn_tail') is the ordinary crash signature: that record never became
+  // durable, so its hash-chain-valid prefix continues exactly like an intact journal. Every other damage class,
+  // a repair that failed, or a forensic sibling on disk stays forensic-only.
+  const tornTailOnly = state.damage === 'torn_tail' && !state.forensic;
+  if ((state.corrupt && !tornTailOnly) || state.forensic || state.repairError || state.forensicOnly) fail('corrupt recovery journals remain forensic-only');
   const uncertain = Array.isArray(state.uncertain) ? state.uncertain : [];
   const reviewed = !!(options && options.reviewed);
   let outcomes = new Map();

@@ -175,4 +175,26 @@ function fakeLedgerFull(o) {
   A.eq(c.evs.filter(e => e.name === 'budget.threshold').length, 0, 'no budget.threshold for the agent scope (stays in-contract)');
 }
 
+// ---- strict vs soft scopes on UNCERTAIN spend history (the shipped $25/day rail must not brick paid runs) ----
+{
+  const begun = [];
+  const uncertain = { usdForDay: () => 0, totalUsd: () => 0, health: () => ({ complete: false, durable: true }), beginRun: (id) => { begun.push(id); return true; } };
+  const strictAll = makeBudget({ caps: { day: 25 }, ledger: uncertain, clock: { now: () => 0 } });
+  const blk = strictAll.check('r1', 'a', 0, 0);
+  A.eq(blk && blk.code, 'spend_history_unavailable', 'default: every governed scope is strict -> uncertain history refuses paid dispatch');
+  const softDay = makeBudget({ caps: { day: 25 }, ledger: uncertain, clock: { now: () => 0 }, strictScope: s => s !== 'day' });
+  A.eq(softDay.check('r2', 'a', 0, 0), null, 'only the SOFT shipped day rail governs -> uncertain history does not brick the run');
+  A.ok(begun.indexOf('r2') >= 0, 'the dispatch receipt is still recorded on the soft path');
+  A.eq(softDay.status(0).day.usd, null, 'status still reports the day spend as UNKNOWN (never a guessed $0)');
+  const mixed = makeBudget({ caps: { day: 25, global: 100 }, ledger: uncertain, clock: { now: () => 0 }, strictScope: s => s !== 'day' });
+  const blk2 = mixed.check('r3', 'a', 0, 0);
+  A.eq(blk2 && blk2.scope, 'global', 'an explicitly chosen cap alongside the soft rail keeps fail-closed, naming the strict scope');
+  const broken = makeBudget({ caps: { day: 25 }, ledger: uncertain, clock: { now: () => 0 }, strictScope: () => { throw new Error('boom'); } });
+  const blk3 = broken.check('r4', 'a', 0, 0);
+  A.eq(blk3 && blk3.code, 'spend_history_unavailable', 'a broken classifier fails CLOSED');
+  const known = { usdForDay: () => 30, totalUsd: () => 30, health: () => ({ complete: true, durable: true }), beginRun: () => true };
+  const softKnown = makeBudget({ caps: { day: 25 }, ledger: known, clock: { now: () => 0 }, strictScope: s => s !== 'day' });
+  const cap = softKnown.check('r5', 'a', 0, 0);
+  A.eq(cap && cap.scope, 'day', 'with KNOWN history the soft rail still stops the run at its cap');
+}
 A.report('budget.test');

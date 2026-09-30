@@ -33,7 +33,11 @@ const number = v => {
 };
 const stamp = v => Math.max(0, Math.floor(number(v) || 0));
 const domain = v => DOMAIN_SET.has(String(v || '').toLowerCase()) ? String(v).toLowerCase() : null;
-const agent = v => AGENT_RE.test(String(v || '')) ? String(v) : null;
+// __proto__ / constructor / prototype match AGENT_RE but are object-model keys, not agents: rec.suppressed['__proto__']
+// IS Object.prototype, so one POST /api/journey adaptation.suppress wrote a domain name onto every object in the
+// process. Refuse them wherever an agent id becomes a property key.
+const PROTO_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+const agent = v => AGENT_RE.test(String(v || '')) && !PROTO_KEYS.has(String(v)) ? String(v) : null;
 
 function tierFor(count) {
   const n = Math.max(0, Number(count) | 0);

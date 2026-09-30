@@ -1,0 +1,10 @@
+{
+  "id": "harrypotter",
+  "track": "sit",
+  "dir": "north",
+  "job": "41e5fd9a-d285-4cb8-a36c-b51876efae98",
+  "result": "frames: 5\nhttps://api.pixellab.ai/mcp/images/41e5fd9a-d285-4cb8-a36c-b51876efae98/download?index=0",
+  "packed": true,
+  "lastRaw": "output/agent-animation-study/rollout-20px/full-motion/harrypotter/minimax/sit-north/41e5fd9a-d285-4cb8-a36c-b51876efae98/4.png",
+  "frameCount": 5
+}

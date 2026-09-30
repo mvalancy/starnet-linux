@@ -470,4 +470,18 @@ const iso = cron._internals.iso;
   A.eq(cron.isFireable(bad), false, 'isFireable now rejects the schedule (visible as unfireable, not idle-forever)');
 }
 
+{
+  let jobs = store.createJob([], { id: 'delivery-proof', schedule: cron.parseSchedule('every 1h', T0) }, { now: T0 });
+  jobs = store.markRun(jobs, 'delivery-proof', { status: 'ok', runId: 'a', output: 'first' }, { now: T0 });
+  jobs = store.markDelivery(jobs, 'delivery-proof', { ok: false, runId: 'a', deliveredTargets: ['good'] }, { now: T0 });
+  jobs = store.markRun(jobs, 'delivery-proof', { status: 'ok', runId: 'b', output: 'second' }, { now: T0 + 1000 });
+  jobs = store.markDelivery(jobs, 'delivery-proof', { ok: true }, { now: T0 + 2000 });
+  A.eq(store.pendingDeliveries(jobs[0]).length, 2, 'an uncorrelated notifier cannot acknowledge pending receipts');
+  jobs = store.loadEnvelope(JSON.stringify(store.toEnvelope(jobs))).jobs;
+  A.eq(jobs[0].deliveryBacklog[0].deliveredTargets, ['good'], 'partial fanout acknowledgements survive restart');
+  A.eq(jobs[0].deliveryBacklog[0].nextAttemptAt, iso(T0 + MIN), 'delivery retry deadline survives restart');
+  jobs = store.markDelivery(jobs, 'delivery-proof', { ok: true, runId: 'a' }, { now: T0 + MIN });
+  A.eq(store.pendingDeliveries(jobs[0]).map(f => f.runId), ['b'], 'acknowledgement affects only the matching occurrence');
+}
+
 A.report('cron-store');

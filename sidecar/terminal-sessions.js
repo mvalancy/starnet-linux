@@ -14,6 +14,7 @@
        { available, start, status, read, write, resize, interrupt, stop, stopAll, countRunning, storeHealth }
 */
 'use strict';
+const { stationChildEnv } = require('./child-env.js');   // a PTY with no explicit env still never inherits station secrets
 
 const ACTIVE_STATES = new Set(['starting', 'running', 'stopping']);
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$/;
@@ -228,7 +229,7 @@ function makeTerminalSessions(deps) {
     let handle;
     try {
       handle = pty.spawn(spec.file, spec.args || [], {
-        name: 'xterm-256color', cols, rows, cwd: opts.cwd, env: opts.env || process.env,
+        name: 'xterm-256color', cols, rows, cwd: opts.cwd, env: opts.env || stationChildEnv(process.env),
         useConpty: platform === 'win32'
       });
     } catch (e) {

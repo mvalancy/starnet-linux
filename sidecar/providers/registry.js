@@ -201,6 +201,29 @@
       supportsTools: null,
       supportsReasoning: null,
       wireReasoningEffort: true,
+      /* PER-MODEL REASONING LEVELS on Chat Completions (the wire this profile speaks). OpenAI's /v1/models carries
+         no capability data (id/created/owned_by/shutdown_date), so these rows are transcribed from OpenAI's
+         reasoning guide and the model feature matrix (learn.microsoft.com/azure/foundry/openai/how-to/reasoning,
+         updated 2026-09-21): `max` is Responses-API only; `xhigh` only GPT-6/5.6/5.5/5.4; `minimal` only the
+         original GPT-5 models; `none` from GPT-5.1 on (GPT-6 omitted: OpenAI's guide says gpt-6-astra 400s it).
+         First match wins; an unmatched model stays UNKNOWN (no dial) rather than guessed, and the adapter learns a
+         model's real list from OpenAI's own "Supported values are: …" refusal. Responses-only ids (*-pro, *-codex,
+         o3-pro) are deliberately absent: they cannot run on this wire at all. */
+      reasoningModels: [
+        { match: '^gpt-6(?:[.-]|$)', efforts: ['low', 'medium', 'high', 'xhigh'] },
+        // Chat Completions cannot combine gpt-5.6 reasoning with function tools ("set reasoning_effort to 'none'"),
+        // and every StarNet agent run sends tools — so on this wire the model only runs with reasoning off.
+        { match: '^gpt-5\\.6(?:[.-]|$)', efforts: ['none'], supportsReasoning: false,
+          note: "OpenAI's Chat Completions API can't combine this model's reasoning with tools, so StarNet runs it with reasoning off." },
+        { match: '^gpt-5\\.5(?:-\\d{4}-\\d{2}-\\d{2})?$', efforts: ['none', 'low', 'medium', 'high', 'xhigh'], default: 'medium' },
+        { match: '^gpt-5\\.4(?:-mini|-nano)?(?:-\\d{4}-\\d{2}-\\d{2})?$', efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
+        { match: '^gpt-5\\.2(?:-\\d{4}-\\d{2}-\\d{2})?$', efforts: ['none', 'low', 'medium', 'high'] },
+        { match: '^gpt-5\\.1(?:-\\d{4}-\\d{2}-\\d{2})?$', efforts: ['none', 'low', 'medium', 'high'], default: 'none' },
+        { match: '^gpt-5(?:-mini|-nano)?(?:-\\d{4}-\\d{2}-\\d{2})?$', efforts: ['minimal', 'low', 'medium', 'high'], default: 'medium' },
+        { match: '^o1-mini', efforts: [] },
+        { match: '^o(?:1|3|3-mini|4-mini)(?:-\\d{4}-\\d{2}-\\d{2})?$', efforts: ['low', 'medium', 'high'], default: 'medium' },
+        { match: '^(?:gpt-4|gpt-3\\.5|chatgpt-4o)', efforts: [], supportsReasoning: false }
+      ],
       // Native speech-to-speech: the provider itself listens and speaks, so live voice needs NO second
       // credential and no transcription layer of ours. Present here only because it is PROVEN against the
       // real endpoint; a provider without a verified descriptor gets composed voice instead of a guess.
@@ -363,6 +386,12 @@
       supportsTools: null,
       supportsReasoning: null,
       wireReasoningEffort: true,
+      // DeepSeek's /models declares each model's levels (effort.supported_levels, e.g. low/high/max); its API
+      // reference adds that reasoning_effort 'none' turns thinking OFF — a real mode the catalog doesn't list.
+      reasoningOffEffort: 'none',
+      // Thinking mode + tools: every turn's reasoning_content must come back on the next request, or DeepSeek 400s
+      // (api-docs.deepseek.com/guides/thinking_mode). The adapter captures and replays it (openai-compatible.js).
+      replayReasoningContent: true,
       order: 40
     },
     {

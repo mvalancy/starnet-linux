@@ -58,7 +58,7 @@
   const iso = cron._internals.iso;            // ms(arg) -> ISO; deterministic (no zero-arg new Date)
 
   // fields a user may edit via updateJob. `id`, timestamps, run-state and counters are NOT editable here.
-  const EDITABLE = ['name', 'prompt', 'agentId', 'model', 'provider', 'deliver', 'skills', 'script', 'scriptTimeoutMs', 'workdir', 'contextFrom', 'monitorMode', 'misfire', 'unattendedGrants', 'noAgent', 'enabledToolsets', 'attachToSession', 'origin', 'runsLine'];
+  const EDITABLE = ['name', 'prompt', 'agentId', 'model', 'provider', 'deliver', 'skills', 'script', 'scriptTimeoutMs', 'workdir', 'contextFrom', 'monitorMode', 'misfire', 'unattendedGrants', 'noAgent', 'enabledToolsets', 'attachToSession', 'origin', 'runsLine', 'dockId'];
 
   /* UNATTENDED CAPABILITY GRANT (2026-07-25) — the capability families the Commander explicitly approved for
      THIS routine to use with nobody watching. Default EMPTY: a routine grants nothing extra unless the user
@@ -210,6 +210,11 @@
          answer (router.lineOfAgent), and a second copy on disk would be a second derivation that drifts the
          first time the Commander edits the floor. The flag records the INTENT; the line is looked up live. */
       runsLine: spec.runsLine === true,
+      /* FIRES AT A BAY (multi-bay agents, 2026-09-22): which of the agent's bays this routine fires at, when the
+         Commander picked one (the workflow panel's FIRES AT chips). OPTIONAL and additive — present only when a
+         safe id was given, so every existing job record is byte-identical. The fire resolves it against the
+         live plan (router.dockOf): a dock the floor no longer has falls back to the agent's ENTRY dock. */
+      ...(ID_RE.test(String(spec.dockId == null ? '' : spec.dockId)) ? { dockId: String(spec.dockId) } : {}),
       enabledToolsets: spec.enabledToolsets == null ? null : normList(spec.enabledToolsets, 16, /^[A-Za-z0-9:_-]{1,80}$/),
       attachToSession: spec.attachToSession === true,
       // ADDITIVE provenance (Recipe Marketplace R3): a sibling `meta` bag for caller-supplied provenance, e.g.
@@ -256,6 +261,8 @@
       const next = Object.assign({}, job);
       for (const k of EDITABLE) if (Object.prototype.hasOwnProperty.call(patch, k)) next[k] = patch[k];
       if (Object.prototype.hasOwnProperty.call(patch, 'misfire')) next.misfire = normMisfire(patch.misfire);
+      // dockId: a safe id or nothing (a cleared/garbage value removes the key — the job fires at the entry dock)
+      if (Object.prototype.hasOwnProperty.call(patch, 'dockId')) { if (ID_RE.test(String(patch.dockId == null ? '' : patch.dockId))) next.dockId = String(patch.dockId); else delete next.dockId; }
       // re-normalize through the whitelist: the EDITABLE loop above copies the RAW patch value, so without this
       // a patch could persist an ungrantable capability name (same trap misfire guards against).
       if (Object.prototype.hasOwnProperty.call(patch, 'unattendedGrants')) next.unattendedGrants = normGrants(patch.unattendedGrants);
@@ -377,6 +384,15 @@
      for this job, separate from the run outcome (a routine can succeed while its ping fails — that failure
      must be durable and visible, never swallowed). result = { ok:bool, error?:string, channel?:string }.
      Pure: `now` is injected. No-op-safe on an absent job (mapJob leaves the array unchanged). */
+  // A later occurrence must never overwrite an undelivered result. Bound retained
+  // work through backpressure, not by discarding the oldest notification.
+  const MAX_PENDING_DELIVERIES = 100;
+  function pendingDeliveries(job) {
+    return (Array.isArray(job && job.deliveryBacklog) ? job.deliveryBacklog : [])
+      .concat(job && job.finalization ? [job.finalization] : [])
+      .filter(f => f && f.state === 'pending');
+  }
+
   function markDelivery(jobs, id, result, ctx) {
     result = result || {}; ctx = ctx || {};
     const now = ctx.now || 0;
@@ -385,12 +401,21 @@
       const error = ok ? null : String(result.error != null ? result.error : 'delivery failed') +
         (result.channel ? ' [' + String(result.channel) + ']' : '');
       const next = Object.assign({}, job, { lastDeliveryAt: iso(now), lastDeliveryOk: ok, lastDeliveryError: error });
-      if (job.finalization && (!result.runId || String(result.runId) === String(job.finalization.runId))) {
-        next.finalization = Object.assign({}, job.finalization, {
-          state: ok ? 'delivered' : 'pending', attempts: (job.finalization.attempts || 0) + 1,
-          deliveredAt: ok ? iso(now) : null, lastError: error
+      // Legacy notifier outcomes lack a run id; they may update the status line,
+      // but cannot acknowledge unrelated durable result receipts.
+      const matches = f => f && result.runId && String(result.runId) === String(f.runId);
+      const update = f => {
+        const attempts = (f.attempts || 0) + 1;
+        return Object.assign({}, f, {
+          state: ok ? 'delivered' : 'pending', attempts: attempts,
+          deliveredAt: ok ? iso(now) : null, lastError: error,
+          deliveredTargets: Array.isArray(result.deliveredTargets) ? result.deliveredTargets.slice(0, 16) : (f.deliveredTargets || []),
+          nextAttemptAt: ok ? null : iso(now + Math.min(900000, 60000 * Math.pow(2, Math.min(attempts - 1, 4))))
         });
-      }
+      };
+      if (matches(job.finalization)) next.finalization = update(job.finalization);
+      if (Array.isArray(job.deliveryBacklog)) next.deliveryBacklog = job.deliveryBacklog
+        .map(f => matches(f) ? update(f) : f).filter(f => f.state === 'pending');
       return next;
     });
   }
@@ -515,12 +540,16 @@
       }
 
       // terminal: finalize this occurrence.
+      const pending = pendingDeliveries(job).filter(f => f.runId !== String(next.lastRunId || ''));
+      if (pending.length >= MAX_PENDING_DELIVERIES) throw new Error('routine delivery backlog is full; reconnect the destination');
+      next.deliveryBacklog = pending;
       next.lastUsd = Number.isFinite(Number(result.usd)) ? Number(result.usd) : 0;
       next.finalization = {
         id: String(next.lastRunId || job.id) + ':final', runId: String(next.lastRunId || ''), state: 'pending',
         outcome: ok ? (String(result.output || '').trim() === '[SILENT]' ? 'silent' : 'ok') : 'failed',
         result: ok ? String(result.output || '').slice(0, 32000) : '', error: ok ? null : next.lastError,
         usd: next.lastUsd, deliver: String(job.deliver || 'local'), origin: job.origin || null,
+        deliveryContext: { name: job.name, prompt: job.prompt, agentId: job.agentId, noAgent: job.noAgent, attachToSession: job.attachToSession },
         destination: String(job.deliver || 'local'), committedAt: iso(now), attempts: 0
       };
       next.retryCount = 0;
@@ -570,12 +599,23 @@
     return { version: ENVELOPE_VERSION, jobs: jobs };
   }
 
+  /* GRANTS BIND TO THE APPROVED INSTRUCTION (2026-09-23 security audit). Returns the unattended grants an AGENT
+     edit must drop: rewriting a granted routine's prompt would otherwise inherit the Commander's standing
+     workbench/connectors power for an instruction the Commander never saw. Pure; the Commander's own edit path
+     (POST /api/cron/update) does not call this. */
+  function grantsRevokedByAgentEdit(current, patch) {
+    if (!current || !patch || !Object.prototype.hasOwnProperty.call(patch, 'prompt')) return [];
+    if (String(patch.prompt == null ? '' : patch.prompt) === String(current.prompt == null ? '' : current.prompt)) return [];
+    return normGrants(current.unattendedGrants);
+  }
+
   function toEnvelope(jobs) { return { version: ENVELOPE_VERSION, jobs: (jobs || []).slice() }; }
 
   return {
     makeJob: makeJob,
     createJob: createJob,
     updateJob: updateJob,
+    grantsRevokedByAgentEdit: grantsRevokedByAgentEdit,
     pauseJob: pauseJob,
     resumeJob: resumeJob,
     triggerJob: triggerJob,
@@ -583,6 +623,8 @@
     renewOnceHeartbeat: renewOnceHeartbeat,
     markRun: markRun,
     markDelivery: markDelivery,
+    pendingDeliveries: pendingDeliveries,
+    MAX_PENDING_DELIVERIES: MAX_PENDING_DELIVERIES,
     markBlockedConfig: markBlockedConfig,
     clearBlockedConfig: clearBlockedConfig,
     markMonitorCheck: markMonitorCheck,

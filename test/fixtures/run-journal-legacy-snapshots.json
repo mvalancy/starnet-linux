@@ -1,0 +1,407 @@
+{
+ "note": "Written AND analyzed by the pre-delta run journal (sidecar/run-journal.js at 09dd51454). journal-delta.test.js proves the current analyzer returns the same value for every key below.",
+ "cases": [
+  {
+   "name": "resumable-snapshots",
+   "jsonl": "{\"v\":1,\"runId\":\"resumable-snapshots\",\"seq\":1,\"ts\":1750000000250,\"type\":\"begin\",\"payload\":{\"runId\":\"resumable-snapshots\",\"agentId\":\"agent\",\"streamId\":\"s1\",\"trigger\":\"directive\",\"model\":\"m\",\"userTitle\":\"summarize\",\"startedAt\":1750000000000},\"prev\":\"\",\"hash\":\"226c031a395bbb1c04949e9841b9f42e2c6960bf4714a8f8e1b51678d85608c5\"}\n{\"v\":1,\"runId\":\"resumable-snapshots\",\"seq\":2,\"ts\":1750000000500,\"type\":\"checkpoint\",\"payload\":{\"phase\":\"initial\",\"turn\":0,\"messages\":[{\"role\":\"system\",\"content\":\"legacy system prompt\"},{\"role\":\"user\",\"content\":\"summarize notes.txt then write summary.md\"}]},\"prev\":\"226c031a395bbb1c04949e9841b9f42e2c6960bf4714a8f8e1b51678d85608c5\",\"hash\":\"82f02f6aba89bd39d3b491b5ac1dbfe88fef11af82888223c62691dbeabaa8a7\"}\n{\"v\":1,\"runId\":\"resumable-snapshots\",\"seq\":3,\"ts\":1750000000750,\"type\":\"checkpoint\",\"payload\":{\"phase\":\"assistant\",\"turn\":1,\"messages\":[{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"r1\",\"type\":\"function\",\"function\":{\"name\":\"fs_read\",\"arguments\":\"{\\\"path\\\":\\\"notes.txt\\\"}\"}}]}]},\"prev\":\"82f02f6aba89bd39d3b491b5ac1dbfe88fef11af82888223c62691dbeabaa8a7\",\"hash\":\"76ecc8ea891098d81f665962d70ba2a8fe05b39a244a22f3aae0951b830af126\"}\n{\"v\":1,\"runId\":\"resumable-snapshots\",\"seq\":4,\"ts\":1750000001000,\"type\":\"tool_intent\",\"payload\":{\"callId\":\"r1\",\"name\":\"fs.read\",\"argsRaw\":\"{\\\"path\\\":\\\"notes.txt\\\"}\",\"mutating\":false,\"boundaryModel\":\"prepared-dispatch-v1\"},\"prev\":\"76ecc8ea891098d81f665962d70ba2a8fe05b39a244a22f3aae0951b830af126\",\"hash\":\"4f669758a8beac3f21a8b02482919917c5ea841ebf3cc6bb7707129d93ed3be5\"}\n{\"v\":1,\"runId\":\"resumable-snapshots\",\"seq\":5,\"ts\":1750000001250,\"type\":\"tool_dispatch\",\"payload\":{\"callId\":\"r1\",\"name\":\"fs.read\",\"mutating\":false},\"prev\":\"4f669758a8beac3f21a8b02482919917c5ea841ebf3cc6bb7707129d93ed3be5\",\"hash\":\"d07aec94b4aa6355d7c613b462ed2ace403e471464c12a4cafe9f210102f514c\"}\n{\"v\":1,\"runId\":\"resumable-snapshots\",\"seq\":6,\"ts\":1750000001500,\"type\":\"tool_result\",\"payload\":{\"callId\":\"r1\",\"ok\":true,\"content\":\"notes body with key [redacted] inside\"},\"prev\":\"d07aec94b4aa6355d7c613b462ed2ace403e471464c12a4cafe9f210102f514c\",\"hash\":\"b5e242c3b0dde529cf402a897d68fa08c7e6110bf651ce77037a287b515c72e8\"}\n{\"v\":1,\"runId\":\"resumable-snapshots\",\"seq\":7,\"ts\":1750000001750,\"type\":\"checkpoint\",\"payload\":{\"phase\":\"tool_results\",\"turn\":1,\"messages\":[{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"r1\",\"type\":\"function\",\"function\":{\"name\":\"fs_read\",\"arguments\":\"{\\\"path\\\":\\\"notes.txt\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"r1\",\"content\":\"notes body with key [redacted] inside\"}]},\"prev\":\"b5e242c3b0dde529cf402a897d68fa08c7e6110bf651ce77037a287b515c72e8\",\"hash\":\"58f83b7527ec5057130b6b324f3006a427574c638e58af8ca85074f8cced8990\"}\n{\"v\":1,\"runId\":\"resumable-snapshots\",\"seq\":8,\"ts\":1750000002000,\"type\":\"recovery_attempt\",\"payload\":{\"sequence\":1,\"stage\":\"provider_stream\",\"action\":\"retry\",\"reason\":\"timeout\"},\"prev\":\"58f83b7527ec5057130b6b324f3006a427574c638e58af8ca85074f8cced8990\",\"hash\":\"a825c702247bf8cbe4ce30d84917ad57f52093d661a690c2016b81ca1c1c74b7\"}\n{\"v\":1,\"runId\":\"resumable-snapshots\",\"seq\":9,\"ts\":1750000002250,\"type\":\"checkpoint\",\"payload\":{\"phase\":\"assistant\",\"turn\":2,\"messages\":[{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"r1\",\"type\":\"function\",\"function\":{\"name\":\"fs_read\",\"arguments\":\"{\\\"path\\\":\\\"notes.txt\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"r1\",\"content\":\"notes body with key [redacted] inside\"},{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"w1\",\"type\":\"function\",\"function\":{\"name\":\"fs_write\",\"arguments\":\"{\\\"path\\\":\\\"summary.md\\\",\\\"content\\\":\\\"sum\\\"}\"}}]}]},\"prev\":\"a825c702247bf8cbe4ce30d84917ad57f52093d661a690c2016b81ca1c1c74b7\",\"hash\":\"104f2157ad59ac5f94bee982cb23e9233d315c1ed8f23cc3a8d54864e95ca121\"}\n{\"v\":1,\"runId\":\"resumable-snapshots\",\"seq\":10,\"ts\":1750000002500,\"type\":\"tool_intent\",\"payload\":{\"callId\":\"w1\",\"name\":\"fs.write\",\"argsRaw\":\"{\\\"path\\\":\\\"summary.md\\\",\\\"content\\\":\\\"sum\\\"}\",\"mutating\":true,\"boundaryModel\":\"prepared-dispatch-v1\"},\"prev\":\"104f2157ad59ac5f94bee982cb23e9233d315c1ed8f23cc3a8d54864e95ca121\",\"hash\":\"a9841fe9ff6da5f3592a8feb06d7d59535273e702b970654d656ad8b67dc7811\"}\n",
+   "expected": {
+    "runId": "resumable-snapshots",
+    "records": 10,
+    "corrupt": false,
+    "terminal": false,
+    "status": "resumable",
+    "meta": {
+     "runId": "resumable-snapshots",
+     "agentId": "agent",
+     "streamId": "s1",
+     "trigger": "directive",
+     "model": "m",
+     "userTitle": "summarize",
+     "startedAt": 1750000000000
+    },
+    "uncertain": [],
+    "replayableReads": [],
+    "replayablePrepared": [
+     {
+      "callId": "w1",
+      "name": "fs.write",
+      "argsRaw": "{\"path\":\"summary.md\",\"content\":\"sum\"}",
+      "mutating": true,
+      "boundaryModel": "prepared-dispatch-v1"
+     }
+    ],
+    "completed": [
+     {
+      "intent": {
+       "callId": "r1",
+       "name": "fs.read",
+       "argsRaw": "{\"path\":\"notes.txt\"}",
+       "mutating": false,
+       "boundaryModel": "prepared-dispatch-v1"
+      },
+      "dispatch": {
+       "callId": "r1",
+       "name": "fs.read",
+       "mutating": false
+      },
+      "result": {
+       "callId": "r1",
+       "ok": true,
+       "content": "notes body with key [redacted] inside"
+      }
+     }
+    ],
+    "recoveryAttempts": [
+     {
+      "sequence": 1,
+      "stage": "provider_stream",
+      "action": "retry",
+      "reason": "timeout"
+     }
+    ],
+    "baseCheckpoint": {
+     "phase": "initial",
+     "turn": 0,
+     "messages": [
+      {
+       "role": "system",
+       "content": "legacy system prompt"
+      },
+      {
+       "role": "user",
+       "content": "summarize notes.txt then write summary.md"
+      }
+     ]
+    },
+    "deltaCheckpoint": {
+     "phase": "assistant",
+     "turn": 2,
+     "messages": [
+      {
+       "role": "assistant",
+       "content": "",
+       "tool_calls": [
+        {
+         "id": "r1",
+         "type": "function",
+         "function": {
+          "name": "fs_read",
+          "arguments": "{\"path\":\"notes.txt\"}"
+         }
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "tool_call_id": "r1",
+       "content": "notes body with key [redacted] inside"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "tool_calls": [
+        {
+         "id": "w1",
+         "type": "function",
+         "function": {
+          "name": "fs_write",
+          "arguments": "{\"path\":\"summary.md\",\"content\":\"sum\"}"
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "checkpoint": {
+     "phase": "assistant",
+     "turn": 2,
+     "messages": [
+      {
+       "role": "system",
+       "content": "legacy system prompt"
+      },
+      {
+       "role": "user",
+       "content": "summarize notes.txt then write summary.md"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "tool_calls": [
+        {
+         "id": "r1",
+         "type": "function",
+         "function": {
+          "name": "fs_read",
+          "arguments": "{\"path\":\"notes.txt\"}"
+         }
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "tool_call_id": "r1",
+       "content": "notes body with key [redacted] inside"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "tool_calls": [
+        {
+         "id": "w1",
+         "type": "function",
+         "function": {
+          "name": "fs_write",
+          "arguments": "{\"path\":\"summary.md\",\"content\":\"sum\"}"
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "finish": null,
+    "resolution": null,
+    "continuation": null
+   }
+  },
+  {
+   "name": "reviewed-continued",
+   "jsonl": "{\"v\":1,\"runId\":\"reviewed-continued\",\"seq\":1,\"ts\":1750000000250,\"type\":\"begin\",\"payload\":{\"runId\":\"reviewed-continued\",\"agentId\":\"agent\",\"streamId\":\"s2\",\"model\":\"m\"},\"prev\":\"\",\"hash\":\"61d93aa2a77bdbdb3751f058b15c87678279f946e3c5754f01dd183310aee91b\"}\n{\"v\":1,\"runId\":\"reviewed-continued\",\"seq\":2,\"ts\":1750000000500,\"type\":\"checkpoint\",\"payload\":{\"phase\":\"initial\",\"turn\":0,\"messages\":[{\"role\":\"system\",\"content\":\"legacy system prompt\"},{\"role\":\"user\",\"content\":\"summarize notes.txt then write summary.md\"}]},\"prev\":\"61d93aa2a77bdbdb3751f058b15c87678279f946e3c5754f01dd183310aee91b\",\"hash\":\"64f40f472504dd086e1c7c16a1737eb8fd2d407e23945900a8f1828e33360161\"}\n{\"v\":1,\"runId\":\"reviewed-continued\",\"seq\":3,\"ts\":1750000000750,\"type\":\"checkpoint\",\"payload\":{\"phase\":\"assistant\",\"turn\":1,\"messages\":[{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"id\":\"w1\",\"type\":\"function\",\"function\":{\"name\":\"fs_write\",\"arguments\":\"{\\\"path\\\":\\\"summary.md\\\",\\\"content\\\":\\\"sum\\\"}\"}}]}]},\"prev\":\"64f40f472504dd086e1c7c16a1737eb8fd2d407e23945900a8f1828e33360161\",\"hash\":\"bfe6ac5646950c1f33145ff1cc4c4917359cb1fc5187bed74d97fc5d2ab4ca8c\"}\n{\"v\":1,\"runId\":\"reviewed-continued\",\"seq\":4,\"ts\":1750000001000,\"type\":\"tool_intent\",\"payload\":{\"callId\":\"w1\",\"name\":\"fs.write\",\"argsRaw\":\"{}\",\"replayFingerprint\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"mutating\":true,\"boundaryModel\":\"prepared-dispatch-v1\"},\"prev\":\"bfe6ac5646950c1f33145ff1cc4c4917359cb1fc5187bed74d97fc5d2ab4ca8c\",\"hash\":\"3bd67e8b6d71a82cbc81f2f577e9f267cf21b6f40ca23f9fc731f837ae7b875b\"}\n{\"v\":1,\"runId\":\"reviewed-continued\",\"seq\":5,\"ts\":1750000001250,\"type\":\"tool_dispatch\",\"payload\":{\"callId\":\"w1\",\"name\":\"fs.write\",\"mutating\":true},\"prev\":\"3bd67e8b6d71a82cbc81f2f577e9f267cf21b6f40ca23f9fc731f837ae7b875b\",\"hash\":\"4e9dc1b5028c16009431d2de5f6be7506b781658d41a7fe6cad25a8f7c8de017\"}\n{\"v\":1,\"runId\":\"reviewed-continued\",\"seq\":6,\"ts\":1750000001750,\"type\":\"resolution\",\"payload\":{\"resolutionId\":\"res-1\",\"operator\":\"local\",\"resolvedAt\":1750000001500,\"outcomes\":[{\"callId\":\"w1\",\"outcome\":\"happened\"}],\"note\":\"checked\"},\"prev\":\"4e9dc1b5028c16009431d2de5f6be7506b781658d41a7fe6cad25a8f7c8de017\",\"hash\":\"ae49922f1bfbb02a35f6311f3d8074fc27cf45e79ae8ece212894e0ac84bc63d\"}\n{\"v\":1,\"runId\":\"reviewed-continued\",\"seq\":7,\"ts\":1750000002250,\"type\":\"continuation_ready\",\"payload\":{\"continuationId\":\"cont-1\",\"mode\":\"reviewed\",\"operator\":\"local\",\"preparedAt\":1750000002000,\"blockedFingerprints\":[\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"],\"context\":\"ctx\"},\"prev\":\"ae49922f1bfbb02a35f6311f3d8074fc27cf45e79ae8ece212894e0ac84bc63d\",\"hash\":\"ab6e433a5afb7235526f72e6148c791342d4101bb22fdae8f3a7ef34c3276dc2\"}\n{\"v\":1,\"runId\":\"reviewed-continued\",\"seq\":8,\"ts\":1750000002750,\"type\":\"continuation_start\",\"payload\":{\"continuationId\":\"cont-1\",\"continuedRunId\":\"next-1\",\"startedAt\":1750000002500},\"prev\":\"ab6e433a5afb7235526f72e6148c791342d4101bb22fdae8f3a7ef34c3276dc2\",\"hash\":\"0046c5fb3c6886a6728407274605afb8d06beb84c4d8e2ec08413ff644dfa32b\"}\n{\"v\":1,\"runId\":\"reviewed-continued\",\"seq\":9,\"ts\":1750000003250,\"type\":\"continuation_finish\",\"payload\":{\"continuationId\":\"cont-1\",\"continuedRunId\":\"next-1\",\"finishedAt\":1750000003000,\"reason\":\"done\"},\"prev\":\"0046c5fb3c6886a6728407274605afb8d06beb84c4d8e2ec08413ff644dfa32b\",\"hash\":\"b205ae0aa8c3b39e5740a8f0ba32b369038ae49c39a1f6882f3a00a2866cc0c9\"}\n",
+   "expected": {
+    "runId": "reviewed-continued",
+    "records": 9,
+    "corrupt": false,
+    "terminal": false,
+    "status": "resolved",
+    "meta": {
+     "runId": "reviewed-continued",
+     "agentId": "agent",
+     "streamId": "s2",
+     "model": "m"
+    },
+    "uncertain": [
+     {
+      "callId": "w1",
+      "name": "fs.write",
+      "argsRaw": "{}",
+      "replayFingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "mutating": true,
+      "boundaryModel": "prepared-dispatch-v1"
+     }
+    ],
+    "replayableReads": [],
+    "replayablePrepared": [],
+    "completed": [],
+    "recoveryAttempts": [],
+    "baseCheckpoint": {
+     "phase": "initial",
+     "turn": 0,
+     "messages": [
+      {
+       "role": "system",
+       "content": "legacy system prompt"
+      },
+      {
+       "role": "user",
+       "content": "summarize notes.txt then write summary.md"
+      }
+     ]
+    },
+    "deltaCheckpoint": {
+     "phase": "assistant",
+     "turn": 1,
+     "messages": [
+      {
+       "role": "assistant",
+       "content": "",
+       "tool_calls": [
+        {
+         "id": "w1",
+         "type": "function",
+         "function": {
+          "name": "fs_write",
+          "arguments": "{\"path\":\"summary.md\",\"content\":\"sum\"}"
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "checkpoint": {
+     "phase": "assistant",
+     "turn": 1,
+     "messages": [
+      {
+       "role": "system",
+       "content": "legacy system prompt"
+      },
+      {
+       "role": "user",
+       "content": "summarize notes.txt then write summary.md"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "tool_calls": [
+        {
+         "id": "w1",
+         "type": "function",
+         "function": {
+          "name": "fs_write",
+          "arguments": "{\"path\":\"summary.md\",\"content\":\"sum\"}"
+         }
+        }
+       ]
+      }
+     ]
+    },
+    "finish": null,
+    "resolution": {
+     "resolutionId": "res-1",
+     "operator": "local",
+     "resolvedAt": 1750000001500,
+     "outcomes": [
+      {
+       "callId": "w1",
+       "outcome": "happened"
+      }
+     ],
+     "note": "checked"
+    },
+    "continuation": {
+     "state": "finished",
+     "continuationId": "cont-1",
+     "mode": "reviewed",
+     "operator": "local",
+     "preparedAt": 1750000002000,
+     "blockedFingerprints": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+     ],
+     "context": "ctx",
+     "continuedRunId": "next-1",
+     "startedAt": 1750000002500,
+     "finishedAt": 1750000003000,
+     "reason": "done"
+    }
+   }
+  },
+  {
+   "name": "torn-tail",
+   "jsonl": "{\"v\":1,\"runId\":\"torn-tail\",\"seq\":1,\"ts\":1750000000250,\"type\":\"begin\",\"payload\":{\"runId\":\"torn-tail\",\"agentId\":\"agent\",\"streamId\":\"s3\",\"model\":\"m\"},\"prev\":\"\",\"hash\":\"2cc5e8a6ed8a8791fa2184b028a92e10d152b67332f6bfb1df1e3ebf11cd1bbb\"}\n{\"v\":1,\"runId\":\"torn-tail\",\"seq\":2,\"ts\":1750000000500,\"type\":\"checkpoint\",\"payload\":{\"phase\":\"initial\",\"turn\":0,\"messages\":[{\"role\":\"system\",\"content\":\"legacy system prompt\"},{\"role\":\"user\",\"content\":\"summarize notes.txt then write summary.md\"}]},\"prev\":\"2cc5e8a6ed8a8791fa2184b028a92e10d152b67332f6bfb1df1e3ebf11cd1bbb\",\"hash\":\"261be3dde43812c12a338b2b7caf668e8c54091f95188898ebec75fb39c375e5\"}\n{\"v\":1,\"runId\":\"torn-tail\",\"seq\":3,\"ts\":1750000000750,\"type\":\"checkpoint\",\"payload\":{\"phase\":\"assistant\",\"turn\":1,\"messages\":[{\"role\":\"assistant\",\"content\":\"partial\"}]},\"prev\":\"261be3dde43812c12a338b2b7caf668e8c54091f95188898ebec75fb39c375e5\",\"hash\":\"a7c9d12f2882edd2ad3bfd2f6330d12715df8849d4ad17475139cb6f842dc5e0\"}\n{\"v\":1,\"runId\":\"torn-tail\",\"seq\":4,\"ts\":1,\"type\":\"check",
+   "expected": {
+    "runId": "torn-tail",
+    "records": 3,
+    "corrupt": true,
+    "terminal": false,
+    "status": "resumable",
+    "meta": {
+     "runId": "torn-tail",
+     "agentId": "agent",
+     "streamId": "s3",
+     "model": "m"
+    },
+    "uncertain": [],
+    "replayableReads": [],
+    "replayablePrepared": [],
+    "completed": [],
+    "recoveryAttempts": [],
+    "baseCheckpoint": {
+     "phase": "initial",
+     "turn": 0,
+     "messages": [
+      {
+       "role": "system",
+       "content": "legacy system prompt"
+      },
+      {
+       "role": "user",
+       "content": "summarize notes.txt then write summary.md"
+      }
+     ]
+    },
+    "deltaCheckpoint": {
+     "phase": "assistant",
+     "turn": 1,
+     "messages": [
+      {
+       "role": "assistant",
+       "content": "partial"
+      }
+     ]
+    },
+    "checkpoint": {
+     "phase": "assistant",
+     "turn": 1,
+     "messages": [
+      {
+       "role": "system",
+       "content": "legacy system prompt"
+      },
+      {
+       "role": "user",
+       "content": "summarize notes.txt then write summary.md"
+      },
+      {
+       "role": "assistant",
+       "content": "partial"
+      }
+     ]
+    },
+    "finish": null,
+    "resolution": null,
+    "continuation": null
+   }
+  },
+  {
+   "name": "finished",
+   "jsonl": "{\"v\":1,\"runId\":\"finished\",\"seq\":1,\"ts\":1750000000250,\"type\":\"begin\",\"payload\":{\"runId\":\"finished\",\"agentId\":\"agent\",\"model\":\"m\"},\"prev\":\"\",\"hash\":\"1bd7991cfdc5cd7432f8ab4108e5e563821982eb2633fab4ced775271a590d70\"}\n{\"v\":1,\"runId\":\"finished\",\"seq\":2,\"ts\":1750000000500,\"type\":\"checkpoint\",\"payload\":{\"phase\":\"assistant\",\"turn\":1,\"messages\":[{\"role\":\"assistant\",\"content\":\"done\"}]},\"prev\":\"1bd7991cfdc5cd7432f8ab4108e5e563821982eb2633fab4ced775271a590d70\",\"hash\":\"d0da12dcf73ba846553b5ed3465ed1b00e3e3e3e20a5324a518bd572b65bf2c0\"}\n{\"v\":1,\"runId\":\"finished\",\"seq\":3,\"ts\":1750000000750,\"type\":\"finish\",\"payload\":{\"reason\":\"done\",\"turns\":1,\"tokens\":3,\"usd\":0,\"transcriptAck\":true},\"prev\":\"d0da12dcf73ba846553b5ed3465ed1b00e3e3e3e20a5324a518bd572b65bf2c0\",\"hash\":\"c3195ac8b7507e36da264a1e9e3b77dcba1ef5b90cc5ffa0cef4e7eb03ec74a4\"}\n",
+   "expected": {
+    "runId": "finished",
+    "records": 3,
+    "corrupt": false,
+    "terminal": true,
+    "status": "finished",
+    "meta": {
+     "runId": "finished",
+     "agentId": "agent",
+     "model": "m"
+    },
+    "uncertain": [],
+    "replayableReads": [],
+    "replayablePrepared": [],
+    "completed": [],
+    "recoveryAttempts": [],
+    "baseCheckpoint": {},
+    "deltaCheckpoint": {
+     "phase": "assistant",
+     "turn": 1,
+     "messages": [
+      {
+       "role": "assistant",
+       "content": "done"
+      }
+     ]
+    },
+    "checkpoint": {
+     "phase": "assistant",
+     "turn": 1,
+     "messages": [
+      {
+       "role": "assistant",
+       "content": "done"
+      }
+     ]
+    },
+    "finish": {
+     "reason": "done",
+     "turns": 1,
+     "tokens": 3,
+     "usd": 0,
+     "transcriptAck": true
+    },
+    "resolution": null,
+    "continuation": null
+   }
+  }
+ ]
+}

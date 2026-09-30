@@ -3,8 +3,9 @@
    The notebook, todo, declined, minted, and pending stores intentionally share one injected store contract, but
    they do not share the same on-disk file: notebook:<agent> is durable long-term memory, todo:<agent> is the active
    task plan that must survive restarts/compaction, declined:<agent> is the permanent reject-list of memory
-   proposals the Commander Discarded (so reflection never re-proposes them — §5.6 "discard = never again"), and
-   pending:<agent> holds high-stakes proposals still awaiting a Keep/Edit/Discard verdict.
+   proposals the Commander Discarded (so reflection never re-proposes them — §5.6 "discard = never again"),
+   pending:<agent> holds high-stakes proposals still awaiting a Keep/Edit/Discard verdict, and embed:<agent> holds
+   the derived embedding vectors the hybrid recall lane blends with BM25 (sidecar/embed.js).
    Unknown keys are rejected instead of being accidentally mapped into a notebook filename. */
 'use strict';
 
@@ -24,6 +25,7 @@ function memoryFileFor(workspaces, pathMod, key) {
   if (k.indexOf('declined:') === 0) return pathMod.join(workspaces, agentIdFromKey(k, /^declined:/) + '.declined.json');
   if (k.indexOf('minted:') === 0) return pathMod.join(workspaces, agentIdFromKey(k, /^minted:/) + '.minted.json');
   if (k.indexOf('pending:') === 0) return pathMod.join(workspaces, agentIdFromKey(k, /^pending:/) + '.pending.json');
+  if (k.indexOf('embed:') === 0) return pathMod.join(workspaces, agentIdFromKey(k, /^embed:/) + '.embed.json');   // memory-compound: per-record embedding vectors (derived; rebuilt from the notebook on a model switch)
   throw new Error('unsupported memory store key: ' + k);
 }
 
@@ -70,7 +72,7 @@ function makeMemoryStore(deps) {
 // without booting the server (the new-hero clean-slate is a named hard rule, not just a source-grep).
 async function resetAgentMemory(store, agentId) {
   const id = String(agentId || 'agent');
-  for (const key of ['notebook:' + id, 'declined:' + id, 'todo:' + id, 'minted:' + id, 'pending:' + id]) {
+  for (const key of ['notebook:' + id, 'declined:' + id, 'todo:' + id, 'minted:' + id, 'pending:' + id, 'embed:' + id]) {
     try { await store.update(key, () => []); } catch (e) { failNote('memory.clear', e); }
   }
 }
@@ -120,7 +122,7 @@ async function appendPending(store, agentId, runId, items, now) {
       cur.push({
         key: key, runId: String(runId == null ? '' : runId), id: String(p.id == null ? '' : p.id),
         kind: p.kind || 'note', content: String(p.content == null ? '' : p.content),
-        scope: p.scope || 'global', origin: p.origin || 'commander', createdAt: stamp,
+        scope: p.scope || 'global', projectRoot: p.projectRoot || null, origin: p.origin || 'commander', createdAt: stamp,
         ...(p.replaceId ? { replaceId: p.replaceId, previousBody: p.previousBody, streamId: p.streamId || null } : {})
       });
       added++;

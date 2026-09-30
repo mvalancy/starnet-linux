@@ -67,6 +67,13 @@
     const dayMs = opts.dayMs || DAY_MS;
     const warnFrac = (typeof opts.warnFrac === 'number') ? opts.warnFrac : WARN_FRAC;
     const resumeGuard = (typeof opts.resumeGuard === 'function') ? opts.resumeGuard : null;
+    /* STRICT vs SOFT scopes (2026-09-23, with the shipped $25/day rail). A cap someone CHOSE (env or a saved Budget
+       value) is strict: uncertain spend history refuses paid dispatch — fail-closed, never a guessed $0 (the
+       spend-authority contract, test/spend-authority.http.test.js). The shipped default day rail is a soft safety
+       net nobody chose: when history is uncertain (e.g. a crash left an unsettled receipt) it cannot be enforced
+       honestly, but it must not brick every paid run either — so a governed-but-SOFT-only budget proceeds and
+       status keeps reporting the spend as unknown. Absent option = every scope strict (existing behaviour). */
+    const strictScope = (typeof opts.strictScope === 'function') ? opts.strictScope : () => true;
 
     const overrides = { run: 0, agent: 0, day: 0, global: 0 };
     const live = new Map();          // runId -> $ spent so far this run (in-flight, not yet in the ledger)
@@ -120,7 +127,16 @@
       noteLive(runId, spentThisRun);
       if (runId != null && agentId != null && String(agentId) !== '') liveAgentOf.set(String(runId), String(agentId));
       const governed = ['agent', 'day', 'global'].find(scope => capOf(baseCaps, scope) != null);
-      if (governed && unknown()) return { scope: governed, unknown: true, code: 'spend_history_unavailable' };
+      let strict = null;
+      try { strict = ['agent', 'day', 'global'].find(scope => capOf(baseCaps, scope) != null && strictScope(scope)) || null; }
+      catch (_) { strict = governed; }   // a broken classifier fails CLOSED: every governed scope counts as strict
+      const softOnly = !!governed && !strict;
+      if (governed && unknown()) {
+        if (!softOnly) return { scope: strict, unknown: true, code: 'spend_history_unavailable' };
+        // SOFT-only: record the dispatch receipt as usual, then proceed; the rail resumes once history is known.
+        if (runId != null && ledger && typeof ledger.beginRun === 'function') ledger.beginRun(runId, agentId);
+        return null;
+      }
       const t = totals(now, agentId);
       const ev = evaluate(baseCaps, t, overrides);
       if (emit) {
@@ -137,7 +153,7 @@
       }
       if (ev.blocked) { const s = ev.scopes[ev.blocked]; return { scope: ev.blocked, usd: s.usd, cap: s.cap }; }
       if (runId != null && ledger && typeof ledger.beginRun === 'function' && !ledger.beginRun(runId, agentId)) {
-        return { unknown: true, code: 'spend_history_unavailable' };
+        if (!softOnly) return { unknown: true, code: 'spend_history_unavailable' };
       }
       return null;
     }

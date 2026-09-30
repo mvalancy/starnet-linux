@@ -43,4 +43,10 @@ A.ok(/runs the <b>/.test(src) && /j\.runsLine !== true\) return 'runs as '/.test
 A.ok(/Build\.lineOfAgentInfo/.test(src), 'the line name/dock count come from the compiled plan (Build.lineOfAgentInfo), never guessed');
 A.ok(/Number\(j\.lastUsd\)/.test(src) && /mc-spend/.test(src), 'the row shows the recorded spend (lastUsd)');
 
+// the delivery-backlog ceiling is the SERVER's (GET /api/cron .maxPendingDeliveries), never a hardcoded copy; the
+// EDIT TASK textarea is capped and the save refuses a request over the update route's 64 KB body limit
+A.ok(/maxPendingDeliveries = (j && Number(j.maxPendingDeliveries)) || 0;/.test(src) && !/pending.length >= 100/.test(src), 'deliveryLine quotes the server backlog ceiling (no hardcoded 100)');
+A.ok(/data-edit-prompt rows="5" maxlength="' \+ EDIT_PROMPT_MAX \+ '"/.test(src) && /EDIT_BODY_MAX = 1 << 16/.test(src), 'EDIT TASK is capped under the 64 KB update body');
+const idx = fs.readFileSync(path.join(__dirname, '../sidecar/index.js'), 'utf8');
+A.ok(/maxPendingDeliveries: cronStore.MAX_PENDING_DELIVERIES/.test(idx), 'GET /api/cron exposes the backlog ceiling');
 A.report('autojobs-ui.test');

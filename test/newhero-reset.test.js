@@ -32,6 +32,9 @@ for (const store of ['PitchStore', 'SuggestStore', 'SeedStore', 'CuriosityStore'
 // lets the fresh Commander inherit the previous station's cabinet:write grant.
 const permissionsReset = seg.indexOf('await PermissionsStore.reset()');
 const heroCommit = seg.indexOf("agent = { id: 'agent'");
+const autonomyReset = seg.indexOf('await AutonomyStore.reset()');
+A.ok(autonomyReset >= 0 && autonomyReset < heroCommit, 'new hero waits for durable autonomy reset before committing');
+A.ok(/if \(!autonomyReset.ok\)/.test(seg), 'failed autonomy reset blocks commissioning');
 A.ok(permissionsReset >= 0 && heroCommit >= 0 && permissionsReset < heroCommit,
   'new-hero permission lockdown completes before the hero/state commit point');
 const savedResume = seg.indexOf('if (resumingSaved)');

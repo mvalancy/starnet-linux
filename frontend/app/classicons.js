@@ -270,7 +270,8 @@
   };
   let brandInstance = 0;
   function brandIcon(entry) {
-    const id = String(typeof entry === 'string' ? entry : (entry && entry.id) || '').replace(/^platform:/, '');
+    // gmail-send is the send-only Gmail card: same brand, narrower scope.
+    const id = String(typeof entry === 'string' ? entry : (entry && entry.id) || '').replace(/^platform:/, '').replace(/^gmail-send$/, 'gmail');
     const layout = BRAND_LAYOUT[id];
     if (!layout) return BRAND_LOGOS[id] || null;
     const filterId = 'brand-ink-' + (++brandInstance);
